@@ -1,0 +1,36 @@
+// MIDI outputs: WinMM devices and KDMAPI (OmniMIDI and compatible synths), behind one interface.
+// Only one thread may send to an output at a time (KDMAPI is not documented as thread-safe).
+#pragma once
+
+#include <windows.h>
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
+
+class MidiOutput
+{
+public:
+    virtual ~MidiOutput() {}
+    virtual void Send( uint32_t uMsg ) = 0;                     // status | data1 << 8 | data2 << 16
+    virtual void SendBatch( const uint32_t *pMsgs, size_t n ) { for ( size_t i = 0; i < n; i++ ) Send( pMsgs[i] ); }
+    virtual void SetVolume( double dVolume ) {}
+    virtual const std::wstring &Name() const = 0;
+    virtual bool IsKdmapi() const { return false; }
+
+    // The original's AllNotesOff: All Notes Off and Sustain off on all 16 channels
+    void AllNotesOff();
+};
+
+namespace MidiOutputs
+{
+    bool KdmapiAvailable();                       // OmniMIDI.dll loads and reports KDMAPI available
+    std::wstring KdmapiName();
+    std::wstring KdmapiStatus();                  // one line for the Audio tab
+    std::unique_ptr< MidiOutput > OpenKdmapi();
+    std::unique_ptr< MidiOutput > OpenWinMM( int iDevice );
+    // The device chosen in the settings: KDMAPI when preferred and available, else the WinMM device
+    std::unique_ptr< MidiOutput > OpenConfigured();
+    // The name OpenConfigured would open now (empty when nothing would open)
+    std::wstring ConfiguredName();
+}

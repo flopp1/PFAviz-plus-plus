@@ -1,0 +1,27 @@
+# Build output
+/build/
+
+# Kept local, not published:
+#  - the original Piano From Above source, documents and sample songs (the reference for fidelity)
+#  - the fidelity harness and its build rules
+#  - development notes
+/PianoFromAbove/
+/Docs/
+/Music/
+/tools/
+/local.mk
+/DESIGN.md
+/PianoFromAbove Key Colouring and Note Layering.md
+
+# Original artwork the build does not use
+/res/Images/Partials/
+/res/Images/Install Header.bmp
+/res/Images/Mirror Wizard.bmp
+
+# Editor, tool and test output
+/.claude/
+/.vscode/
+/.vs/
+*.log
+*.mp4
+*.mkv

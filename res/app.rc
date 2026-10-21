@@ -1,0 +1,370 @@
+// PFAviz++ resource script (UTF-8). Trimmed port of the original PianoFromAbove.rc.
+#pragma code_page(65001)
+#include <windows.h>
+#include <commctrl.h>
+#include "resource.h"
+
+#ifndef IDC_STATIC
+#define IDC_STATIC (-1)
+#endif
+
+LANGUAGE LANG_ENGLISH, SUBLANG_ENGLISH_US
+
+1 RT_MANIFEST "app.manifest"
+
+/////////////////////////////////////////////////////////////////////////////
+// Dialogs
+
+IDD_ABOUT DIALOGEX 0, 0, 234, 169
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "PFAviz++"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    CONTROL         "",IDC_STATIC,"Static",SS_WHITERECT,0,1,234,147
+    CONTROL         "",IDC_PICTURE,"Static",SS_BITMAP,0,0,15,13
+    LTEXT           "PFAviz++\nBased on Piano From Above 1.1.0\n©2010 Brian Pantano",IDC_STATIC,88,7,139,29
+    LTEXT           "Enjoy",IDC_LICENSE,88,40,139,12
+    CONTROL         "",IDC_STATIC,"Static",SS_ETCHEDHORZ,1,147,233,1
+    DEFPUSHBUTTON   "OK",IDOK,177,151,50,14
+END
+
+IDD_PP1_VISUAL DIALOGEX 0, 0, 302, 212
+STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_DISABLED | WS_BORDER
+FONT 8, "MS Shell Dlg", 400, 0, 0x0
+BEGIN
+    LTEXT           "Keys to display:",IDC_STATIC,7,7,52,8
+    CONTROL         "Show all &128 keys",IDC_SHOWALL128KEYS,"Button",BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP,7,19,73,10
+    CONTROL         "&Show all 88 keys",IDC_SHOWALLKEYS,"Button",BS_AUTORADIOBUTTON | WS_TABSTOP,7,33,69,10
+    CONTROL         "S&how song keys",IDC_SHOWSONGKEYS,"Button",BS_AUTORADIOBUTTON | WS_TABSTOP,7,47,67,10
+    CONTROL         "Show &keys:",IDC_SHOWCUSTOMKEYS,"Button",BS_AUTORADIOBUTTON | WS_TABSTOP,7,62,53,10
+    COMBOBOX        IDC_FIRSTKEY,61,61,32,120,CBS_DROPDOWNLIST | WS_DISABLED | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "through",IDC_THROUGH,101,63,26,8,WS_DISABLED
+    COMBOBOX        IDC_LASTKEY,135,61,32,120,CBS_DROPDOWNLIST | WS_DISABLED | WS_VSCROLL | WS_TABSTOP
+    CONTROL         "&Don't hide controls toolbar in full screen mode",IDC_SHOWCONTROLS,
+                    "Button",BS_AUTOCHECKBOX | WS_TABSTOP,7,78,161,10
+    LTEXT           "Track colors:",IDC_STATIC,7,96,42,8
+    CONTROL         "",IDC_COLOR1,"Button",BS_OWNERDRAW,53,94,13,12,WS_EX_CLIENTEDGE
+    CONTROL         "",IDC_COLOR2,"Button",BS_OWNERDRAW,68,94,13,12,WS_EX_CLIENTEDGE
+    CONTROL         "",IDC_COLOR3,"Button",BS_OWNERDRAW,83,94,13,12,WS_EX_CLIENTEDGE
+    CONTROL         "",IDC_COLOR4,"Button",BS_OWNERDRAW,98,94,13,12,WS_EX_CLIENTEDGE
+    CONTROL         "",IDC_COLOR5,"Button",BS_OWNERDRAW,113,94,13,12,WS_EX_CLIENTEDGE
+    CONTROL         "",IDC_COLOR6,"Button",BS_OWNERDRAW,128,94,13,12,WS_EX_CLIENTEDGE
+    LTEXT           "Background color:",IDC_STATIC,155,96,58,8
+    CONTROL         "",IDC_BKGCOLOR,"Button",BS_OWNERDRAW,217,94,13,12,WS_EX_CLIENTEDGE
+    LTEXT           "Stats box:",IDC_STATIC,7,114,42,8
+    CONTROL         "Show t&ime",IDC_SHOWTIME,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,53,113,52,10
+    CONTROL         "Show &frame rate",IDC_DISPLAYFPS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,110,113,70,10
+    CONTROL         "Show sc&ore",IDC_SHOWSCORE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,185,113,55,10
+    PUSHBUTTON      "&Restore Defaults",IDC_RESTOREDEFAULTS,226,191,69,14
+END
+
+IDD_PP2_AUDIO DIALOGEX 0, 0, 300, 212
+STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_DISABLED | WS_CAPTION
+CAPTION "Property Page"
+FONT 8, "MS Shell Dlg", 400, 0, 0x0
+BEGIN
+    LTEXT           "MIDI &output device:",IDC_STATIC,7,7,65,8
+    LISTBOX         IDC_MIDIOUT,7,18,286,44,LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "KDMAPI:",IDC_STATIC,7,66,60,8
+    LTEXT           "",IDC_KDMAPISTATUS,7,76,286,44
+END
+
+IDD_PP4_CONTROLS DIALOGEX 0, 0, 300, 212
+STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_DISABLED | WS_CAPTION
+CAPTION "Property Page"
+FONT 8, "MS Shell Dlg", 400, 0, 0x0
+BEGIN
+    GROUPBOX        "General",IDC_STATIC,7,7,288,53
+    LTEXT           "&Left and right arrows advance by:",IDC_STATIC,13,20,110,8
+    EDITTEXT        IDC_LRARROWS,125,18,40,14,ES_AUTOHSCROLL
+    CONTROL         "",IDC_LRARROWSSPIN,"msctls_updown32",UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_ARROWKEYS,153,18,11,14
+    LTEXT           "seconds",IDC_STATIC,168,20,27,8
+    LTEXT           "&Up and down arrows speed up by:",IDC_STATIC,13,41,111,8
+    EDITTEXT        IDC_UDARROWS,125,39,40,14,ES_AUTOHSCROLL
+    CONTROL         "",IDC_UDARROWSSPIN,"msctls_updown32",UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_ARROWKEYS,153,39,11,14
+    LTEXT           "percent",IDC_STATIC,168,41,26,8
+END
+
+IDD_PP5_PERFORMANCE DIALOGEX 0, 0, 300, 290
+STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_DISABLED | WS_CAPTION
+CAPTION "Property Page"
+FONT 8, "MS Shell Dlg", 400, 0, 0x0
+BEGIN
+    GROUPBOX        "Loading and drawing",IDC_STATIC,7,7,286,102
+    LTEXT           "&Worker threads:",IDC_STATIC,13,21,60,8
+    COMBOBOX        IDC_PERF_THREADS,80,19,60,120,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Takes effect when the next file is opened.",IDC_STATIC,146,21,142,8
+    CONTROL         "Show loading &statistics after a file is loaded",IDC_PERF_LOADSTATS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,37,200,10
+    CONTROL         "C&ompact visual store (less memory, slightly slower drawing)",IDC_PERF_COMPACT,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,51,270,10
+    LTEXT           "&Block cache:",IDC_STATIC,13,67,60,8
+    EDITTEXT        IDC_PERF_CACHEMB,80,65,40,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "MB of decoded notes (compact store)",IDC_STATIC,124,67,164,8
+    CONTROL         "LOD c&ache (faster drawing of dense songs, built in the background)",IDC_PERF_LOD,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,82,270,10
+    CONTROL         "Ignore weird notes (keep only the &first pairing; not stock-exact)",IDC_PERF_IGNOREWEIRD,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,96,270,10
+    GROUPBOX        "Playback",IDC_STATIC,7,114,286,118
+    CONTROL         "Prefer &KDMAPI (OmniMIDI) when it is available",IDC_PERF_KDMAPI,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,127,200,10
+    CONTROL         "S&kip quiet notes while the synth lags (by velocity; off sends every event)",IDC_PERF_SKIPPING,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,142,275,10
+    LTEXT           "Start a&bove:",IDC_STATIC,25,160,50,8
+    EDITTEXT        IDC_PERF_MAXLAG,80,158,40,14,ES_AUTOHSCROLL | ES_NUMBER
+    CONTROL         "",IDC_PERF_MAXLAGSPIN,"msctls_updown32",UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_ARROWKEYS | UDS_SETBUDDYINT | UDS_NOTHOUSANDS,108,158,11,14
+    LTEXT           "ms of lag (all notes skipped at 4 times this lag)",IDC_STATIC,124,160,164,8
+    CONTROL         "Always skip notes &quieter than velocity",IDC_PERF_VELFLOOR,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,178,143,10
+    EDITTEXT        IDC_PERF_MINVEL,158,176,30,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "(1-128; their offs too)",IDC_STATIC,192,178,96,8
+    CONTROL         "Collaps&e stacked notes (one voice per channel, key and tick)",IDC_PERF_COLLAPSE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,194,275,10
+    CONTROL         "Li&mit sending to",IDC_PERF_SENDLIMIT,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,212,66,10
+    EDITTEXT        IDC_PERF_MAXSENDS,80,210,50,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "messages/s (quietest notes skipped first)",IDC_STATIC,134,212,154,8
+    GROUPBOX        "Display",IDC_STATIC,7,237,286,46
+    CONTROL         "&Limit frame rate",IDC_LIMITFPS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,250,100,10
+    PUSHBUTTON      "Render &video...",IDC_PERF_VIDEO,13,263,80,14
+    CONTROL         "Enable e&xtra statistics (NPS, polyphony)",IDC_PERF_EXTRASTATS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,120,250,170,10
+    CONTROL         "Debug s&tatistics (synth, events, frame-time)",IDC_PERF_PLAYSTATS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,120,264,170,10
+END
+
+IDD_VIDEOEXPORT DIALOGEX 0, 0, 300, 206
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Render Video"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    GROUPBOX        "Offline MP4 rendering",IDC_STATIC,7,7,286,172
+    LTEXT           "&Output file:",IDC_STATIC,13,20,60,8
+    EDITTEXT        IDC_VID_FILE,13,31,218,14,ES_AUTOHSCROLL
+    PUSHBUTTON      "&Browse...",IDC_VID_BROWSE,236,31,50,14
+    CONTROL         "Use &window size",IDC_VID_WINDOWSIZE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,55,70,10
+    LTEXT           "&Resolution:",IDC_STATIC,88,56,38,8
+    COMBOBOX        IDC_VID_RES,128,53,90,120,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    EDITTEXT        IDC_VID_WIDTH,222,53,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    CTEXT           "x",IDC_STATIC,250,56,8,8
+    EDITTEXT        IDC_VID_HEIGHT,258,53,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "&Frame rate:",IDC_STATIC,13,77,64,8
+    EDITTEXT        IDC_VID_FPS,80,75,32,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "fps (1-240)",IDC_STATIC,117,77,80,8
+    LTEXT           "H.264 &quality (CRF):",IDC_STATIC,13,96,66,8
+    EDITTEXT        IDC_VID_CRF,80,94,32,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "0-51; lower is better",IDC_STATIC,117,96,100,8
+    LTEXT           "Encoder &preset:",IDC_STATIC,13,115,64,8
+    COMBOBOX        IDC_VID_PRESET,80,113,72,120,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    CONTROL         "Show the &stats area (top-right corner)",IDC_VID_STATS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,132,200,10
+    LTEXT           "The whole song is rendered off-screen at the selected resolution (keyboard and notes, with the current view and note speed; no sound) and encoded by ffmpeg, from the PATH or the current folder.",IDC_STATIC,13,146,274,26
+    DEFPUSHBUTTON   "&Start rendering",IDOK,7,185,80,14
+    PUSHBUTTON      "Close",IDCANCEL,243,185,50,14
+END
+
+IDD_VIDEOPROGRESS DIALOGEX 0, 0, 300, 236
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION
+CAPTION "Rendering Video - PFAviz++"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    LTEXT           "",IDC_VIDP_FILE,7,7,286,8,SS_PATHELLIPSIS | SS_NOPREFIX
+    CONTROL         "",IDC_VIDP_PREVIEW,"Static",SS_OWNERDRAW,7,19,286,148
+    CONTROL         "",IDC_VIDP_BAR,"msctls_progress32",WS_BORDER,7,172,286,10
+    LTEXT           "Starting...",IDC_VIDP_STATUS,7,186,286,26,SS_NOPREFIX
+    PUSHBUTTON      "Cancel",IDCANCEL,243,215,50,14
+END
+
+IDD_TRACKSETTINGS DIALOGEX 0, 0, 301, 183
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Track Settings"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    LTEXT           "File:",IDC_STATIC,7,7,14,8
+    EDITTEXT        IDC_FILE,50,7,244,8,ES_AUTOHSCROLL | ES_READONLY | NOT WS_BORDER | NOT WS_TABSTOP
+    LTEXT           "Folder:",IDC_STATIC,7,17,24,8
+    EDITTEXT        IDC_FOLDER,50,17,244,8,ES_AUTOHSCROLL | ES_READONLY | NOT WS_BORDER | NOT WS_TABSTOP
+    LTEXT           "Notes:",IDC_STATIC,7,27,22,8
+    EDITTEXT        IDC_NOTES,50,27,244,8,ES_AUTOHSCROLL | ES_READONLY | NOT WS_BORDER | NOT WS_TABSTOP
+    LTEXT           "Length:",IDC_STATIC,7,37,26,8
+    EDITTEXT        IDC_LENGTH,50,37,244,8,ES_AUTOHSCROLL | ES_READONLY | NOT WS_BORDER | NOT WS_TABSTOP
+    CONTROL         "",IDC_TRACKS,"SysListView32",LVS_REPORT | LVS_SINGLESEL | LVS_ALIGNLEFT | LVS_OWNERDATA | WS_BORDER | WS_TABSTOP,7,50,287,108
+    DEFPUSHBUTTON   "OK",IDOK,189,162,50,14
+    PUSHBUTTON      "Cancel",IDCANCEL,244,162,50,14
+END
+
+IDD_LOADING DIALOGEX 0, 0, 324, 251
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Loading - PFAviz++"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    LTEXT           "",IDC_LOAD_FILE,7,7,310,10,SS_PATHELLIPSIS | SS_NOPREFIX
+    LTEXT           "",1210,7,25,96,8
+    CONTROL         "",1220,"msctls_progress32",PBS_SMOOTH | WS_BORDER,106,24,150,10
+    RTEXT           "",1230,260,25,57,8
+    LTEXT           "",1211,7,40,96,8
+    CONTROL         "",1221,"msctls_progress32",PBS_SMOOTH | WS_BORDER,106,39,150,10
+    RTEXT           "",1231,260,40,57,8
+    LTEXT           "",1212,7,55,96,8
+    CONTROL         "",1222,"msctls_progress32",PBS_SMOOTH | WS_BORDER,106,54,150,10
+    RTEXT           "",1232,260,55,57,8
+    LTEXT           "",1213,7,70,96,8
+    CONTROL         "",1223,"msctls_progress32",PBS_SMOOTH | WS_BORDER,106,69,150,10
+    RTEXT           "",1233,260,70,57,8
+    LTEXT           "",1214,7,85,96,8
+    CONTROL         "",1224,"msctls_progress32",PBS_SMOOTH | WS_BORDER,106,84,150,10
+    RTEXT           "",1234,260,85,57,8
+    LTEXT           "",1215,7,100,96,8
+    CONTROL         "",1225,"msctls_progress32",PBS_SMOOTH | WS_BORDER,106,99,150,10
+    RTEXT           "",1235,260,100,57,8
+    LTEXT           "Overall",IDC_LOAD_OVERALLLABEL,7,120,96,8
+    CONTROL         "",IDC_LOAD_OVERALL,"msctls_progress32",PBS_SMOOTH | WS_BORDER,106,119,150,10
+    LTEXT           "",IDC_LOAD_COUNTERS,7,137,310,80
+    EDITTEXT        IDC_LOAD_STATS,7,22,310,201,ES_MULTILINE | ES_READONLY | ES_AUTOVSCROLL | WS_VSCROLL | NOT WS_VISIBLE
+    PUSHBUTTON      "&Copy stats",IDC_LOAD_COPY,7,230,60,14,NOT WS_VISIBLE
+    PUSHBUTTON      "Cancel",IDCANCEL,267,230,50,14
+END
+
+/////////////////////////////////////////////////////////////////////////////
+// Menus
+
+IDM_MAINMENU MENU
+BEGIN
+    POPUP "&File"
+    BEGIN
+        MENUITEM "&Practice Song...\tCtrl+O",   ID_FILE_PRACTICESONG
+        MENUITEM "P&ractice Using Custom Settings...", ID_FILE_PRACTICESONGCUSTOM
+        MENUITEM "&Close File\tCtrl+W",         ID_FILE_CLOSEFILE
+    END
+    POPUP "&Play"
+    BEGIN
+        MENUITEM "&Play/Pause\tSpace",          ID_PLAY_PLAYPAUSE
+        MENUITEM "&Stop\tPeriod",               ID_PLAY_STOP
+        MENUITEM "Skip &Fwd\tRight",            ID_PLAY_SKIPFWD
+        MENUITEM "Skip &Back\tLeft",            ID_PLAY_SKIPBACK
+        MENUITEM SEPARATOR
+        MENUITEM "F&aster Playback\tDown",      ID_PLAY_INCREASERATE
+        MENUITEM "Sl&ower Playback\tUp",        ID_PLAY_DECREASERATE
+        MENUITEM "&Reset\tR",                   ID_PLAY_RESETRATE
+        MENUITEM SEPARATOR
+        MENUITEM "Faster &Notes\tShift+Down",   ID_PLAY_NFASTER
+        MENUITEM "Slower No&tes\tShift+Up",     ID_PLAY_NSLOWER
+        MENUITEM SEPARATOR
+        MENUITEM "&Volume Up\tAlt+Up",          ID_PLAY_VOLUMEUP
+        MENUITEM "V&olume Down\tAlt+Down",      ID_PLAY_VOLUMEDOWN
+        MENUITEM "&Mute\tM",                    ID_PLAY_MUTE
+    END
+    POPUP "&View"
+    BEGIN
+        MENUITEM "&Playback Toolbar\tCtrl+T",   ID_VIEW_CONTROLS, CHECKED
+        MENUITEM "&Keyboard\tCtrl+K",           ID_VIEW_KEYBOARD, CHECKED
+        MENUITEM SEPARATOR
+        MENUITEM "&Always On Top\tCtrl+A",      ID_VIEW_ALWAYSONTOP
+        MENUITEM SEPARATOR
+        MENUITEM "&Full Screen\tAlt+Enter",     ID_VIEW_FULLSCREEN
+        MENUITEM "Mo&ve and Zoom\tCtrl+V",      ID_VIEW_MOVEANDZOOM
+        MENUITEM "Reset Move and &Zoom\tCtrl+Z", ID_VIEW_RESETMOVEANDZOOM
+    END
+    POPUP "&Options"
+    BEGIN
+        MENUITEM "&Preferences...\tCtrl+P",     ID_OPTIONS_PREFERENCES
+    END
+    POPUP "&Help"
+    BEGIN
+        MENUITEM "&About PFAviz++...",          ID_HELP_ABOUT
+    END
+END
+
+IDR_CONTEXTMENU MENU
+BEGIN
+    POPUP "Graphics"
+    BEGIN
+        POPUP "&File"
+        BEGIN
+            MENUITEM "&Practice Song...\tCtrl+O",   ID_FILE_PRACTICESONG
+            MENUITEM "P&ractice Using Custom Settings...", ID_FILE_PRACTICESONGCUSTOM
+            MENUITEM "&Close File\tCtrl+W",         ID_FILE_CLOSEFILE
+        END
+        POPUP "&View"
+        BEGIN
+            MENUITEM "&Playback Toolbar\tCtrl+T",   ID_VIEW_CONTROLS, CHECKED
+            MENUITEM "&Keyboard\tCtrl+K",           ID_VIEW_KEYBOARD, CHECKED
+            MENUITEM SEPARATOR
+            MENUITEM "&Always On Top\tCtrl+A",      ID_VIEW_ALWAYSONTOP
+            MENUITEM SEPARATOR
+            MENUITEM "&Full Screen\tAlt+Enter",     ID_VIEW_FULLSCREEN
+            MENUITEM "Mo&ve and Zoom\tCtrl+V",      ID_VIEW_MOVEANDZOOM
+            MENUITEM "Reset Move and &Zoom\tCtrl+Z", ID_VIEW_RESETMOVEANDZOOM
+        END
+        MENUITEM "Preferences...\tCtrl+P",      ID_OPTIONS_PREFERENCES
+        MENUITEM SEPARATOR
+        MENUITEM "&Play/Pause\tSpace",          ID_PLAY_PLAYPAUSE
+        MENUITEM "&Stop\tPeriod",               ID_PLAY_STOP
+        MENUITEM "Skip &Fwd\tRight",            ID_PLAY_SKIPFWD
+        MENUITEM "Skip &Back\tLeft",            ID_PLAY_SKIPBACK
+        MENUITEM SEPARATOR
+        MENUITEM "F&aster Playback\tDown",      ID_PLAY_INCREASERATE
+        MENUITEM "Sl&ower Playback\tUp",        ID_PLAY_DECREASERATE
+        MENUITEM "&Reset\tR",                   ID_PLAY_RESETRATE
+        MENUITEM SEPARATOR
+        MENUITEM "Faster &Notes\tShift+Down",   ID_PLAY_NFASTER
+        MENUITEM "Slower No&tes\tShift+Up",     ID_PLAY_NSLOWER
+        MENUITEM SEPARATOR
+        MENUITEM "Volume &Up\tAlt+Up",          ID_PLAY_VOLUMEUP
+        MENUITEM "Volume &Down\tAlt+Down",      ID_PLAY_VOLUMEDOWN
+        MENUITEM "&Mute\tCtrl+M",               ID_PLAY_MUTE
+    END
+END
+
+/////////////////////////////////////////////////////////////////////////////
+// Accelerators
+
+IDA_MAINMENU ACCELERATORS
+BEGIN
+    "W",            ID_FILE_CLOSEFILE,      VIRTKEY, CONTROL, NOINVERT
+    "O",            ID_FILE_PRACTICESONG,   VIRTKEY, CONTROL, NOINVERT
+    "P",            ID_OPTIONS_PREFERENCES, VIRTKEY, CONTROL, NOINVERT
+    VK_DOWN,        ID_PLAY_INCREASERATE,   VIRTKEY, CONTROL, NOINVERT
+    "M",            ID_PLAY_MUTE,           VIRTKEY, CONTROL, NOINVERT
+    VK_DOWN,        ID_PLAY_NFASTER,        VIRTKEY, SHIFT, NOINVERT
+    "R",            ID_PLAY_NRESET,         VIRTKEY, SHIFT, NOINVERT
+    VK_UP,          ID_PLAY_NSLOWER,        VIRTKEY, SHIFT, NOINVERT
+    VK_SPACE,       ID_PLAY_PLAYPAUSE,      VIRTKEY, CONTROL, NOINVERT
+    "R",            ID_PLAY_RESETRATE,      VIRTKEY, CONTROL, NOINVERT
+    VK_LEFT,        ID_PLAY_SKIPBACK,       VIRTKEY, CONTROL, NOINVERT
+    VK_RIGHT,       ID_PLAY_SKIPFWD,        VIRTKEY, CONTROL, NOINVERT
+    VK_UP,          ID_PLAY_DECREASERATE,   VIRTKEY, CONTROL, NOINVERT
+    VK_OEM_PERIOD,  ID_PLAY_STOP,           VIRTKEY, CONTROL, NOINVERT
+    VK_DOWN,        ID_PLAY_VOLUMEDOWN,     VIRTKEY, ALT, NOINVERT
+    VK_UP,          ID_PLAY_VOLUMEUP,       VIRTKEY, ALT, NOINVERT
+    "A",            ID_VIEW_ALWAYSONTOP,    VIRTKEY, CONTROL, NOINVERT
+    "T",            ID_VIEW_CONTROLS,       VIRTKEY, CONTROL, NOINVERT
+    VK_RETURN,      ID_VIEW_FULLSCREEN,     VIRTKEY, ALT, NOINVERT
+    "K",            ID_VIEW_KEYBOARD,       VIRTKEY, CONTROL, NOINVERT
+    "V",            ID_VIEW_MOVEANDZOOM,    VIRTKEY, CONTROL, NOINVERT
+    VK_ESCAPE,      ID_VIEW_NOFULLSCREEN,   VIRTKEY, NOINVERT
+    "Z",            ID_VIEW_RESETMOVEANDZOOM, VIRTKEY, CONTROL, NOINVERT
+END
+
+/////////////////////////////////////////////////////////////////////////////
+// Bitmaps, icons, splash song
+
+IDB_MEDIAICONSSMALL     BITMAP                  "Images/mediaiconssmall.bmp"
+IDB_SPLASH              BITMAP                  "Images/Mirror Small.bmp"
+IDI_PFAICON             ICON                    "Images/PFA Icon.ico"
+IDI_WELCOME             ICON                    "Images/Welcome.ico"
+IDR_SPLASHMIDI          MIDI                    "Images/Godowsky - Study of Chopin Etude Op. 10, No. 1.mid"
+
+/////////////////////////////////////////////////////////////////////////////
+// Version
+
+1 VERSIONINFO
+FILEVERSION 0,1,0,0
+PRODUCTVERSION 0,1,0,0
+FILEOS VOS_NT_WINDOWS32
+FILETYPE VFT_APP
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "FileDescription", "PFAviz++"
+            VALUE "ProductName", "PFAviz++"
+            VALUE "FileVersion", "0.1.0"
+            VALUE "ProductVersion", "0.1.0"
+            VALUE "OriginalFilename", "PFAviz++.exe"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END
