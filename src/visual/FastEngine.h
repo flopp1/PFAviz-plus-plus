@@ -79,8 +79,10 @@ public:
 
 private:
     // A note that owns at least one pixel row, with what drawing it needs. Its rects are drawn only
-    // over rows [iRowA, iRowB), the span of the rows it owns (iRowA == INT_MIN: drawn whole)
-    struct Owner { uint64_t llPos; long long llStart, llEnd; uint32_t uSlot; int iRowA, iRowB; };
+    // over rows [iRowA, iRowB), the span of the rows it owns (iRowA == INT_MIN: drawn whole).
+    // bShort: its inner rect is empty (at most 2 * deflate rows tall), so what it draws is just its
+    // outer rect over that span, in the very dark colour
+    struct Owner { uint64_t llPos; long long llStart, llEnd; uint32_t uSlot; int iRowA, iRowB; bool bShort; };
     struct KeyCols { int iKey; int iLo, iHi; bool bDegenerate; };          // a key's pixel columns this frame
     struct MergeItem { uint64_t llU, llOrder; int iKey; uint64_t llIdx; };   // an owner of keys that may share a column
     struct Bounds
@@ -93,6 +95,7 @@ private:
     {
         long long R = 0, llSpan = 1, llUsPP = 1;
         float fNotesY = 0, fNotesCY = 1;
+        float fDeflate = 1;             // the inner rect's inset, as Scene::GetNoteKey
         int iRowLo = 0, iRowHi = 0;     // composited rows
         int iThetaLo = 0;
         std::vector< long long > vTheta; // min d with Beta(d) <= b, for b = iThetaLo ...

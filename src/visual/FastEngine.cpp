@@ -223,6 +223,9 @@ void FastEngine::PrepareFrame( const FrameGlobals &g )
     F.llUsPP = std::max( 1LL, static_cast< long long >( g.llTimeSpan / g.fNotesCY + 0.5f ) );   // as Scene::ComputeGlobals
     F.fNotesY = g.fNotesY;
     F.fNotesCY = g.fNotesCY;
+    float fDeflate = g.fWhiteCX * 0.15f / 2.0f;
+    fDeflate = floor( fDeflate + 0.5f );
+    F.fDeflate = std::max( std::min( fDeflate, 3.0f ), 1.0f );
     float fMinY = g.fNotesY - 5.0f, fMaxY = g.fNotesY + g.fNotesCY + 5.0f;
     F.iRowLo = std::max( 0, (int)std::ceil( fMinY - 0.5f ) );
     F.iRowHi = std::min( g.iBufferHeight, (int)std::ceil( fMaxY - 0.5f ) );
@@ -300,14 +303,14 @@ void FastEngine::SweepKey( const VisualStore &S, const uint64_t *pCpos, int k, c
             iQueries++;
             ks.Get( (size_t)j, n );
             if ( Visible( S, pCpos, k, (size_t)j, n, bd ) && !Hidden( n.uSlot ) )
-                vOwners.push_back( { (uint64_t)j, Time( n.llStartU ), Time( n.llEndU ), n.uSlot, INT_MIN, 0 } );
+                vOwners.push_back( { (uint64_t)j, Time( n.llStartU ), Time( n.llEndU ), n.uSlot, INT_MIN, 0, false } );
             hi = (size_t)j;
         }
         std::reverse( vOwners.begin(), vOwners.end() );
         for ( size_t i = bd.iB; i < bd.iE; i++ )
         {
             ks.Get( i, n );
-            if ( !n.bUnpaired && !Hidden( n.uSlot ) ) vOwners.push_back( { i, Time( n.llStartU ), Time( n.llEndU ), n.uSlot, INT_MIN, 0 } );
+            if ( !n.bUnpaired && !Hidden( n.uSlot ) ) vOwners.push_back( { i, Time( n.llStartU ), Time( n.llEndU ), n.uSlot, INT_MIN, 0, false } );
         }
         return;
     }
@@ -337,9 +340,12 @@ void FastEngine::SweepKey( const VisualStore &S, const uint64_t *pCpos, int k, c
     // rows that were still unpainted (empty span: owns nothing). Drawing only that span is exact:
     // a row in it that the note does not own is owned by a note drawn later, which covers it again.
     auto Paint = [&]( uint64_t llPos, long long s, long long e, uint32_t uSlot ) -> Owner {
-        Owner o = { llPos, s, e, uSlot, INT_MAX, INT_MIN };
+        Owner o = { llPos, s, e, uSlot, INT_MAX, INT_MIN, false };
         int a, b;
         if ( !Coverage( s, e, a, b ) ) return o;
+        // [a, b) is the clipped outer rect (b - a its height cy), which the inner rect insets by
+        // fDeflate on each side: nothing of it is drawn when cy <= 2 * fDeflate
+        o.bShort = (float)( b - a ) <= F.fDeflate * 2.0f;
         a = std::max( a, F.iRowLo ) - F.iRowLo;
         b = std::min( b, F.iRowHi ) - F.iRowLo;
         for ( int r = a; r < b; )
@@ -614,11 +620,61 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
         // not overlap and nothing is drawn between them, so the pixels are the same
         bool bPrevFlat = false;
         size_t iMerged = 0;
+        // Short owners skip NoteVertices: their outer rect clipped to the owned span is exactly the
+        // span's vertex rows (iRowA - 0.5 to iRowB - 0.5) in the key's outer columns
+        Renderer::SCREEN_VERTEX aCol[2];
+        Renderer::RectVertices( nk.x, 0.0f, nk.cx, 1.0f, 0, 0, 0, 0, aCol );
+        const float fX0 = aCol[0].x, fX1 = aCol[1].x;
+        const bool bShortPath = !m_bPixelStats && fX1 > fX0;
         for ( size_t o = 0; o < m_aOwners[k].size(); o++ )
         {
             vStart[o] = (uint32_t)iOut;
             const Owner &ow = m_aOwners[k][o];
             const ChannelSettings &cs = vTracks[ow.uSlot >> 4].aChannels[ow.uSlot & 15];
+            if ( bShortPath && ow.bShort && ow.iRowA != INT_MIN )
+            {
+                if ( ow.iRowA >= ow.iRowB ) continue;       // owns nothing
+                const float y0 = ow.iRowA - 0.5f, y1 = ow.iRowB - 0.5f;
+                const D3DCOLOR c = cs.iVeryDarkRGB;
+                if ( bInst )
+                {
+                    if ( bPrevFlat )
+                    {
+                        Renderer::NoteInstance &q = vInst[iOut - 1];
+                        if ( q.cOuter == c )
+                        {
+                            if ( q.y[0] == y1 ) { q.y[0] = y0; iMerged++; continue; }
+                            if ( q.y[1] == y0 ) { q.y[1] = y1; iMerged++; continue; }
+                        }
+                    }
+                    Renderer::NoteInstance &in = vInst[iOut++];
+                    in.y[0] = y0;
+                    in.y[1] = y1;
+                    in.y[2] = in.y[3] = y0;
+                    in.cOuter = in.cLeft = in.cRight = c;
+                    in.fKey = (float)k;
+                }
+                else
+                {
+                    if ( bPrevFlat )
+                    {
+                        Renderer::SCREEN_VERTEX *q = &vVerts[iOut - 4];
+                        if ( q[0].color == c && q[0].x == fX0 && q[1].x == fX1 )
+                        {
+                            if ( q[0].y == y1 ) { q[0].y = q[1].y = y0; iMerged++; continue; }
+                            if ( q[2].y == y0 ) { q[2].y = q[3].y = y1; iMerged++; continue; }
+                        }
+                    }
+                    Renderer::SCREEN_VERTEX *p = &vVerts[iOut];
+                    p[0] = { fX0, y0, 0.5f, 1.0f, c };
+                    p[1] = { fX1, y0, 0.5f, 1.0f, c };
+                    p[2] = { fX1, y1, 0.5f, 1.0f, c };
+                    p[3] = { fX0, y1, 0.5f, 1.0f, c };
+                    iOut += 4;
+                }
+                bPrevFlat = abMerge[k];
+                continue;
+            }
             Scene::NoteVertices( g, nk, ow.llStart, ow.llEnd, cs, aNote );
             bool abDraw[2] = { false, false };
             for ( int r = 0; r < 12; r += 6 )
