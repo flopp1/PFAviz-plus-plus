@@ -332,8 +332,8 @@ struct Song
     VisualStore visual;                     // notes per key, paired (built by BuildVisualStore)
     NoteStats noteStats;                    // for the overlay's extra statistics (built with visual, when asked for)
     VelocityBins aSendOns[2];               // [0] every note-on, [1] as collapsed (BuildSendCounts)
-    // "Ignore weird notes": a note re-paired by a later off keeps its first pairing, so the song has no
-    // weird notes (DESIGN.md 6.3): one pairing pass, but those notes end earlier than in the original
+    // "End weird notes at their first note-off": a note re-paired by a later off keeps its first pairing
+    // (DESIGN.md 6.3); by default it ends at the later off instead
     bool bFirstPairingOnly = false;
     size_t MemoryBytes() const;
     void BuildChaseIndex( int iThreads );

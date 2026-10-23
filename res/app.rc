@@ -99,7 +99,7 @@ BEGIN
     EDITTEXT        IDC_PERF_CACHEMB,80,65,40,14,ES_AUTOHSCROLL | ES_NUMBER
     LTEXT           "MB of decoded notes (compact store)",IDC_STATIC,124,67,164,8
     CONTROL         "LOD c&ache (faster drawing of dense songs, built in the background)",IDC_PERF_LOD,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,82,270,10
-    CONTROL         "Ignore weird notes (keep only the &first pairing; not stock-exact)",IDC_PERF_IGNOREWEIRD,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,96,270,10
+    CONTROL         "End weird notes at their &first note-off (keep the first pairing)",IDC_PERF_IGNOREWEIRD,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,96,270,10
     GROUPBOX        "Playback",IDC_STATIC,7,114,286,118
     CONTROL         "Prefer &KDMAPI (OmniMIDI) when it is available",IDC_PERF_KDMAPI,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,127,200,10
     CONTROL         "S&kip quiet notes while the synth lags (by velocity; off sends every event)",IDC_PERF_SKIPPING,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,142,275,10

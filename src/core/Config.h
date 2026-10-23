@@ -112,7 +112,7 @@ struct PerformanceSettings
     bool bCompactVisual;
     int iBlockCacheMB;
     bool bLodCache;             // the fast renderer's LOD cache (DESIGN.md 8.11)
-    bool bIgnoreWeird;          // keep each note's first pairing (Song::bFirstPairingOnly), off: stock-exact
+    bool bIgnoreWeird;          // keep each note's first pairing (Song::bFirstPairingOnly); off: weird notes end at their later off
     bool bShowLoadStats;
 };
 

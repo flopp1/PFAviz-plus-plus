@@ -695,14 +695,10 @@ public:
             if ( !IsLive( pos ) ) Resolve( pos );
             return;
         }
-        if ( IsPaired( pos ) )
-        {
-            // Re-paired: the original's sister moves to this off, and both offs remove it (DESIGN.md 6.3)
-            if ( e.aPairs[j] == 1 ) m_vWeirdTmp.push_back( { pos, { e.EndU( j ), RankOf( pos ) } } );
-            m_vWeirdTmp.push_back( { pos, { llU, uOrd } } );
-            m_bWeird = true;
-            if ( m_pWeirdSeen ) m_pWeirdSeen->store( true, std::memory_order_relaxed );
-        }
+        // Re-paired (DESIGN.md 6.3): the original's sister moves to this off, its own stack's, and the
+        // note ends here. (The original also lets the first off, which another channel's overflowing
+        // stack gave it, take it out of the drawn state; here only this one does, so the note is an
+        // ordinary note to its drawn end and the song has no weird notes.)
         if ( e.aPairs[j] < 255 ) e.aPairs[j]++;
         e.SetEndU( j, llU );
         SetRank( pos, uOrd );
