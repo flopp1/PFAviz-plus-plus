@@ -299,6 +299,7 @@ void PerformanceSettings::LoadDefaultValues()
     bCompactVisual = false;
     iBlockCacheMB = 64;
     bLodCache = true;
+    bGpuInstancing = false;
     bShowLoadStats = true;
 }
 
@@ -317,6 +318,7 @@ void PerformanceSettings::Load( const IniFile &ini )
     bCompactVisual = ini.GetBool( "Performance", "CompactVisual", bCompactVisual );
     iBlockCacheMB = std::clamp( ini.GetInt( "Performance", "BlockCacheMB", iBlockCacheMB ), 16, 65536 );
     bLodCache = ini.GetBool( "Performance", "LodCache", bLodCache );
+    bGpuInstancing = ini.GetBool( "Performance", "GpuInstancing", bGpuInstancing );
     bShowLoadStats = ini.GetBool( "Performance", "ShowLoadStats", bShowLoadStats );
 }
 
@@ -335,6 +337,7 @@ void PerformanceSettings::Save( IniFile &ini ) const
     ini.SetInt( "Performance", "CompactVisual", bCompactVisual );
     ini.SetInt( "Performance", "BlockCacheMB", iBlockCacheMB );
     ini.SetInt( "Performance", "LodCache", bLodCache );
+    ini.SetInt( "Performance", "GpuInstancing", bGpuInstancing );
     ini.SetInt( "Performance", "ShowLoadStats", bShowLoadStats );
 }
 

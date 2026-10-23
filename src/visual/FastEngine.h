@@ -159,8 +159,9 @@ private:
 
     std::vector< Owner > m_aOwners[128];
     std::vector< Renderer::SCREEN_VERTEX > m_aVerts[128];   // the owners' rects as quads (Renderer::DrawQuads), in owner order; only grows
-    size_t m_aVertCount[128] = {};                          // vertices in use in m_aVerts
-    std::vector< uint32_t > m_aVertStart[128];              // first vertex of each owner (+ end)
+    std::vector< Renderer::NoteInstance > m_aInst[128];     // the same as instances (Renderer::InstancingOn); only grows
+    size_t m_aVertCount[128] = {};                          // vertices (instances) in use in m_aVerts (m_aInst)
+    std::vector< uint32_t > m_aVertStart[128];              // first vertex (instance) of each owner (+ end)
     FrameStats m_Stats;
     bool m_bPixelStats = false;
 

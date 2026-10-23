@@ -105,6 +105,7 @@
 #define IDC_PERF_IGNOREWEIRD            1088
 #define IDC_PERF_VELFLOOR               1089
 #define IDC_PERF_MINVEL                 1090
+#define IDC_PERF_INSTANCING             1091
 
 // Video rendering
 #define IDC_VID_FILE                    1300

@@ -449,8 +449,8 @@ static LRESULT WINAPI BarProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam
                         else cPlayback.SetSpeed( iPos / 100.0, false );
                         return 0;
                     case IDC_NSPEED:
-                        // Snaps to the default around the middle
-                        if ( std::abs( iPos - NSpeedSteps / 2 ) < 8 && iPos != NSpeedSteps / 2 ) cPlayback.SetNSpeed( NSpeedMid, true );
+                        // Snaps to the default around the middle, as wide as the speed slider's snap (8 of 190)
+                        if ( std::abs( iPos - NSpeedSteps / 2 ) < NSpeedSteps * 8 / 190 && iPos != NSpeedSteps / 2 ) cPlayback.SetNSpeed( NSpeedMid, true );
                         else cPlayback.SetNSpeed( SliderToNSpeed( iPos ), false );
                         return 0;
                 }

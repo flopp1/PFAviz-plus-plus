@@ -113,6 +113,7 @@ struct PerformanceSettings
     int iBlockCacheMB;
     bool bLodCache;             // the fast renderer's LOD cache (DESIGN.md 8.11)
     bool bIgnoreWeird;          // keep each note's first pairing (Song::bFirstPairingOnly); off: weird notes end at their later off
+    bool bGpuInstancing;        // notes drawn by Renderer::DrawNoteInstances (not pixel-exact), off by default
     bool bShowLoadStats;
 };
 

@@ -2,14 +2,56 @@
 
 #include "render/Text.h"
 
+#include <d3dcompiler.h>
+
 #include <algorithm>
 #include <cstring>
+
+namespace
+{
+    // Instanced notes. Each corner of the template picks its x column, its y and its colour with
+    // one-hot weights, so the selection is exact (products with 0 and 1, sums with 0). The columns
+    // arrive in clip space; y is mapped here.
+    const char *InstanceVS = R"(
+float4 cCols[128] : register( c0 );     // clip-space x: outer left, outer right, inner left, inner right
+float4 cY : register( c128 );           // y scale, y offset
+struct VIn
+{
+    float4 xs : POSITION0;
+    float4 ys : TEXCOORD0;
+    float4 cs : TEXCOORD1;
+    float4 y : TEXCOORD2;
+    float4 c0 : TEXCOORD3;
+    float4 c1 : TEXCOORD4;
+    float4 c2 : TEXCOORD5;
+    float key : TEXCOORD6;
+};
+struct VOut { float4 pos : POSITION; float4 col : COLOR0; };
+VOut main( VIn i )
+{
+    VOut o;
+    float x = dot( cCols[(int)i.key], i.xs );
+    float y = dot( i.y, i.ys );
+    o.pos = float4( x, y * cY.x + cY.y, 0.5, 1.0 );
+    o.col = i.c0 * i.cs.x + i.c1 * i.cs.y + i.c2 * i.cs.z;
+    return o;
+}
+)";
+    const char *InstancePS = R"(
+float4 main( float4 c : COLOR0 ) : COLOR { return c; }
+)";
+
+    struct TemplateVertex { float xs[4], ys[4], cs[4]; };
+}
 
 Renderer::Renderer() { m_vVerts.reserve( VBVertices ); }
 
 Renderer::~Renderer()
 {
     DestroyDeviceObjects();
+    if ( m_pInstVS ) m_pInstVS->Release();
+    if ( m_pInstPS ) m_pInstPS->Release();
+    if ( m_pInstDecl ) m_pInstDecl->Release();
     delete m_pText;
     if ( m_pDevice ) m_pDevice->Release();
     if ( m_pD3D ) m_pD3D->Release();
@@ -174,6 +216,8 @@ HRESULT Renderer::RestoreDeviceObjects()
     m_uVBPos = 0;
     m_vVerts.clear();
     m_vQuads.clear();
+    m_vInst.clear();
+    CreateInstancing();
     m_pText->OnResetDevice();
     RestoreStates();
     return S_OK;
@@ -185,6 +229,9 @@ void Renderer::DestroyDeviceObjects()
     if ( m_pText ) m_pText->OnLostDevice();
     if ( m_pVB ) { m_pVB->Release(); m_pVB = nullptr; }
     if ( m_pIB ) { m_pIB->Release(); m_pIB = nullptr; }
+    if ( m_pTmplVB ) { m_pTmplVB->Release(); m_pTmplVB = nullptr; }
+    if ( m_pTmplIB ) { m_pTmplIB->Release(); m_pTmplIB = nullptr; }
+    if ( m_pInstVB ) { m_pInstVB->Release(); m_pInstVB = nullptr; }
     m_bIsDeviceValid = false;
 }
 
@@ -360,6 +407,7 @@ void Renderer::DrawQuads( const SCREEN_VERTEX *pVerts, size_t iQuads )
         if ( !m_pVB || !m_pIB ) return;
     }
     if ( !m_vVerts.empty() ) FlushBuffer();
+    FlushInstances();
     if ( iQuads < 1024 )
     {
         m_vQuads.insert( m_vQuads.end(), pVerts, pVerts + iQuads * 4 );
@@ -373,6 +421,7 @@ void Renderer::DrawQuads( const SCREEN_VERTEX *pVerts, size_t iQuads )
 
 void Renderer::FlushQuads()
 {
+    FlushInstances();
     if ( m_vQuads.empty() ) return;
     if ( m_pVB && m_pIB ) SubmitQuads( m_vQuads.data(), m_vQuads.size() / 4 );
     m_vQuads.clear();
@@ -429,4 +478,155 @@ void Renderer::Submit( const SCREEN_VERTEX *pVerts, size_t iCount )
         m_uVBPos += uCount;
         iDone += uCount;
     }
+}
+
+//-----------------------------------------------------------------------------
+// Instanced notes
+//-----------------------------------------------------------------------------
+
+void Renderer::CreateInstancing()
+{
+    // Shaders and declaration once per device; vs_3_0 and ps_3_0 (instancing needs vs_3_0)
+    if ( !m_pInstVS )
+    {
+        D3DCAPS9 caps;
+        if ( FAILED( m_pDevice->GetDeviceCaps( &caps ) ) || caps.VertexShaderVersion < D3DVS_VERSION( 3, 0 ) || caps.PixelShaderVersion < D3DPS_VERSION( 3, 0 ) )
+            return;
+        static HMODULE hCompiler = LoadLibraryW( L"d3dcompiler_47.dll" );
+        pD3DCompile pCompile = hCompiler ? (pD3DCompile)(void *)GetProcAddress( hCompiler, "D3DCompile" ) : nullptr;
+        if ( !pCompile ) return;
+        ID3DBlob *pVS = nullptr, *pPS = nullptr;
+        const UINT uFlags = D3DCOMPILE_IEEE_STRICTNESS;
+        bool bOk = SUCCEEDED( pCompile( InstanceVS, strlen( InstanceVS ), "notes.vs", nullptr, nullptr, "main", "vs_3_0", uFlags, 0, &pVS, nullptr ) ) &&
+                   SUCCEEDED( pCompile( InstancePS, strlen( InstancePS ), "notes.ps", nullptr, nullptr, "main", "ps_3_0", uFlags, 0, &pPS, nullptr ) );
+        static const D3DVERTEXELEMENT9 aDecl[] =
+        {
+            { 0, 0, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITION, 0 },
+            { 0, 16, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 0 },
+            { 0, 32, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 1 },
+            { 1, 0, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 2 },
+            { 1, 16, D3DDECLTYPE_D3DCOLOR, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 3 },
+            { 1, 20, D3DDECLTYPE_D3DCOLOR, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 4 },
+            { 1, 24, D3DDECLTYPE_D3DCOLOR, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 5 },
+            { 1, 28, D3DDECLTYPE_FLOAT1, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_TEXCOORD, 6 },
+            D3DDECL_END()
+        };
+        bOk = bOk && SUCCEEDED( m_pDevice->CreateVertexShader( (const DWORD *)pVS->GetBufferPointer(), &m_pInstVS ) ) &&
+              SUCCEEDED( m_pDevice->CreatePixelShader( (const DWORD *)pPS->GetBufferPointer(), &m_pInstPS ) ) &&
+              SUCCEEDED( m_pDevice->CreateVertexDeclaration( aDecl, &m_pInstDecl ) );
+        if ( pVS ) pVS->Release();
+        if ( pPS ) pPS->Release();
+        if ( !bOk )
+        {
+            if ( m_pInstVS ) { m_pInstVS->Release(); m_pInstVS = nullptr; }
+            if ( m_pInstPS ) { m_pInstPS->Release(); m_pInstPS = nullptr; }
+            if ( m_pInstDecl ) { m_pInstDecl->Release(); m_pInstDecl = nullptr; }
+            return;
+        }
+    }
+
+    // The template: RectVertices' quad corners (top left, top right, bottom right, bottom left) of
+    // the outer rect (very dark), then of the inner rect (primary on the left, dark on the right)
+    static const TemplateVertex aTmpl[8] =
+    {
+        { { 1, 0, 0, 0 }, { 1, 0, 0, 0 }, { 1, 0, 0, 0 } },
+        { { 0, 1, 0, 0 }, { 1, 0, 0, 0 }, { 1, 0, 0, 0 } },
+        { { 0, 1, 0, 0 }, { 0, 1, 0, 0 }, { 1, 0, 0, 0 } },
+        { { 1, 0, 0, 0 }, { 0, 1, 0, 0 }, { 1, 0, 0, 0 } },
+        { { 0, 0, 1, 0 }, { 0, 0, 1, 0 }, { 0, 1, 0, 0 } },
+        { { 0, 0, 0, 1 }, { 0, 0, 1, 0 }, { 0, 0, 1, 0 } },
+        { { 0, 0, 0, 1 }, { 0, 0, 0, 1 }, { 0, 0, 1, 0 } },
+        { { 0, 0, 1, 0 }, { 0, 0, 0, 1 }, { 0, 1, 0, 0 } },
+    };
+    static const WORD aIdx[12] = { 0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7 };
+    void *pData = nullptr;
+    bool bOk = SUCCEEDED( m_pDevice->CreateVertexBuffer( sizeof( aTmpl ), D3DUSAGE_WRITEONLY, 0, D3DPOOL_DEFAULT, &m_pTmplVB, nullptr ) ) &&
+               SUCCEEDED( m_pTmplVB->Lock( 0, 0, &pData, 0 ) );
+    if ( bOk ) { memcpy( pData, aTmpl, sizeof( aTmpl ) ); m_pTmplVB->Unlock(); }
+    bOk = bOk && SUCCEEDED( m_pDevice->CreateIndexBuffer( sizeof( aIdx ), D3DUSAGE_WRITEONLY, D3DFMT_INDEX16, D3DPOOL_DEFAULT, &m_pTmplIB, nullptr ) ) &&
+          SUCCEEDED( m_pTmplIB->Lock( 0, 0, &pData, 0 ) );
+    if ( bOk ) { memcpy( pData, aIdx, sizeof( aIdx ) ); m_pTmplIB->Unlock(); }
+    bOk = bOk && SUCCEEDED( m_pDevice->CreateVertexBuffer( VBInstances * sizeof( NoteInstance ), D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY, 0,
+                                                          D3DPOOL_DEFAULT, &m_pInstVB, nullptr ) );
+    m_uInstPos = 0;
+    if ( !bOk )
+    {
+        // Without its buffers the path is off (InstancingOn checks the shaders)
+        if ( m_pInstVS ) { m_pInstVS->Release(); m_pInstVS = nullptr; }
+        if ( m_pInstPS ) { m_pInstPS->Release(); m_pInstPS = nullptr; }
+    }
+}
+
+void Renderer::SetNoteColumns( const float ( *aCols )[4] )
+{
+    FlushInstances();
+    memcpy( m_aCols, aCols, sizeof( m_aCols ) );
+}
+
+void Renderer::DrawNoteInstances( const NoteInstance *pInst, size_t iCount )
+{
+    if ( !iCount ) return;
+    if ( !m_vVerts.empty() || !m_vQuads.empty() ) FlushBuffer();
+    if ( iCount < 1024 )
+    {
+        m_vInst.insert( m_vInst.end(), pInst, pInst + iCount );
+        if ( m_vInst.size() >= VBInstances ) FlushInstances();
+        return;
+    }
+    FlushInstances();
+    SubmitInstances( pInst, iCount );
+}
+
+void Renderer::FlushInstances()
+{
+    if ( m_vInst.empty() ) return;
+    SubmitInstances( m_vInst.data(), m_vInst.size() );
+    m_vInst.clear();
+}
+
+void Renderer::SubmitInstances( const NoteInstance *pInst, size_t iCount )
+{
+    if ( !m_pInstVB || !m_pInstVS ) return;
+    // Columns to clip space: the viewport maps X to (X + 1) * W / 2, so X = x * 2 / W - 1 (rounded
+    // once, from double). Coverage then matches the quads; the inner gradient's colour can still
+    // differ by one level along a column now and then (the shader path interpolates it differently)
+    float aConst[129][4];
+    const double dW = m_iBufferWidth, dH = m_iBufferHeight;
+    for ( int k = 0; k < 128; k++ )
+        for ( int c = 0; c < 4; c++ ) aConst[k][c] = (float)( m_aCols[k][c] * 2.0 / dW - 1.0 );
+    aConst[128][0] = (float)( -2.0 / dH );
+    aConst[128][1] = 1.0f;
+    aConst[128][2] = aConst[128][3] = 0.0f;
+    m_pDevice->SetVertexShaderConstantF( 0, &aConst[0][0], 129 );
+    m_pDevice->SetVertexDeclaration( m_pInstDecl );
+    m_pDevice->SetVertexShader( m_pInstVS );
+    m_pDevice->SetPixelShader( m_pInstPS );
+    m_pDevice->SetStreamSource( 0, m_pTmplVB, 0, sizeof( TemplateVertex ) );
+    m_pDevice->SetIndices( m_pTmplIB );
+
+    size_t iDone = 0;
+    while ( iDone < iCount )
+    {
+        UINT uCount = (UINT)std::min< size_t >( iCount - iDone, VBInstances );
+        DWORD dwLock = D3DLOCK_NOOVERWRITE;
+        if ( m_uInstPos + uCount > VBInstances ) { m_uInstPos = 0; dwLock = D3DLOCK_DISCARD; }
+        void *pData = nullptr;
+        if ( FAILED( m_pInstVB->Lock( m_uInstPos * sizeof( NoteInstance ), uCount * sizeof( NoteInstance ), &pData, dwLock ) ) )
+            break;
+        memcpy( pData, pInst + iDone, uCount * sizeof( NoteInstance ) );
+        m_pInstVB->Unlock();
+        m_pDevice->SetStreamSourceFreq( 0, D3DSTREAMSOURCE_INDEXEDDATA | uCount );
+        m_pDevice->SetStreamSource( 1, m_pInstVB, m_uInstPos * sizeof( NoteInstance ), sizeof( NoteInstance ) );
+        m_pDevice->SetStreamSourceFreq( 1, D3DSTREAMSOURCE_INSTANCEDATA | 1u );
+        m_pDevice->DrawIndexedPrimitive( D3DPT_TRIANGLELIST, 0, 0, 8, 0, 4 );
+        m_uInstPos += uCount;
+        iDone += uCount;
+    }
+
+    m_pDevice->SetStreamSourceFreq( 0, 1 );
+    m_pDevice->SetStreamSourceFreq( 1, 1 );
+    m_pDevice->SetStreamSource( 1, nullptr, 0, 0 );
+    m_pDevice->SetVertexShader( nullptr );
+    m_pDevice->SetPixelShader( nullptr );
+    m_pDevice->SetFVF( SCREEN_VERTEX::FVF );
 }

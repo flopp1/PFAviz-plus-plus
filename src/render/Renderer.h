@@ -2,6 +2,8 @@
 // pre-transformed XYZRHW vertices with the -0.5 px offset, the same two-triangle vertex order,
 // fixed-function Gouraud colour, and the inverted blend SRC=INVSRCALPHA / DEST=SRCALPHA.
 // Only the batching differs (bigger batches, same draw order).
+// The one exception is the optional instanced note path (DrawNoteInstances, off by default), which
+// builds note rects in a vertex shader and so is not guaranteed pixel-identical.
 #pragma once
 
 #include <windows.h>
@@ -56,6 +58,21 @@ public:
     // RectVertices makes (the fourth and fifth repeat the first and third). Drawn indexed, as the
     // same two triangles with their vertices in the same order, from two thirds of the bytes.
     void DrawQuads( const SCREEN_VERTEX *pVerts, size_t iQuads );
+    // Instanced notes (Performance option, off by default): one 32-byte instance per note instead
+    // of two quads (160 bytes), expanded by a vertex shader into the same two rects, same vertex
+    // order and colours. Not pixel-exact: the shader goes through the viewport transform, which
+    // rounds positions differently from pre-transformed vertices.
+    struct NoteInstance
+    {
+        float y[4];                 // vertex rows (the -0.5 applied): outer top, outer bottom, inner top, inner bottom
+        D3DCOLOR cOuter, cLeft, cRight;     // the outer rect; the inner gradient's left (primary) and right (dark) side
+        float fKey;                 // the key, which picks its columns (SetNoteColumns)
+    };
+    void SetInstancing( bool bOn ) { m_bInstancing = bOn; }
+    bool InstancingOn() const { return m_bInstancing && m_pInstVS && m_pInstPS && !m_pCapture; }
+    // Each key's x columns (the -0.5 applied): outer left, outer right, inner left, inner right
+    void SetNoteColumns( const float ( *aCols )[4] );
+    void DrawNoteInstances( const NoteInstance *pInst, size_t iCount );
     HRESULT DrawSkew( float x1, float y1, float x2, float y2, float x3, float y3, float x4, float y4, DWORD color );
     HRESULT DrawSkew( float x1, float y1, float x2, float y2, float x3, float y3, float x4, float y4,
                       DWORD c1, DWORD c2, DWORD c3, DWORD c4 );
@@ -79,9 +96,13 @@ private:
     void Submit( const SCREEN_VERTEX *pVerts, size_t iCount );    // draws now, through the dynamic vertex buffer
     void SubmitQuads( const SCREEN_VERTEX *pVerts, size_t iQuads );
     void FlushQuads();
+    void FlushInstances();
+    void SubmitInstances( const NoteInstance *pInst, size_t iCount );
+    void CreateInstancing();                    // the shaders and declaration, once per device (if supported)
 
     static const UINT VBVertices = 6 * 16384;
     static const UINT IBQuads = 16384;              // 16-bit indices: 65536 vertices per draw
+    static const UINT VBInstances = 65536;
 
     HWND m_hWnd = nullptr;
     IDirect3D9Ex *m_pD3D = nullptr;
@@ -102,4 +123,16 @@ private:
     bool m_bOffscreen = false;
     int m_iOffscreenW = 0, m_iOffscreenH = 0;
     std::vector< SCREEN_VERTEX > *m_pCapture = nullptr;
+
+    // Instancing
+    bool m_bInstancing = false;
+    IDirect3DVertexShader9 *m_pInstVS = nullptr;
+    IDirect3DPixelShader9 *m_pInstPS = nullptr;
+    IDirect3DVertexDeclaration9 *m_pInstDecl = nullptr;
+    IDirect3DVertexBuffer9 *m_pTmplVB = nullptr;    // the 8 corners of a note's two rects
+    IDirect3DIndexBuffer9 *m_pTmplIB = nullptr;     // their 4 triangles
+    IDirect3DVertexBuffer9 *m_pInstVB = nullptr;
+    UINT m_uInstPos = 0;
+    float m_aCols[128][4] = {};
+    std::vector< NoteInstance > m_vInst;            // queued instances (as with the other two queues)
 };

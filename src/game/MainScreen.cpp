@@ -403,6 +403,7 @@ GameState::GameError MainScreen::Logic()
         m_pPlayback->SetMaxThreads( cPerf.iWorkerThreads );
     }
     if ( m_pEngine->LodOn() != config.GetPerformanceSettings().bLodCache ) m_pEngine->SetLod( config.GetPerformanceSettings().bLodCache );
+    m_pRenderer->SetInstancing( config.GetPerformanceSettings().bGpuInstancing );
 
     // Time stuff
     long long llMaxTime = GetMaxTime();

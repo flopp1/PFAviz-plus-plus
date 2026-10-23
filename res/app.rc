@@ -84,12 +84,12 @@ BEGIN
     LTEXT           "percent",IDC_STATIC,168,41,26,8
 END
 
-IDD_PP5_PERFORMANCE DIALOGEX 0, 0, 300, 270
+IDD_PP5_PERFORMANCE DIALOGEX 0, 0, 300, 284
 STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_DISABLED | WS_CAPTION
 CAPTION "Property Page"
 FONT 8, "MS Shell Dlg", 400, 0, 0x0
 BEGIN
-    GROUPBOX        "Loading and drawing",IDC_STATIC,7,7,286,102
+    GROUPBOX        "Loading and drawing",IDC_STATIC,7,7,286,116
     LTEXT           "&Worker threads:",IDC_STATIC,13,21,60,8
     COMBOBOX        IDC_PERF_THREADS,80,19,60,120,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     LTEXT           "Takes effect when the next file is opened.",IDC_STATIC,146,21,142,8
@@ -100,23 +100,24 @@ BEGIN
     LTEXT           "MB of decoded notes (compact store)",IDC_STATIC,124,67,164,8
     CONTROL         "LOD c&ache (faster drawing of dense songs, built in the background)",IDC_PERF_LOD,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,82,270,10
     CONTROL         "End weird notes at their &first note-off (keep the first pairing)",IDC_PERF_IGNOREWEIRD,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,96,270,10
-    GROUPBOX        "Playback",IDC_STATIC,7,114,286,118
-    CONTROL         "Prefer &KDMAPI (OmniMIDI) when it is available",IDC_PERF_KDMAPI,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,127,200,10
-    CONTROL         "S&kip quiet notes while the synth lags (by velocity; off sends every event)",IDC_PERF_SKIPPING,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,142,275,10
-    LTEXT           "Start a&bove:",IDC_STATIC,25,160,50,8
-    EDITTEXT        IDC_PERF_MAXLAG,80,158,40,14,ES_AUTOHSCROLL | ES_NUMBER
-    CONTROL         "",IDC_PERF_MAXLAGSPIN,"msctls_updown32",UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_ARROWKEYS | UDS_SETBUDDYINT | UDS_NOTHOUSANDS,108,158,11,14
-    LTEXT           "ms of lag (all notes skipped at 4 times this lag)",IDC_STATIC,124,160,164,8
-    CONTROL         "Always skip notes &quieter than velocity",IDC_PERF_VELFLOOR,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,178,143,10
-    EDITTEXT        IDC_PERF_MINVEL,158,176,30,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "(1-128; their offs too)",IDC_STATIC,192,178,96,8
-    CONTROL         "Collaps&e stacked notes (one voice per channel, key and tick)",IDC_PERF_COLLAPSE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,194,275,10
-    CONTROL         "Li&mit sending to",IDC_PERF_SENDLIMIT,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,212,66,10
-    EDITTEXT        IDC_PERF_MAXSENDS,80,210,50,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "messages/s (quietest notes skipped first)",IDC_STATIC,134,212,154,8
-    GROUPBOX        "Display",IDC_STATIC,7,237,286,28
-    CONTROL         "&Limit frame rate",IDC_LIMITFPS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,250,100,10
-    PUSHBUTTON      "Render &video...",IDC_PERF_VIDEO,120,247,80,14
+    CONTROL         "&GPU instancing for notes (less CPU work per note; not pixel-exact)",IDC_PERF_INSTANCING,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,110,270,10
+    GROUPBOX        "Playback",IDC_STATIC,7,128,286,118
+    CONTROL         "Prefer &KDMAPI (OmniMIDI) when it is available",IDC_PERF_KDMAPI,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,141,200,10
+    CONTROL         "S&kip quiet notes while the synth lags (by velocity; off sends every event)",IDC_PERF_SKIPPING,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,156,275,10
+    LTEXT           "Start a&bove:",IDC_STATIC,25,174,50,8
+    EDITTEXT        IDC_PERF_MAXLAG,80,172,40,14,ES_AUTOHSCROLL | ES_NUMBER
+    CONTROL         "",IDC_PERF_MAXLAGSPIN,"msctls_updown32",UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_ARROWKEYS | UDS_SETBUDDYINT | UDS_NOTHOUSANDS,108,172,11,14
+    LTEXT           "ms of lag (all notes skipped at 4 times this lag)",IDC_STATIC,124,174,164,8
+    CONTROL         "Always skip notes &quieter than velocity",IDC_PERF_VELFLOOR,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,192,143,10
+    EDITTEXT        IDC_PERF_MINVEL,158,190,30,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "(1-128; their offs too)",IDC_STATIC,192,192,96,8
+    CONTROL         "Collaps&e stacked notes (one voice per channel, key and tick)",IDC_PERF_COLLAPSE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,208,275,10
+    CONTROL         "Li&mit sending to",IDC_PERF_SENDLIMIT,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,226,66,10
+    EDITTEXT        IDC_PERF_MAXSENDS,80,224,50,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "messages/s (quietest notes skipped first)",IDC_STATIC,134,226,154,8
+    GROUPBOX        "Display",IDC_STATIC,7,251,286,28
+    CONTROL         "&Limit frame rate",IDC_LIMITFPS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,264,100,10
+    PUSHBUTTON      "Render &video...",IDC_PERF_VIDEO,120,261,80,14
 END
 
 IDD_STATS DIALOGEX 0, 0, 252, 242

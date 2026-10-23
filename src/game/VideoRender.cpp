@@ -41,6 +41,7 @@ void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
     std::wstring sError;
     if ( !cap.Init( r, iW, iH, !getenv( "PFAVIZ_BGRXPIPE" ), iDepth, sError ) ) return job.Finish( false, sError );
     job.bYuv = cap.Yuv();
+    r.SetInstancing( cPerf.bGpuInstancing );
     FfmpegPipe pipe;
     if ( !pipe.Start( job, sError ) ) return job.Finish( false, sError );
 

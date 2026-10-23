@@ -570,6 +570,7 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
     vPixels.assign( vActive.size(), 0.0 );
     std::vector< std::vector< uint64_t > > &vScratch = m_vScratch;
     if ( vScratch.size() < (size_t)m_iThreads + 1 ) vScratch.resize( m_iThreads + 1 );
+    const bool bInst = pRenderer->InstancingOn();
     Parallel::For( m_iThreads, vActive.size(), [&]( size_t i, int t ) {
         int k = vActive[i];
         long long tK0 = Timer::NowMicroSecs();
@@ -580,9 +581,12 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
         // The owners' vertices, exactly as DrawNote makes them, minus rects the rasteriser culls
         // anyway (one negative extent: back-facing, R7; or zero area), such as the inner rect of a
         // note at most 2d rows tall
+        // (or, instancing, one instance per owner with the rects it skips made empty)
         std::vector< Renderer::SCREEN_VERTEX > &vVerts = m_aVerts[k];
+        std::vector< Renderer::NoteInstance > &vInst = m_aInst[k];
         std::vector< uint32_t > &vStart = m_aVertStart[k];
-        if ( vVerts.size() < m_aOwners[k].size() * 8 ) vVerts.resize( m_aOwners[k].size() * 8 );  // grows only: no per-frame fill
+        if ( bInst ) { if ( vInst.size() < m_aOwners[k].size() ) vInst.resize( m_aOwners[k].size() ); }
+        else if ( vVerts.size() < m_aOwners[k].size() * 8 ) vVerts.resize( m_aOwners[k].size() * 8 );  // grows only: no per-frame fill
         vStart.resize( m_aOwners[k].size() + 1 );
         size_t iOut = 0;
         Renderer::SCREEN_VERTEX aNote[12];
@@ -593,6 +597,7 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
             const Owner &ow = m_aOwners[k][o];
             const ChannelSettings &cs = vTracks[ow.uSlot >> 4].aChannels[ow.uSlot & 15];
             Scene::NoteVertices( g, nk, ow.llStart, ow.llEnd, cs, aNote );
+            bool abDraw[2] = { false, false };
             for ( int r = 0; r < 12; r += 6 )
             {
                 float dx = aNote[r + 1].x - aNote[r].x, dy = aNote[r + 2].y - aNote[r].y;
@@ -620,6 +625,7 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
                         float y0 = std::max( 0.0f, std::min( aNote[r].y, aNote[r + 2].y ) ), y1 = std::min( (float)g.iBufferHeight, std::max( aNote[r].y, aNote[r + 2].y ) );
                         if ( x1 > x0 && y1 > y0 ) vPixels[i] += (double)( x1 - x0 ) * ( y1 - y0 );
                     }
+                    if ( bInst ) { abDraw[r / 6] = true; continue; }
                     // As a quad: vertices 3 and 4 of the rect repeat 0 and 2 (Renderer::DrawQuads)
                     Renderer::SCREEN_VERTEX *p = &vVerts[iOut];
                     p[0] = aNote[r];
@@ -628,6 +634,18 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
                     p[3] = aNote[r + 5];
                     iOut += 4;
                 }
+            }
+            if ( bInst && ( abDraw[0] || abDraw[1] ) )
+            {
+                Renderer::NoteInstance &in = vInst[iOut++];
+                in.y[0] = aNote[0].y;
+                in.y[1] = abDraw[0] ? aNote[2].y : aNote[0].y;
+                in.y[2] = aNote[6].y;
+                in.y[3] = abDraw[1] ? aNote[8].y : aNote[6].y;
+                in.cOuter = aNote[0].color;
+                in.cLeft = aNote[6].color;
+                in.cRight = aNote[7].color;
+                in.fKey = (float)k;
             }
         }
         vStart[m_aOwners[k].size()] = (uint32_t)iOut;
@@ -639,6 +657,26 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
     for ( size_t q : vQueries ) { m_Stats.iQueries += q & ( ( size_t( 1 ) << 40 ) - 1 ); m_Stats.iLodBuckets += q >> 40; }
     m_Stats.dQueryMs = ( Timer::NowMicroSecs() - llStart ) / 1000.0;
     m_Stats.iKeys = vActive.size();
+
+    // Instancing: the keys' columns, as RectVertices makes them (the -0.5, then + cx)
+    if ( bInst )
+    {
+        float aCols[128][4] = {};
+        for ( int k = 0; k < 128; k++ )
+        {
+            const Scene::NoteKey nk = Scene::GetNoteKey( g, k );
+            aCols[k][0] = nk.x - 0.5f;
+            aCols[k][1] = aCols[k][0] + nk.cx;
+            aCols[k][2] = ( nk.x + nk.fDeflate ) - 0.5f;
+            aCols[k][3] = aCols[k][2] + ( nk.cx - nk.fDeflate * 2.0f );
+        }
+        pRenderer->SetNoteColumns( aCols );
+    }
+    // Owners [a, b) of key k (in m_aVertStart's units)
+    auto Emit = [&]( int k, size_t a, size_t b ) {
+        if ( bInst ) pRenderer->DrawNoteInstances( m_aInst[k].data() + a, b - a );
+        else pRenderer->DrawQuads( m_aVerts[k].data() + a, ( b - a ) / 4 );
+    };
 
     // Emit the owners in the original order: white keys, then black keys, ascending index. Keys
     // whose pixel columns cannot touch are independent; keys that might share a column (sliver
@@ -656,7 +694,7 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
             while ( j < v.size() && v[j].iLo < iMaxHi ) { iMaxHi = std::max( iMaxHi, v[j].iHi ); j++; }
             if ( j == i + 1 )
             {
-                pRenderer->DrawQuads( m_aVerts[v[i].iKey].data(), m_aVertCount[v[i].iKey] / 4 );
+                Emit( v[i].iKey, 0, m_aVertCount[v[i].iKey] );
                 m_Stats.iOwners += m_aOwners[v[i].iKey].size();
             }
             else
@@ -675,7 +713,7 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
                 for ( const MergeItem &it : vMerge )
                 {
                     const std::vector< uint32_t > &vStart = m_aVertStart[it.iKey];
-                    pRenderer->DrawQuads( m_aVerts[it.iKey].data() + vStart[it.llIdx], ( vStart[it.llIdx + 1] - vStart[it.llIdx] ) / 4 );
+                    Emit( it.iKey, vStart[it.llIdx], vStart[it.llIdx + 1] );
                 }
                 m_Stats.iOwners += vMerge.size();
             }
