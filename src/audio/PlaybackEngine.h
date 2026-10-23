@@ -23,12 +23,20 @@ class PlaybackEngine
 public:
     struct Stats
     {
-        uint64_t llSent = 0, llNoteOns = 0, llSkipped = 0, llCollapsed = 0;
+        uint64_t llSent = 0;            // messages handed to the output by the sender thread
+        uint64_t llDecoded = 0, llNoteOns = 0, llSkipped = 0, llCollapsed = 0;     // counted by the decoder
         long long llLagUs = 0;          // how late the last slice was sent
         double dNsPerMsg = 0.0;         // the output's measured cost per message
         int iSkipVelocity = 0;          // note-ons below this velocity are being skipped (0: none)
         PlaybackDecoder::BudgetCut budget;  // the send budget's cut
+        // Where the time goes: microseconds each thread spent working (the decoder in Fill and the
+        // chase, the sender in SendBatch), and the ring's fill (in slices) summed and counted each
+        // time the sender takes a slice. All cumulative: the stats box shows the change per interval.
+        uint64_t llDecodeBusyUs = 0, llSendBusyUs = 0;
+        uint64_t llRingSum = 0, llRingSamples = 0;
+        int iRingMax = 0;               // the fullest the ring was since the last GetStats
     };
+    static const int RingSlices = 63;   // the ring's capacity in slices (RingSize - 1)
 
     PlaybackEngine( std::shared_ptr< const Song > pSong, PlaybackClock &clock );
     ~PlaybackEngine();
@@ -54,7 +62,7 @@ public:
 
     std::wstring OutputName() const;
     bool HasOutput() const { return m_bHasOutput.load( std::memory_order_acquire ); }
-    Stats GetStats() const;
+    Stats GetStats();
 
 private:
     static const size_t SliceMsgs = 8192;
@@ -100,7 +108,9 @@ private:
     std::atomic< long long > m_llLagUs{ 0 };
     std::atomic< int > m_iSkipVelocity{ 0 }, m_iBudgetVel{ 0 };
     std::atomic< double > m_dBudgetKeep{ 1.0 };
-    std::atomic< uint64_t > m_llSent{ 0 }, m_llNoteOns{ 0 }, m_llSkipped{ 0 }, m_llCollapsed{ 0 };
+    std::atomic< uint64_t > m_llDecoded{ 0 }, m_llNoteOns{ 0 }, m_llSkipped{ 0 }, m_llCollapsed{ 0 };
+    std::atomic< uint64_t > m_llSent{ 0 }, m_llDecodeBusyUs{ 0 }, m_llSendBusyUs{ 0 }, m_llRingSum{ 0 }, m_llRingSamples{ 0 };
+    std::atomic< int > m_iRingMax{ 0 };
 
     // Output (used by the sender thread only)
     std::unique_ptr< MidiOutput > m_pOut;

@@ -11,17 +11,13 @@ PlaybackDecoder::PlaybackDecoder( const Song &song ) : m_Song( song ), m_Stream(
         if ( m.cType == RefMetaEvent::TimeSignature && m.iDataLen == 4 )
             m_vSignatures.push_back( { m.llTick, m.aData[0], 1LL << std::min< int >( m.aData[1], 30 ) } );
     m_bMetronome = !( song.info.iDivision & 0x8000 ) && song.info.iDivision > 0;
-    m_Scout.Attach( &m_Stream );
     ResetSendState();
 }
 
 // Everything sounding was stopped (start, seek): the skip, collapse and budget state start over
 void PlaybackDecoder::ResetSendState()
 {
-    memset( m_aPendingSkip, 0, sizeof( m_aPendingSkip ) );
-    memset( m_aHeld, 0, sizeof( m_aHeld ) );
-    memset( m_aVoices, 0, sizeof( m_aVoices ) );
-    std::fill( m_aVoiceTick, m_aVoiceTick + 2048, SIZE_MAX );
+    for ( KeyState &k : m_aKey ) { k.uPending = k.uHeld = k.uVoices = 0; k.uVoiceTick = SIZE_MAX; }
     m_bScout = false;
     m_bAtTickStart = true;
     m_llTokenTime = LLONG_MIN;
@@ -175,11 +171,11 @@ int PlaybackDecoder::VelocityThreshold( long long llLagUs, long long llSkipLagUs
 
 // Keeps the loudest note-ons whose count fits dAllowance; the velocity where it runs out is kept at
 // the rate that fills it exactly (a file with one velocity is thinned evenly instead of all or nothing)
-PlaybackDecoder::BudgetCut PlaybackDecoder::BudgetThreshold( const uint64_t aWindow[128], double dAllowance )
+PlaybackDecoder::BudgetCut PlaybackDecoder::BudgetThreshold( const uint64_t aWindow[128], double dAllowance, int iFloor )
 {
     BudgetCut c;
     double dSum = 0.0;
-    for ( int v = 127; v >= 1; v-- )
+    for ( int v = 127; v >= std::max( 1, iFloor ); v-- )
     {
         if ( dSum + (double)aWindow[v] <= dAllowance ) { dSum += (double)aWindow[v]; continue; }
         c.iVelocity = v;
@@ -189,51 +185,51 @@ PlaybackDecoder::BudgetCut PlaybackDecoder::BudgetThreshold( const uint64_t aWin
     return c;
 }
 
-// At the start of each tick: the scout counts up to BudgetWindowUs ahead, the bucket refills, and
-// the cut is chosen so the window's note-ons (2 messages each, with their offs) fit what the bucket
-// holds plus what it gains over the window
+// At the start of each tick: the window moves to the cursor's bin and reaches BudgetWindowUs ahead,
+// the bucket refills, and the cut is chosen so the window's note-ons (2 messages each, with their
+// offs) fit what the bucket holds plus what it gains over the window
 void PlaybackDecoder::BudgetTick( long long tE, const Params &p )
 {
     double dRate = (double)p.llMaxSendsPerSec, dDepth = BudgetDepth( p.llMaxSendsPerSec );
-    uint32_t uFloor = (uint32_t)std::max( 0, p.iMinVelocity );
-    if ( m_bScout && ( m_bScoutCollapse != p.bCollapse || m_uScoutFloor != uFloor ) ) m_bScout = false;   // the counting rule changed
+    const VelocityBins &vb = m_Song.aSendOns[p.bCollapse];
+    if ( m_bScout && m_bScoutCollapse != p.bCollapse ) m_bScout = false;   // the counting rule changed
+    size_t b = (size_t)( std::max( 0LL, tE ) / VelocityBins::BinUs );
     if ( !m_bScout )
     {
-        // In step from the start of a tick, so every note-on the scout counts is later read by the cursor
+        // From the start of a tick: its whole bin is counted, and the note-ons of the bin before the
+        // tick, which the cursor never reads, leave the window when the cursor leaves the bin
         if ( !m_bAtTickStart ) return;
-        m_Scout.Seek( m_Cursor.NextTick() );
-        memset( m_aWindow, 0, sizeof( m_aWindow ) );
-        std::fill( m_aScoutTick, m_aScoutTick + 2048, SIZE_MAX );
-        std::fill( m_aCursorTick, m_aCursorTick + 2048, SIZE_MAX );
+        memset( m_aRem, 0, sizeof( m_aRem ) );
+        for ( KeyState &k : m_aKey ) k.uCursorTick = SIZE_MAX;
+        vb.AddTo( b, m_aRem );
+        memcpy( m_aWindow, m_aRem, sizeof( m_aWindow ) );
+        m_uWinBin = b;
+        m_uNextBin = b + 1;
         m_bScoutCollapse = p.bCollapse;
-        m_uScoutFloor = uFloor;
         m_bScout = true;
     }
-    // Whole ticks: at least past the cursor's tick, then to the end of the window
-    long long llEnd = tE + (long long)( BudgetWindowUs * p.dSpeed );
-    size_t U = m_Stream.UniqueTicks();
-    while ( m_Scout.NextTick() < U && ( m_Scout.NextTick() <= m_uCachedTick || m_Scout.NextTime() <= llEnd ) )
+    else if ( b > m_uWinBin )
     {
-        size_t u = m_Scout.NextTick();
-        uint32_t uTrack, uMsg;
-        while ( m_Scout.Next( uTrack, uMsg, u + 1 ) )
+        // The cursor left its bin: what it did not read of it leaves the window, and the new bin's
+        // counts become what is left to read
+        for ( int v = 0; v < 128; v++ ) m_aWindow[v] -= m_aRem[v];
+        memset( m_aRem, 0, sizeof( m_aRem ) );
+        vb.AddTo( b, m_aRem );
+        if ( b >= m_uNextBin )
         {
-            uint32_t uVel = uMsg >> 16;
-            if ( ( uMsg & 0xF0 ) != 0x90 || !uVel || uVel < uFloor ) continue;    // below the floor: never sent, not counted
-            if ( p.bCollapse )
-            {
-                size_t &t = m_aScoutTick[( ( uMsg & 0x0F ) << 7 ) | ( ( uMsg >> 8 ) & 0x7F )];
-                if ( t == u ) continue;
-                t = u;
-            }
-            m_aWindow[uVel]++;
+            for ( int v = 0; v < 128; v++ ) m_aWindow[v] += m_aRem[v];
+            m_uNextBin = b + 1;
         }
+        m_uWinBin = b;
     }
+    // Whole bins to the end of the window
+    long long llEnd = tE + (long long)( BudgetWindowUs * p.dSpeed );
+    while ( m_uNextBin < vb.Bins() && (long long)m_uNextBin * VelocityBins::BinUs <= llEnd ) vb.AddTo( m_uNextBin++, m_aWindow );
     // The bucket
     if ( m_llTokenTime == LLONG_MIN ) m_dTokens = dDepth;
     else if ( tE > m_llTokenTime ) m_dTokens = std::min( dDepth, m_dTokens + dRate * ( tE - m_llTokenTime ) / 1e6 / p.dSpeed );
     m_llTokenTime = tE;
-    m_Cut = BudgetThreshold( m_aWindow, ( std::max( 0.0, m_dTokens ) + dDepth ) / 2.0 );
+    m_Cut = BudgetThreshold( m_aWindow, ( std::max( 0.0, m_dTokens ) + dDepth ) / 2.0, p.iMinVelocity );
 }
 
 // The budget's decision for a note-on (counted in the window already); a kept one pays for itself and its off
@@ -273,9 +269,7 @@ size_t PlaybackDecoder::Fill( uint32_t *pOut, size_t iCap, long long llHorizon, 
     if ( p.bCollapse != m_bCollapse )
     {
         m_bCollapse = p.bCollapse;
-        memset( m_aHeld, 0, sizeof( m_aHeld ) );
-        memset( m_aVoices, 0, sizeof( m_aVoices ) );
-        std::fill( m_aVoiceTick, m_aVoiceTick + 2048, SIZE_MAX );
+        for ( KeyState &k : m_aKey ) { k.uHeld = k.uVoices = 0; k.uVoiceTick = SIZE_MAX; }
     }
     const bool bBudget = p.llMaxSendsPerSec > 0;
     if ( !bBudget ) { m_bScout = false; m_Cut = BudgetCut(); }
@@ -310,6 +304,84 @@ size_t PlaybackDecoder::Fill( uint32_t *pOut, size_t iCap, long long llHorizon, 
         size_t u = m_uCachedTick, uEnd = u + 1;
         if ( bBudget && m_bAtTickStart ) BudgetTick( tE, p );
         const bool bCounting = bBudget && m_bScout;
+
+        // Keys of one note run (one track, channel, status and velocity), so what holds for the whole
+        // run is decided once: up to the key with bit 7 set (the run's last, then bEnd) or iMax keys,
+        // and while there is room in pOut. Returns the keys taken.
+        auto Notes = [&]( uint32_t uTrack, uint32_t uBase, const uint8_t *pk, size_t iMax, bool &bEnd ) -> size_t {
+            uint32_t ch = uBase & 0x0F, uKeys = ch << 7, uVel = uBase >> 16;
+            size_t i = 0;
+            bEnd = false;
+            if ( ( uBase & 0xF0 ) == 0x90 && uVel )
+            {
+                // Muted: not sent, so its off is dropped too (DESIGN.md 1.6). Every other off is sent,
+                // muted or not: a note that was sounding when its channel was muted still ends
+                const bool bMuted = p.bMute || ( pMute && ( ( pMute[uTrack].load( std::memory_order_relaxed ) >> ch ) & 1 ) );
+                const bool bBelow = uVel < uMinVel;
+                const uint32_t uOutVel = m_aVelLut[uVel], uOut = ( uBase & 0xFF ) | ( uOutVel << 16 );
+                while ( i < iMax && n < iCap )
+                {
+                    unsigned k = pk[i++];
+                    KeyState &ks = m_aKey[uKeys | ( k & 0x7F )];
+                    // The window counted it (muted or not), so it leaves the window here
+                    if ( bCounting && ( !p.bCollapse || ks.uCursorTick != u ) )
+                    {
+                        if ( p.bCollapse ) ks.uCursorTick = u;
+                        if ( m_aRem[uVel] ) { m_aRem[uVel]--; m_aWindow[uVel]--; }
+                    }
+                    if ( bMuted ) ks.uPending++;
+                    else if ( m_Counters.llNoteOns++, p.bCollapse && ks.uVoices && ks.uVoiceTick == u )
+                    {
+                        // Another note-on of a sounding voice's tick: held silently (the voice takes the loudest)
+                        ks.uHeld++;
+                        m_Counters.llCollapsed++;
+                        if ( ks.uVoiceCall == m_uCall && ( ( pOut[ks.uVoiceOut] >> 16 ) & 0xFF ) < uOutVel )
+                            pOut[ks.uVoiceOut] = ( pOut[ks.uVoiceOut] & 0xFFFF ) | ( uOutVel << 16 );
+                    }
+                    else if ( bBelow || ( bCounting && !BudgetKeep( uVel ) ) )
+                    {
+                        ks.uPending++;
+                        m_Counters.llSkipped++;
+                    }
+                    else
+                    {
+                        if ( p.bCollapse )
+                        {
+                            ks.uHeld++;
+                            ks.uVoices++;
+                            ks.uVoiceTick = u;
+                            ks.uVoiceOut = (uint32_t)n;
+                            ks.uVoiceCall = m_uCall;
+                        }
+                        pOut[n++] = uOut | ( ( k & 0x7F ) << 8 );
+                    }
+                    if ( k & 0x80 ) { bEnd = true; break; }
+                }
+                return i;
+            }
+            // Offs (NoteOff, or NoteOn with velocity 0)
+            while ( i < iMax && n < iCap )
+            {
+                unsigned k = pk[i++];
+                KeyState &ks = m_aKey[uKeys | ( k & 0x7F )];
+                // Drop the one that belongs to a skipped on
+                if ( ks.uPending ) ks.uPending--;
+                else if ( p.bCollapse && ks.uHeld )
+                {
+                    // A held note ends; its voice ends only when no more notes are held than voices remain
+                    ks.uHeld--;
+                    if ( ks.uHeld < ks.uVoices )
+                    {
+                        ks.uVoices--;
+                        pOut[n++] = uBase | ( ( k & 0x7F ) << 8 );
+                    }
+                }
+                else pOut[n++] = uBase | ( ( k & 0x7F ) << 8 );
+                if ( k & 0x80 ) { bEnd = true; break; }
+            }
+            return i;
+        };
+
         uint32_t uTrack, uMsg;
         m_bAtTickStart = false;
         while ( n < iCap && iRead < iMaxRead && ( m_bAtTickStart = !m_Cursor.Next( uTrack, uMsg, uEnd ) ) == false )
@@ -322,60 +394,19 @@ size_t PlaybackDecoder::Fill( uint32_t *pOut, size_t iCap, long long llHorizon, 
                 if ( bCounting ) m_dTokens -= 1.0;
                 continue;
             }
-            uint32_t ch = uMsg & 0x0F, idx = ( ch << 7 ) | ( ( uMsg >> 8 ) & 0x7F ), uVel = uMsg >> 16;
-            if ( uStatus == 0x90 && uVel )
+            // The note, then the rest of its run straight from the stream's bytes
+            bool bEnd;
+            uint8_t k1 = (uint8_t)( ( ( uMsg >> 8 ) & 0x7F ) | 0x80 );
+            Notes( uTrack, uMsg & 0xFF00FF, &k1, 1, bEnd );
+            while ( m_Cursor.InRun() && n < iCap && iRead < iMaxRead )
             {
-                // The scout counted it (muted or not), so it leaves the window here
-                if ( bCounting && uVel >= uFloor && ( !p.bCollapse || m_aCursorTick[idx] != u ) )
-                {
-                    if ( p.bCollapse ) m_aCursorTick[idx] = u;
-                    if ( m_aWindow[uVel] ) m_aWindow[uVel]--;
-                }
-                // Muted: not sent, so its off is dropped too (DESIGN.md 1.6). Every other off is sent,
-                // muted or not: a note that was sounding when its channel was muted still ends
-                if ( p.bMute || ( pMute && ( ( pMute[uTrack].load( std::memory_order_relaxed ) >> ch ) & 1 ) ) )
-                {
-                    m_aPendingSkip[idx]++;
-                    continue;
-                }
-                m_Counters.llNoteOns++;
-                uint32_t uOutVel = m_aVelLut[uVel];
-                if ( p.bCollapse && m_aVoices[idx] && m_aVoiceTick[idx] == u )
-                {
-                    // Another note-on of a sounding voice's tick: held silently (the voice takes the loudest)
-                    m_aHeld[idx]++;
-                    m_Counters.llCollapsed++;
-                    if ( m_aVoiceCall[idx] == m_uCall && ( ( pOut[m_aVoiceOut[idx]] >> 16 ) & 0xFF ) < uOutVel )
-                        pOut[m_aVoiceOut[idx]] = ( pOut[m_aVoiceOut[idx]] & 0xFFFF ) | ( uOutVel << 16 );
-                    continue;
-                }
-                if ( uVel < uMinVel || ( bCounting && !BudgetKeep( uVel ) ) )
-                {
-                    m_aPendingSkip[idx]++;
-                    m_Counters.llSkipped++;
-                    continue;
-                }
-                if ( p.bCollapse )
-                {
-                    m_aHeld[idx]++;
-                    m_aVoices[idx]++;
-                    m_aVoiceTick[idx] = u;
-                    m_aVoiceOut[idx] = (uint32_t)n;
-                    m_aVoiceCall[idx] = m_uCall;
-                }
-                pOut[n++] = ( uMsg & 0xFFFF ) | ( uOutVel << 16 );
-                continue;
+                size_t iAvail;
+                uint32_t uRunTrack, uBase;
+                const uint8_t *pk = m_Cursor.RunKeys( iAvail, uRunTrack, uBase );
+                size_t iTaken = Notes( uRunTrack, uBase, pk, std::min( iAvail, iMaxRead - iRead ), bEnd );
+                iRead += iTaken;
+                m_Cursor.TakeKeys( iTaken, bEnd );
             }
-            // An off (NoteOff, or NoteOn with velocity 0): drop the one that belongs to a skipped on
-            if ( m_aPendingSkip[idx] ) { m_aPendingSkip[idx]--; continue; }
-            if ( p.bCollapse && m_aHeld[idx] )
-            {
-                // A held note ends; its voice ends only when no more notes are held than voices remain
-                m_aHeld[idx]--;
-                if ( m_aHeld[idx] >= m_aVoices[idx] ) continue;
-                m_aVoices[idx]--;
-            }
-            pOut[n++] = uMsg;
         }
     }
     m_Counters.llSent += n;

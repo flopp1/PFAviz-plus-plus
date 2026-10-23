@@ -91,6 +91,29 @@ public:
         }
     }
 
+    // Note runs taken whole (PlaybackDecoder::Fill): after Next returned a note, InRun says more keys
+    // of its run follow. RunKeys gives the run's track and message without the key, and the key bytes
+    // readable now (the run ends at the first with bit 7 set); TakeKeys moves past n of them, bEnd
+    // when the last of those was the run's last.
+    bool InRun() const { return m_bInRun; }
+    const uint8_t *RunKeys( size_t &iAvail, uint32_t &uTrack, uint32_t &uBase )
+    {
+        m_bytes.Need();
+        iAvail = (size_t)( m_bytes.end - m_bytes.p );
+        uTrack = m_uTrack;
+        uBase = m_uRunBase;
+        return m_bytes.p;
+    }
+    void TakeKeys( size_t n, bool bEnd )
+    {
+        m_bytes.p += n;
+        if ( bEnd )
+        {
+            m_bInRun = false;
+            if ( m_bLastRun ) EndGroup();
+        }
+    }
+
 private:
     void EndGroup()
     {

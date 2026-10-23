@@ -118,7 +118,7 @@
 #define IDC_VID_PRESET                  1308
 #define IDC_VID_STATS                   1309
 #define IDC_VID_ENCODER                 1310
-#define IDC_STAT_FIRST                  1400    // + VisualSettings::Stat, through 1414
+#define IDC_STAT_FIRST                  1400    // + VisualSettings::Stat, through 1419
 #define IDC_STATS_ALL                   1420
 #define IDC_STATS_NONE                  1421
 #define IDC_VIDP_FILE                   1320

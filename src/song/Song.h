@@ -279,6 +279,31 @@ struct NoteStats
     size_t MemoryBytes() const { return ( vOns.capacity() + vPoly.capacity() ) * 4 + vCum.capacity() * 8; }
 };
 
+// Note-ons (velocity > 0) per velocity in each bin of llBinUs of song time, for the send budget's
+// look-ahead (DESIGN.md 7.5), so playback does not read the stream twice. Sparse: per bin, the
+// velocities present and their counts. Two sets: every note-on, and only each channel and key's
+// first note-on of a tick (what stack collapsing sends).
+struct VelocityBins
+{
+    static const long long BinUs = 10000;
+    std::vector< uint64_t > vOffset;        // bins + 1: where each bin's entries start in vData
+    std::vector< uint8_t > vData;           // per entry: velocity, then the count (variable length)
+
+    size_t Bins() const { return vOffset.empty() ? 0 : vOffset.size() - 1; }
+    // Adds bin b's counts to a (nothing past the last bin)
+    void AddTo( size_t b, uint64_t a[128] ) const
+    {
+        if ( b >= Bins() ) return;
+        const uint8_t *q = vData.data() + vOffset[b], *qEnd = vData.data() + vOffset[b + 1];
+        while ( q < qEnd )
+        {
+            unsigned v = *q++;
+            a[v] += EventStream::ReadVar( q );
+        }
+    }
+    size_t MemoryBytes() const { return vOffset.capacity() * 8 + vData.capacity(); }
+};
+
 struct Song
 {
     RefMidiInfo info;                       // llFirstNote is set by the pairing pass
@@ -291,9 +316,11 @@ struct Song
     std::vector< ChaseEvent > vChase;       // every CC and program change
     VisualStore visual;                     // notes per key, paired (built by BuildVisualStore)
     NoteStats noteStats;                    // for the overlay's extra statistics (built with visual, when asked for)
+    VelocityBins aSendOns[2];               // [0] every note-on, [1] as collapsed (BuildSendCounts)
     // "Ignore weird notes": a note re-paired by a later off keeps its first pairing, so the song has no
     // weird notes (DESIGN.md 6.3): one pairing pass, but those notes end earlier than in the original
     bool bFirstPairingOnly = false;
     size_t MemoryBytes() const;
     void BuildChaseIndex( int iThreads );
+    void BuildSendCounts( int iThreads );
 };

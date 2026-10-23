@@ -31,7 +31,8 @@ A performance rewrite of [Piano From Above](https://github.com/brian-pantano/Pia
 - Each line of the stats box is chosen in Visual > **Statistics...**; with every line off the box is not drawn. The lines:
   - Time, frame rate and score (on by default: time and score).
   - Notes passed, NPS (note-ons in the last second) and polyphony (note-ons minus the note-offs that release a held note of the same track, channel and key), from 1 ms tables built while the notes are paired at load time (on by default; not counted while all three are off).
-  - Synth: messages sent, skipped and collapsed per second, the sender's lag and the skipping threshold.
+  - Synth: messages sent (handed to the output), skipped and collapsed per second, the sender's lag and the skipping threshold.
+  - Playback pipeline, to see what holds playback back: messages decoded per second, how busy the decoder and sender threads are, how full the ring between them is (average and peak) and the output's cost per message. A busy decoder with an empty ring is the decoder's limit; a full ring with a busy sender is the output's, and a rising send cost means the synth is pushing back.
   - Frame time, split into logic, notes, the rest of the scene and Present.
 
 **Video rendering** (Performance tab, "Render video...")

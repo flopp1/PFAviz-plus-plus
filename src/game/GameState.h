@@ -189,6 +189,10 @@ private:
     uint64_t m_llStatSent = 0, m_llStatSkipped = 0;
     double m_dSentPerSec = 0.0, m_dSkippedPerSec = 0.0, m_dCollapsedPerSec = 0.0;
     uint64_t m_llStatCollapsed = 0;
+    // The playback pipeline over the last half second: messages decoded per second, the share of the
+    // time each thread worked, and the ring's average and peak fill (share of its slices)
+    PlaybackEngine::Stats m_PrevStats;
+    double m_dDecodedPerSec = 0.0, m_dDecoderBusy = 0.0, m_dSenderBusy = 0.0, m_dRingAvg = 0.0, m_dRingMax = 0.0;
     // Frame time parts (playback statistics): outside Render (Logic, messages, waiting), DrawNotes,
     // the rest of the scene, Present. Sums and maxima of the current half second, then shown.
     enum FramePart { PartOutside, PartNotes, PartScene, PartPresent, PartCount };

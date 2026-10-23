@@ -75,9 +75,9 @@ public:
     int SkipVelocity() const { return m_iSkipVelocity; }  // the last threshold (0: not skipping)
     BudgetCut GetBudgetCut() const { return m_Cut; }
     static int VelocityThreshold( long long llLagUs, long long llSkipLagUs );
-    // The cut that keeps the loudest of aWindow's note-ons (by velocity) within dAllowance of them
-    static BudgetCut BudgetThreshold( const uint64_t aWindow[128], double dAllowance );
-    static const long long BudgetWindowUs = 50000;     // the scout's look-ahead and the token bucket's depth, real time
+    // The cut that keeps the loudest of aWindow's note-ons (by velocity, from iFloor up) within dAllowance of them
+    static BudgetCut BudgetThreshold( const uint64_t aWindow[128], double dAllowance, int iFloor = 1 );
+    static const long long BudgetWindowUs = 50000;     // the look-ahead and the token bucket's depth, real time
     // The token bucket's depth: BudgetWindowUs of the budget, and at least two note-ons
     static double BudgetDepth( long long llMaxSendsPerSec ) { return std::max( 4.0, llMaxSendsPerSec * (double)BudgetWindowUs / 1e6 ); }
 
@@ -115,27 +115,31 @@ private:
     int m_iLastMetronomeNote = 76;
     int m_iMetronome = MetOff;
 
-    // Per channel and key, the note-offs still to drop for note-ons not sent (skipped or muted)
-    uint32_t m_aPendingSkip[2048] = {};
+    // Per channel and key, in one record so a note touches one cache line:
+    //   - uPending: the note-offs still to drop for note-ons not sent (skipped or muted);
+    //   - stack collapsing: notes held and voices sent (sent <= held), the tick of the last voice, and
+    //     where it is in this call's output (to raise its velocity);
+    //   - the send budget: with collapsing, only a key's first note-on of a tick counts (uCursorTick)
+    struct KeyState
+    {
+        size_t uVoiceTick = SIZE_MAX, uCursorTick = SIZE_MAX;
+        uint32_t uPending = 0, uHeld = 0, uVoices = 0, uVoiceOut = 0, uVoiceCall = 0;
+    };
+    KeyState m_aKey[2048];
     int m_iSkipVelocity = 0;
-
-    // Stack collapsing, per channel and key: notes held and voices sent (sent <= held), the tick of
-    // the last voice, and where it is in this call's output (to raise its velocity)
     bool m_bCollapse = false;
-    uint32_t m_aHeld[2048] = {}, m_aVoices[2048] = {};
-    size_t m_aVoiceTick[2048];
-    uint32_t m_aVoiceOut[2048] = {}, m_aVoiceCall[2048] = {};
     uint32_t m_uCall = 1;
 
-    // Send budget (DESIGN.md 7.5): a scout cursor counts the note-ons of the next BudgetWindowUs (real
-    // time) by velocity, so a burst is cut by velocity before it starts; a token bucket is the hard cap
-    StreamCursor m_Scout;
-    bool m_bScout = false;              // the scout is in step with the cursor (synced at a tick start)
+    // Send budget (DESIGN.md 7.5): the note-ons of the next BudgetWindowUs (real time) by velocity, from
+    // the song's precomputed bins (Song::aSendOns), so a burst is cut by velocity before it starts; a
+    // token bucket is the hard cap. The window is what is left of the cursor's bin (m_aRem: its counts
+    // less what the cursor has read) plus the whole bins after it up to m_uNextBin; leaving a bin drops
+    // whatever of it is left, so the window is exact again from each bin on.
+    bool m_bScout = false;              // the window is in step with the cursor (synced at a tick start)
     bool m_bAtTickStart = true;         // the cursor is at the first event of its tick
-    bool m_bScoutCollapse = false;      // the counting rule the window was built with (collapsing, floor)
-    uint32_t m_uScoutFloor = 0;
-    uint64_t m_aWindow[128] = {};       // note-ons from the cursor to the scout, by velocity
-    size_t m_aScoutTick[2048], m_aCursorTick[2048];     // with collapsing, only a key's first note-on of a tick counts
+    bool m_bScoutCollapse = false;      // the counting rule the window was built with (collapsing)
+    uint64_t m_aWindow[128] = {}, m_aRem[128] = {};
+    size_t m_uWinBin = 0, m_uNextBin = 0;
     double m_dTokens = 0.0;
     long long m_llTokenTime = LLONG_MIN;
     BudgetCut m_Cut;

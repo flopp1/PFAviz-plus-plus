@@ -417,6 +417,14 @@ GameState::GameError MainScreen::Logic()
         if ( m_pPlayback )
         {
             m_Stats = m_pPlayback->GetStats();
+            double dSecs = m_llFPSTime / 1000000.0;
+            m_dDecodedPerSec = ( m_Stats.llDecoded - m_PrevStats.llDecoded ) / dSecs;
+            m_dDecoderBusy = std::min( 1.0, ( m_Stats.llDecodeBusyUs - m_PrevStats.llDecodeBusyUs ) / (double)m_llFPSTime );
+            m_dSenderBusy = std::min( 1.0, ( m_Stats.llSendBusyUs - m_PrevStats.llSendBusyUs ) / (double)m_llFPSTime );
+            uint64_t llSamples = m_Stats.llRingSamples - m_PrevStats.llRingSamples;
+            m_dRingAvg = llSamples ? ( m_Stats.llRingSum - m_PrevStats.llRingSum ) / (double)llSamples / PlaybackEngine::RingSlices : 0.0;
+            m_dRingMax = m_Stats.iRingMax / (double)PlaybackEngine::RingSlices;
+            m_PrevStats = m_Stats;
             m_dSentPerSec = ( m_Stats.llSent - m_llStatSent ) / ( m_llFPSTime / 1000000.0 );
             m_dSkippedPerSec = ( m_Stats.llSkipped - m_llStatSkipped ) / ( m_llFPSTime / 1000000.0 );
             m_dCollapsedPerSec = ( m_Stats.llCollapsed - m_llStatCollapsed ) / ( m_llFPSTime / 1000000.0 );
@@ -694,7 +702,7 @@ void MainScreen::RenderStatus( Renderer *pRenderer, LPRECT prcStatus, long long 
             else if ( d >= 1e3 ) swprintf( s, 32, L"%.1lfK", d / 1e3 );
             else swprintf( s, 32, L"%.0lf", d );
         };
-        wchar_t aValues[5 + PartCount][32];
+        wchar_t aValues[10 + PartCount][32];
         Rate( aValues[0], m_dSentPerSec );
         Rate( aValues[1], m_dSkippedPerSec );
         Rate( aValues[2], m_dCollapsedPerSec );
@@ -708,9 +716,20 @@ void MainScreen::RenderStatus( Renderer *pRenderer, LPRECT prcStatus, long long 
         else swprintf( aValues[4], 32, L"none" );
         // Frame time parts, average / maximum over the last half second, in ms
         for ( int i = 0; i < PartCount; i++ ) swprintf( aValues[5 + i], 32, L"%.2f / %.2f", m_adPartAvgShown[i], m_adPartMaxShown[i] );
-        const wchar_t *aLabels[5 + PartCount] = { L"Sent/s:", L"Skipped/s:", L"Collapsed/s:", L"Lag:", L"Skipping:",
-                                                  L"Other ms:", L"Notes ms:", L"Scene ms:", L"Present ms:" };
-        for ( int i = 0; i < 5 + PartCount; i++ ) if ( Shown( VisualSettings::StatSent + i ) ) Line( aLabels[i], aValues[i] );
+        // The playback pipeline: a busy decoder with an empty ring is the decoder's limit; a full ring with
+        // a busy sender is the output's (a rising send cost: the synth pushing back)
+        const int P = 5 + PartCount;
+        Rate( aValues[P], m_dDecodedPerSec );
+        swprintf( aValues[P + 1], 32, L"%.0f%%", m_dDecoderBusy * 100.0 );
+        swprintf( aValues[P + 2], 32, L"%.0f%%", m_dSenderBusy * 100.0 );
+        swprintf( aValues[P + 3], 32, L"%.0f%% avg, %.0f%% max", m_dRingAvg * 100.0, m_dRingMax * 100.0 );
+        swprintf( aValues[P + 4], 32, L"%.1f ns/msg", m_Stats.dNsPerMsg );
+        const wchar_t *aLabels[10 + PartCount] = { L"Sent/s:", L"Skipped/s:", L"Collapsed/s:", L"Lag:", L"Skipping:",
+                                                   L"Other ms:", L"Notes ms:", L"Scene ms:", L"Present ms:",
+                                                   L"Decoded/s:", L"Decoder busy:", L"Sender busy:", L"Ring:", L"Send cost:" };
+        // The synth's lines, then the pipeline's, then the frame time parts
+        static const int aOrder[10 + PartCount] = { 0, 1, 2, 3, 4, P, P + 1, P + 2, P + 3, P + 4, 5, 6, 7, 8 };
+        for ( int i : aOrder ) if ( Shown( VisualSettings::StatSent + i ) ) Line( aLabels[i], aValues[i] );
     }
 }
 

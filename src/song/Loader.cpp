@@ -767,6 +767,7 @@ namespace
         llPhase = Timer::NowMicroSecs();
         prog.iStage = LoadProgress::Finalising;
         song->BuildChaseIndex( iThreads );
+        song->BuildSendCounts( iThreads );
         stats.llPayloadBytes = es.llRawBytes;
         stats.aMem[0] = (size_t)es.llDataBytes;
         stats.aMem[1] = es.vChunks.capacity() * sizeof( EventStream::Chunk ) + es.vSeek.capacity() * sizeof( EventStream::SeekPoint );

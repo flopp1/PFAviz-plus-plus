@@ -118,10 +118,16 @@ std::wstring PlaybackEngine::OutputName() const
     return m_sOutputName;
 }
 
-PlaybackEngine::Stats PlaybackEngine::GetStats() const
+PlaybackEngine::Stats PlaybackEngine::GetStats()
 {
     Stats s;
     s.llSent = m_llSent.load( std::memory_order_relaxed );
+    s.llDecoded = m_llDecoded.load( std::memory_order_relaxed );
+    s.llDecodeBusyUs = m_llDecodeBusyUs.load( std::memory_order_relaxed );
+    s.llSendBusyUs = m_llSendBusyUs.load( std::memory_order_relaxed );
+    s.llRingSum = m_llRingSum.load( std::memory_order_relaxed );
+    s.llRingSamples = m_llRingSamples.load( std::memory_order_relaxed );
+    s.iRingMax = m_iRingMax.exchange( 0, std::memory_order_relaxed );
     s.llNoteOns = m_llNoteOns.load( std::memory_order_relaxed );
     s.llSkipped = m_llSkipped.load( std::memory_order_relaxed );
     s.llLagUs = m_llLagUs.load( std::memory_order_relaxed );
@@ -177,7 +183,9 @@ void PlaybackEngine::DecoderThread()
             else
             {
                 vChase.clear();
+                long long t0 = Timer::NowMicroSecs();
                 m_Decoder.Seek( llTarget, llPrev, vChase );
+                m_llDecodeBusyUs.fetch_add( Timer::NowMicroSecs() - t0, std::memory_order_relaxed );
                 for ( size_t i = 0; i < vChase.size() && !m_bStop; )
                 {
                     Slice *s = WriteSlot();
@@ -212,11 +220,12 @@ void PlaybackEngine::DecoderThread()
         long long llNow = m_Clock.Now();
 
         long long llHorizon = llNow + std::max< long long >( 1000, (long long)( 4000 * p.dSpeed ) );
-        long long llDue;
+        long long llDue, t0 = Timer::NowMicroSecs();
         size_t n = m_Decoder.Fill( s->aMsgs, SliceMsgs, llHorizon, llNow, p, llDue );
+        m_llDecodeBusyUs.fetch_add( Timer::NowMicroSecs() - t0, std::memory_order_relaxed );
 
         const PlaybackDecoder::Counters &c = m_Decoder.GetCounters();
-        m_llSent.store( c.llSent, std::memory_order_relaxed );
+        m_llDecoded.store( c.llSent, std::memory_order_relaxed );
         m_llNoteOns.store( c.llNoteOns, std::memory_order_relaxed );
         m_llSkipped.store( c.llSkipped, std::memory_order_relaxed );
         m_iSkipVelocity.store( m_Decoder.SkipVelocity(), std::memory_order_relaxed );
@@ -298,11 +307,19 @@ void PlaybackEngine::SenderThread()
                 long long t0 = Timer::NowMicroSecs();
                 m_pOut->SendBatch( s.aMsgs, s.n );
                 long long t1 = Timer::NowMicroSecs();
+                m_llSendBusyUs.fetch_add( t1 - t0, std::memory_order_relaxed );
+                m_llSent.fetch_add( s.n, std::memory_order_relaxed );
                 double dNs = ( t1 - t0 ) * 1000.0 / s.n;
                 dEma = dEma > 0.0 ? dEma * 0.9 + dNs * 0.1 : dNs;
                 m_dNsPerMsg.store( dEma, std::memory_order_relaxed );
             }
         }
+        // The ring's fill as each slice is taken: full means the output is what holds playback back,
+        // empty (with the decoder busy) the decoder
+        int iFill = ( m_iWrite.load( std::memory_order_relaxed ) - r + RingSize ) % RingSize;
+        m_llRingSum.fetch_add( iFill, std::memory_order_relaxed );
+        m_llRingSamples.fetch_add( 1, std::memory_order_relaxed );
+        if ( iFill > m_iRingMax.load( std::memory_order_relaxed ) ) m_iRingMax.store( iFill, std::memory_order_relaxed );
         m_iRead.store( ( r + 1 ) % RingSize, std::memory_order_release );
     }
 

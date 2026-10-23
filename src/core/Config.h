@@ -27,11 +27,15 @@ struct VisualSettings
     enum KeysShown { All, Song, Custom, All128 } eKeysShown;
     int iFirstKey, iLastKey;
     bool bAlwaysShowControls;
-    // The stats box's lines, in display order (Visual > Statistics...); uStats has bit 1 << Stat for each one shown
+    // The stats box's lines (Visual > Statistics...); uStats has bit 1 << Stat for each one shown. They are
+    // shown in this order, except that the playback pipeline's lines (added later, so the saved bits of
+    // the others stay put) follow the synth's.
     enum Stat { StatTime, StatFPS, StatScore, StatNotes, StatNPS, StatPolyphony, StatSent, StatSkipped, StatCollapsed, StatLag,
-                StatSkipping, StatOtherMs, StatNotesMs, StatSceneMs, StatPresentMs, StatCount };
+                StatSkipping, StatOtherMs, StatNotesMs, StatSceneMs, StatPresentMs,
+                StatDecoded, StatDecoderBusy, StatSenderBusy, StatRing, StatSendCost, StatCount };
     static constexpr unsigned NoteStats = 7u << StatNotes;      // counted while a song loads (Song::noteStats)
-    static constexpr unsigned SynthStats = 31u << StatSent;     // need a MIDI output
+    static constexpr unsigned PipelineStats = 31u << StatDecoded;
+    static constexpr unsigned SynthStats = 31u << StatSent | PipelineStats;     // need a MIDI output
     static constexpr unsigned FrameStats = 15u << StatOtherMs;  // frame time parts, live only
     static constexpr unsigned AllStats = ( 1u << StatCount ) - 1;
     unsigned uStats;
