@@ -12,6 +12,7 @@
 #include <mutex>
 #include <thread>
 #include <unordered_map>
+#include <unordered_set>
 
 #include "core/Lz4.h"
 #include "core/ThreadPool.h"
@@ -639,10 +640,12 @@ public:
             m_vEnd.reserve( nb );
             if ( m_bKeepRanks ) m_vRank.reserve( nb );
             m_vPaired.reserve( nb );
+            m_vEarly.reserve( nb );
             m_vLive.reserve( nb );
             m_vResolved.reserve( nb );
         }
         m_Out.m_vBits.Reserve( (size_t)iExpected * 4 + 1024 );   // at most about 230 bits per note (address space only)
+        if ( pStream ) m_pRing.reset( new StartRec[RingBlocks * KeyStore::BlockSize] );
     }
 
     // A NoteOn: its start fields are final at once and packed as soon as its block is full, so a
@@ -659,6 +662,7 @@ public:
             m_vEnd.emplace_back();
             if ( m_bKeepRanks ) m_vRank.emplace_back();
             m_vPaired.push_back( 0 );
+            m_vEarly.push_back( 0 );
             m_vLive.push_back( 0 );
             m_vResolved.push_back( 0 );
             m_Out.m_vBlocks.emplace_back();
@@ -670,7 +674,32 @@ public:
 
     // Blocks before m_bBase were compacted and freed: every note there is final, and the pairing pass
     // only still asks whether one is paired (a tombstone in a track's stack), which it is
-    bool IsPaired( uint64_t pos ) const { return ( pos >> 6 ) < m_bBase || ( ( m_vPaired[( pos >> 6 ) - m_bBase] >> ( pos & 63 ) ) & 1 ); }
+    // A note paired early (PrePair) is not paired here until its off comes
+    bool IsPaired( uint64_t pos ) const
+    {
+        if ( ( pos >> 6 ) < m_bBase ) return m_setEarly.empty() || !m_setEarly.count( pos );
+        return ( ( ( m_vPaired[( pos >> 6 ) - m_bBase] & ~m_vEarly[( pos >> 6 ) - m_bBase] ) >> ( pos & 63 ) ) & 1 );
+    }
+    // Paired, or paired early: what the block's records say
+    bool PairedBit( uint64_t pos ) const { return ( m_vPaired[( pos >> 6 ) - m_bBase] >> ( pos & 63 ) ) & 1; }
+
+    // Whether PrePair can be used: not when the offs' ordinals are kept, as the off is not known yet
+    bool CanPrePair() const { return !m_bKeepRanks; }
+
+    // A note whose off the count pass found (Song::vKnownEnd), at its NoteOn: final at once, with that
+    // end. To the pairing rules it is unpaired until the off comes (IsPaired, Pair). Only for a note
+    // paired once (a note paired again would end at its last off)
+    void PrePair( uint64_t pos, uint64_t llEndU )
+    {
+        size_t b = pos >> 6;
+        unsigned j = pos & 63;
+        EndPending &e = End( b );
+        e.aPairs[j] = 1;
+        e.SetEndU( j, llEndU );
+        m_vPaired[b - m_bBase] |= uint64_t( 1 ) << j;
+        m_vEarly[b - m_bBase] |= uint64_t( 1 ) << j;
+        Resolve( pos );
+    }
     bool IsLive( uint64_t pos ) const { return ( pos >> 6 ) >= m_bBase && ( ( m_vLive[( pos >> 6 ) - m_bBase] >> ( pos & 63 ) ) & 1 ); }
     bool IsResolved( uint64_t pos ) const { return ( pos >> 6 ) < m_bBase || ( ( m_vResolved[( pos >> 6 ) - m_bBase] >> ( pos & 63 ) ) & 1 ); }
     void SetLive( uint64_t pos, bool bLive )
@@ -686,6 +715,13 @@ public:
 
     void Pair( uint64_t pos, uint64_t llU, uint32_t uOrd, bool bFromSlot )
     {
+        // The off of a note paired early: it is paired now (its block may be compacted and dropped)
+        if ( ( pos >> 6 ) < m_bBase ? !m_setEarly.empty() && m_setEarly.erase( pos ) : ( m_vEarly[( pos >> 6 ) - m_bBase] >> ( pos & 63 ) ) & 1 )
+        {
+            if ( ( pos >> 6 ) >= m_bBase ) m_vEarly[( pos >> 6 ) - m_bBase] &= ~( uint64_t( 1 ) << ( pos & 63 ) );
+            if ( bFromSlot ) SetLive( pos, false );
+            return;
+        }
         EndPending &e = End( pos >> 6 );
         unsigned j = pos & 63;
         if ( IsPaired( pos ) && m_bFirstPairingOnly )
@@ -746,6 +782,8 @@ public:
         m_vEnd.clear();
         m_vRank.clear(); m_vRank.shrink_to_fit();
         m_vPaired.clear(); m_vPaired.shrink_to_fit();
+        m_vEarly.clear(); m_vEarly.shrink_to_fit();
+        std::unordered_set< uint64_t >().swap( m_setEarly );
         m_vLive.clear(); m_vLive.shrink_to_fit();
         m_vResolved.clear(); m_vResolved.shrink_to_fit();
         m_vResolvedCount.clear(); m_vResolvedCount.shrink_to_fit();
@@ -835,17 +873,45 @@ private:
         if ( s + w > 64 ) p[1] |= v >> ( 64 - s );
     }
 
+    // A full block's starts (n < 64: the last block). A streaming builder keeps them as they are in
+    // its ring while the block is among the newest RingBlocks: a block that completes there is fed
+    // to the compactor from them (Advance), never packed and decoded. A block that leaves the ring
+    // unfed is packed then.
     void PackStart( size_t b, uint32_t n )
     {
+        if ( m_pRing )
+        {
+            while ( b - m_bRawFrom >= RingBlocks )
+            {
+                size_t e = m_bRawFrom++;
+                if ( e < m_bFed ) continue;
+                PackStartBits( e, &m_pRing[( e % RingBlocks ) * KeyStore::BlockSize], Blk( e ).uCount );
+                if ( Blk( e ).bEndPacked ) PackEndBits( e );
+            }
+            memcpy( &m_pRing[( b % RingBlocks ) * KeyStore::BlockSize], m_aOpen, n * sizeof( StartRec ) );
+            KeyStore::Block &blk = Blk( b );
+            blk.uCount = (uint8_t)n;
+            blk.bStartPacked = 1;
+            if ( m_vResolvedCount[b - m_bBase] == KeyStore::BlockSize ) PackEnd( b );
+            return;
+        }
+        PackStartBits( b, m_aOpen, n );
+        if ( m_vResolvedCount[b - m_bBase] == KeyStore::BlockSize ) PackEnd( b );
+    }
+
+    bool Raw( size_t b ) const { return m_pRing && b >= m_bRawFrom; }
+
+    void PackStartBits( size_t b, const StartRec *pOpen, uint32_t n )
+    {
         KeyStore::Block &blk = Blk( b );
-        uint64_t llBase = m_aOpen[0].llStartU, llMaxDS = 0;
+        uint64_t llBase = pOpen[0].llStartU, llMaxDS = 0;
         uint32_t uSlotMin = UINT32_MAX, uSlotMax = 0, aRank[64];
         for ( uint32_t j = 0; j < n; j++ )
         {
-            llMaxDS = std::max( llMaxDS, m_aOpen[j].llStartU - llBase );
-            uSlotMin = std::min( uSlotMin, m_aOpen[j].uSlot );
-            uSlotMax = std::max( uSlotMax, m_aOpen[j].uSlot );
-            aRank[j] = m_aOpen[j].uRank;
+            llMaxDS = std::max( llMaxDS, pOpen[j].llStartU - llBase );
+            uSlotMin = std::min( uSlotMin, pOpen[j].uSlot );
+            uSlotMax = std::max( uSlotMax, pOpen[j].uSlot );
+            aRank[j] = pOpen[j].uRank;
         }
         blk.llStartBase = llBase;
         blk.uSlotBase = uSlotMin;
@@ -857,15 +923,23 @@ private:
         uint64_t llBit = blk.llBitStart = Reserve( (uint64_t)n * blk.uStartBits );
         for ( uint32_t j = 0; j < n; j++ )
         {
-            Write( llBit, blk.wStart, m_aOpen[j].llStartU - llBase ); llBit += blk.wStart;
-            Write( llBit, blk.wSlot, m_aOpen[j].uSlot - uSlotMin ); llBit += blk.wSlot;
-            Write( llBit, blk.wRank, (uint64_t)( (int64_t)m_aOpen[j].uRank - blk.llRankBase - (int64_t)j * blk.iRankStride ) ); llBit += blk.wRank;
+            Write( llBit, blk.wStart, pOpen[j].llStartU - llBase ); llBit += blk.wStart;
+            Write( llBit, blk.wSlot, pOpen[j].uSlot - uSlotMin ); llBit += blk.wSlot;
+            Write( llBit, blk.wRank, (uint64_t)( (int64_t)pOpen[j].uRank - blk.llRankBase - (int64_t)j * blk.iRankStride ) ); llBit += blk.wRank;
         }
         blk.bStartPacked = 1;
-        if ( m_vResolvedCount[b - m_bBase] == KeyStore::BlockSize ) PackEnd( b );
     }
 
+    // Every note of block b is final. A block in the ring is only marked so (its end fields stay
+    // pending until it is fed)
     void PackEnd( size_t b )
+    {
+        if ( Raw( b ) ) Blk( b ).bEndPacked = 1;
+        else PackEndBits( b );
+        if ( m_pStream ) Advance();
+    }
+
+    void PackEndBits( size_t b )
     {
         KeyStore::Block &blk = Blk( b );
         uint32_t n = blk.uCount;
@@ -879,7 +953,7 @@ private:
         {
             uint64_t pos = ( (uint64_t)b << 6 ) + j;
             uint64_t llStart = blk.llStartBase + m_Out.Read( blk.llBitStart + (uint64_t)j * blk.uStartBits, blk.wStart );
-            bool bPaired = IsPaired( pos ) && pE;
+            bool bPaired = PairedBit( pos ) && pE;
             aEnd[j] = bPaired ? pE->EndU( j ) : llStart;
             aEndRank[j] = bPaired ? RankOf( pos ) : 0;
             aFlags[j] = ( bPaired ? 0 : 1 ) | ( bPaired && pE->aPairs[j] > 1 ? 2 : 0 );
@@ -904,7 +978,30 @@ private:
         blk.bEndPacked = 1;
         m_vEnd[b - m_bBase].reset();
         if ( m_bKeepRanks ) m_vRank[b - m_bBase].reset();
-        if ( m_pStream ) Advance();
+    }
+
+    // A ring block's notes, as DecodeBlock would give them had it been packed
+    unsigned RawBlock( size_t b, NoteView *pOut )
+    {
+        const StartRec *pS = &m_pRing[( b % RingBlocks ) * KeyStore::BlockSize];
+        const EndPending *pE = m_vEnd[b - m_bBase].get();
+        unsigned n = Blk( b ).uCount;
+        for ( unsigned j = 0; j < n; j++ )
+        {
+            uint64_t pos = ( (uint64_t)b << 6 ) + j;
+            bool bPaired = PairedBit( pos ) && pE;
+            NoteView &v = pOut[j];
+            v.llStartU = pS[j].llStartU;
+            v.llEndU = bPaired ? pE->EndU( j ) : v.llStartU;
+            v.uSlot = pS[j].uSlot;
+            v.uRank = pS[j].uRank;
+            v.uEndRank = bPaired && m_bEndRanks ? RankOf( pos ) : 0;
+            v.bUnpaired = !bPaired;
+            v.bWeird = bPaired && pE->aPairs[j] > 1;
+        }
+        m_vEnd[b - m_bBase].reset();
+        if ( m_bKeepRanks ) m_vRank[b - m_bBase].reset();
+        return n;
     }
 
     // Decodes Full block b, as KeyStore::GetBlock does
@@ -940,12 +1037,17 @@ private:
     const PackedMonotone &m_Times;
     uint64_t m_n = 0, m_llBits = 0;
     StartRec m_aOpen[64];
+    static const size_t RingBlocks = 64;
+    std::unique_ptr< StartRec[] > m_pRing;      // streaming: the starts of blocks m_bRawFrom on, by b % RingBlocks
+    size_t m_bRawFrom = 0;
     // Per block from m_bBase on (a streaming builder drops the blocks it has compacted)
     size_t m_nBlocks = 0, m_bBase = 0, m_bFed = 0;
     std::vector< uint8_t > m_vResolvedCount;
     std::vector< std::unique_ptr< EndPending > > m_vEnd;    // while needed
     std::vector< std::unique_ptr< uint32_t[] > > m_vRank;   // with m_bKeepRanks, while needed
     std::vector< uint64_t > m_vPaired, m_vLive, m_vResolved; // one word per block
+    std::vector< uint64_t > m_vEarly;                       // per block: paired early, its off still to come
+    std::unordered_set< uint64_t > m_setEarly;              // the same before m_bBase
     std::vector< WeirdTmp > m_vWeirdTmp;
     bool m_bWeird = false;
     bool m_bFirstPairingOnly = false;
@@ -1197,7 +1299,7 @@ void KeyBuilder::Advance()
     size_t bFed0 = m_bFed;
     while ( m_bFed < m_nBlocks && Blk( m_bFed ).bEndPacked )
     {
-        unsigned n = DecodeBlock( m_bFed, a );
+        unsigned n = Raw( m_bFed ) ? RawBlock( m_bFed, a ) : DecodeBlock( m_bFed, a );
         for ( unsigned j = 0; j < n; j++ )
         {
             if ( a[j].bUnpaired ) m_llUnpaired++;
@@ -1209,7 +1311,8 @@ void KeyBuilder::Advance()
     if ( m_bFed == bFed0 ) return;
     // Every bit of the blocks from the frontier on lies at or after the frontier block's start
     // records (start records are packed in block order, end records after their block's start)
-    uint64_t llLive = m_bFed < m_nBlocks && Blk( m_bFed ).bStartPacked ? Blk( m_bFed ).llBitStart : m_llBits;
+    // (ring blocks have no bits: from a ring block on, none is live)
+    uint64_t llLive = m_bFed < m_nBlocks && !Raw( m_bFed ) && Blk( m_bFed ).bStartPacked ? Blk( m_bFed ).llBitStart : m_llBits;
     m_Out.m_vBits.DecommitBefore( (size_t)( llLive >> 6 ) );
     // Drop the per-block entries before the frontier, when they are at least as many as the rest
     size_t iDead = m_bFed - m_bBase, iLive = m_nBlocks - m_bFed;
@@ -1218,11 +1321,26 @@ void KeyBuilder::Advance()
         m_vResolvedCount.erase( m_vResolvedCount.begin(), m_vResolvedCount.begin() + iDead );
         m_vEnd.erase( m_vEnd.begin(), m_vEnd.begin() + iDead );
         if ( m_bKeepRanks ) m_vRank.erase( m_vRank.begin(), m_vRank.begin() + iDead );
+        for ( size_t i = 0; i < iDead; i++ )
+            for ( uint64_t w = m_vEarly[i]; w; w &= w - 1 ) m_setEarly.insert( ( ( m_bBase + i ) << 6 ) + __builtin_ctzll( w ) );
+        m_vEarly.erase( m_vEarly.begin(), m_vEarly.begin() + iDead );
         m_vPaired.erase( m_vPaired.begin(), m_vPaired.begin() + iDead );
         m_vLive.erase( m_vLive.begin(), m_vLive.begin() + iDead );
         m_vResolved.erase( m_vResolved.begin(), m_vResolved.begin() + iDead );
         m_Out.m_vBlocks.erase( m_Out.m_vBlocks.begin(), m_Out.m_vBlocks.begin() + iDead );
         m_bBase = m_bFed;
+        // After a long wait (a held note) the vectors have grown to the queue; give that back
+        if ( m_Out.m_vBlocks.capacity() > 4 * m_Out.m_vBlocks.size() + 4096 )
+        {
+            m_vResolvedCount.shrink_to_fit();
+            m_vEnd.shrink_to_fit();
+            m_vRank.shrink_to_fit();
+            m_vEarly.shrink_to_fit();
+            m_vPaired.shrink_to_fit();
+            m_vLive.shrink_to_fit();
+            m_vResolved.shrink_to_fit();
+            m_Out.m_vBlocks.shrink_to_fit();
+        }
     }
 }
 
@@ -1715,11 +1833,29 @@ public:
     }
 
 private:
+    // A song can have a million (track, key) states at once, nearly all on one channel: the slots of
+    // the first channel used are here, the others' apart. What a NoteOn or NoteOff touches comes first;
+    // the stack (overflowing channels) and the other channels' slots after
     struct KeyState
     {
         uint32_t aCount[16];
-        uint32_t aSlots[16][10];
-        RunStack stack;                     // every NoteOn of this (track, key); paired ones are tombstones
+        uint32_t aSlots0[10];
+        int8_t cCh0;                        // the channel of aSlots0 (-1: none yet)
+        bool bStacked;                      // since a channel first overflowed: every NoteOn is in the stack
+        uint32_t uOns;                      // NoteOns so far
+        const uint64_t *pKnown, *pKnownEnd; // its notes in Song::vKnownId not reached yet
+        // Until a channel overflows, empty: the overflow pairs the latest unpaired NoteOn of the key in
+        // the track, which is then the stack's last; from then on, every NoteOn (paired ones are
+        // tombstones), the unpaired slots' first
+        RunStack stack;
+        std::unique_ptr< uint32_t[] > pMore; // 16 x 10, for the other channels'
+        uint32_t *Slots( unsigned ch )
+        {
+            if ( cCh0 == (int)ch ) return aSlots0;
+            if ( cCh0 < 0 ) { cCh0 = (int8_t)ch; return aSlots0; }
+            if ( !pMore ) pMore.reset( new uint32_t[16 * 10] );
+            return &pMore[ch * 10];
+        }
     };
 
     KeyState &State( uint32_t uTrack, unsigned key )
@@ -1731,7 +1867,15 @@ private:
             else { m_vPool.emplace_back(); idx = (uint32_t)m_vPool.size(); }
             KeyState &s = m_vPool[idx - 1];
             memset( s.aCount, 0, sizeof( s.aCount ) );
+            s.cCh0 = -1;
+            s.bStacked = false;
+            s.pMore.reset();
             s.stack.Clear();
+            s.uOns = 0;
+            const std::vector< uint64_t > &v = m_Song.vKnownId;
+            uint64_t llLo = ( (uint64_t)uTrack << 48 ) | ( (uint64_t)key << 40 ), llHi = llLo | ( ( uint64_t( 1 ) << 40 ) - 1 );
+            s.pKnown = v.data() + ( std::lower_bound( v.begin(), v.end(), llLo ) - v.begin() );
+            s.pKnownEnd = v.data() + ( std::upper_bound( v.begin(), v.end(), llHi ) - v.begin() );
         }
         return m_vPool[idx - 1];
     }
@@ -1742,14 +1886,43 @@ private:
         KeyBuilder &kb = *m_vBuilders[key];
         uint64_t pos = kb.Append( u, uTrack * 16 + ch, uOrd );
         KeyState &s = State( uTrack, key );
+        // A note whose pairing the count pass found is final now: one no off will pair would otherwise be
+        // live in its slot until its track ends, a long one until its off, and every later note of the
+        // key would wait for it
+        bool bMatch = s.pKnown < s.pKnownEnd && ( *s.pKnown & ( ( uint64_t( 1 ) << 40 ) - 1 ) ) == s.uOns, bKnown = bMatch;
+        uint64_t llKnownEnd = bKnown ? m_Song.vKnownEnd[s.pKnown - m_Song.vKnownId.data()] : UINT64_MAX;
+        if ( bKnown && llKnownEnd != UINT64_MAX && !kb.CanPrePair() ) bKnown = false;
+        s.pKnown += bMatch;
+        s.uOns++;
         if ( s.aCount[ch] < 10 )
         {
-            s.aSlots[ch][s.aCount[ch]] = (uint32_t)pos;
-            kb.SetLive( pos, true );
+            s.Slots( ch )[s.aCount[ch]] = (uint32_t)pos;
+            if ( !bKnown ) kb.SetLive( pos, true );
         }
+        else if ( !s.bStacked )
+        {
+            // The first overflow: the unpaired NoteOns in slots go into the stack, in order
+            uint32_t aPos[160];
+            unsigned n = 0;
+            for ( unsigned c = 0; c < 16; c++ )
+                if ( s.aCount[c] )
+                {
+                    const uint32_t *pSlots = s.Slots( c );
+                    for ( uint32_t j = 0; j < std::min< uint32_t >( s.aCount[c], 10 ); j++ )
+                        if ( !kb.IsPaired( pSlots[j] ) ) aPos[n++] = pSlots[j];
+                }
+            std::sort( aPos, aPos + n );
+            for ( unsigned j = 0; j < n; j++ ) s.stack.Push( aPos[j] );
+            s.bStacked = true;
+        }
+        if ( s.bStacked )
+        {
+            while ( !s.stack.Empty() && kb.IsPaired( s.stack.Back() ) ) s.stack.PopBack();
+            s.stack.Push( (uint32_t)pos );
+        }
+        if ( bKnown && llKnownEnd == UINT64_MAX ) kb.Resolve( pos );
+        else if ( bKnown ) kb.PrePair( pos, llKnownEnd );
         s.aCount[ch]++;
-        while ( !s.stack.Empty() && kb.IsPaired( s.stack.Back() ) ) s.stack.PopBack();
-        s.stack.Push( (uint32_t)pos );
     }
 
     void Off( uint32_t uTrack, unsigned ch, unsigned key, uint64_t u, uint32_t uOrd )
@@ -1761,10 +1934,11 @@ private:
         if ( m_pStats ) m_pStats->Off( u );    // releases a held note (NoteStats)
         KeyBuilder &kb = *m_vBuilders[key];
         if ( s.aCount[ch] <= 10 )
-            kb.Pair( s.aSlots[ch][s.aCount[ch] - 1], u, uOrd, true );
+            kb.Pair( s.Slots( ch )[s.aCount[ch] - 1], u, uOrd, true );
         else
         {
-            // Overflow: the latest unpaired NoteOn of this pitch in the track, on any channel
+            // Overflow: the latest unpaired NoteOn of this pitch in the track, on any channel (the state
+            // is stacked: a channel overflowed)
             while ( !s.stack.Empty() && kb.IsPaired( s.stack.Back() ) ) s.stack.PopBack();
             if ( !s.stack.Empty() ) kb.Pair( s.stack.Back(), u, uOrd, false );
         }
@@ -1783,9 +1957,9 @@ private:
             for ( int ch = 0; ch < 16; ch++ )
                 for ( uint32_t j = 0; j < std::min< uint32_t >( s.aCount[ch], 10 ); j++ )
                 {
-                    uint64_t pos = s.aSlots[ch][j];
+                    uint64_t pos = s.Slots( ch )[j];
                     kb.SetLive( pos, false );
-                    if ( kb.IsPaired( pos ) ) kb.Resolve( pos );
+                    kb.Resolve( pos );
                 }
             s.stack.ForEach( [&]( uint32_t pos ) { if ( !kb.IsPaired( pos ) ) kb.Resolve( pos ); } );
             s.stack.Clear();

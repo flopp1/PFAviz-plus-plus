@@ -327,6 +327,12 @@ struct Song
     std::vector< std::vector< RefMetaEvent > > vTrackMeta; // the same, per track in file order
     std::vector< uint64_t > vTrackLastU;    // per track: unique tick of its last channel event (UINT64_MAX: none)
     uint32_t aKeyNoteCounts[128] = {};      // NoteOns (velocity > 0) per key, for later phases
+    // NoteOns whose pairing the count pass already knows (PairSim in Loader.cpp): the ones no off will
+    // pair, and long notes paired once. Ascending ids, track << 48 | key << 40 | the note's ordinal
+    // among its track's NoteOns of that key; vKnownEnd: the end's unique tick, UINT64_MAX for
+    // unpaired. The pairing pass makes these final at their NoteOn instead of at their off or their
+    // track's end. Freed after it.
+    std::vector< uint64_t > vKnownId, vKnownEnd;
     EventStream stream;
     std::vector< ChaseEvent > vChase;       // every CC and program change
     VisualStore visual;                     // notes per key, paired (built by BuildVisualStore)

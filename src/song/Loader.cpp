@@ -30,12 +30,14 @@ namespace
 
     enum ScanMode { Count, Emit, Fused };
 
+    // 8 bytes (a song can have hundreds of millions of groups, held from the count pass to the build)
     struct GroupRec
     {
-        int64_t llTick;     // after the merge: the group's payload offset
-        uint32_t uSize;
-        uint32_t uEvents;
+        uint32_t uA;        // to the build: the tick less the track's previous group's (TrackScan::AddGroup);
+                            // from the build: the offset of the group's runs in its window's buffer
+        uint32_t uSize;     // bytes of its runs
     };
+    const unsigned TickIndexShift = 12;     // TrackScan::vTickIndex: every 4096th group
 
     struct Checkpoint
     {
@@ -45,16 +47,137 @@ namespace
         uint8_t cRunning;
     };
 
+    // The pairing pass's rules (VisualStoreBuilder::On and Off in VisualStore.cpp) over one track, in
+    // its file order, which is its order in the stream: up to 10 slots per channel and key, LIFO; past
+    // 10, the latest unpaired NoteOn of the key in the track, on any channel. Pairing is per track, so
+    // this is exact. Kept: the NoteOns no off pairs, and the end of each note held llLongTicks or more
+    // and paired once (24 bytes each until the merge, which keeps the longest of them; a cap per
+    // track drops too many in a track of sustained notes). The pairing pass makes those final at their
+    // NoteOn: otherwise a note is final only at its off (or, unpaired, at its track's end), and every
+    // later note of its key waits for it (Song::vKnownId).
+    class PairSim
+    {
+    public:
+        explicit PairSim( int64_t llLongTicks ) : m_llLongTicks( llLongTicks ) {}
+        void On( unsigned ch, unsigned key, int64_t llTick )
+        {
+            if ( !m_a[key] ) m_a[key].reset( new Key() );
+            Key &k = *m_a[key];
+            uint32_t id = k.n++;
+            if ( ( id >> 6 ) >= k.vPaired.size() ) { k.vPaired.push_back( 0 ); k.vTwice.push_back( 0 ); }
+            if ( k.aCount[ch] < 10 ) { k.aSlots[ch][k.aCount[ch]] = id; k.aSlotTick[ch][k.aCount[ch]] = llTick; }
+            k.aCount[ch]++;
+            while ( !k.vStack.empty() && Paired( k, Back( k ) ) ) PopBack( k );
+            Push( k, id, llTick );
+        }
+        void Off( unsigned ch, unsigned key, int64_t llTick )
+        {
+            if ( !m_a[key] ) return;
+            Key &k = *m_a[key];
+            if ( !k.aCount[ch] ) return;
+            if ( k.aCount[ch] <= 10 ) Pair( k, k.aSlots[ch][k.aCount[ch] - 1], k.aSlotTick[ch][k.aCount[ch] - 1], llTick );
+            else
+            {
+                while ( !k.vStack.empty() && Paired( k, Back( k ) ) ) PopBack( k );
+                if ( !k.vStack.empty() ) Pair( k, Back( k ), k.vStack.back().llTick, llTick );
+            }
+            k.aCount[ch]--;
+        }
+        // Appends the track's known notes in id order: id = track << 48 | key << 40 | the note's
+        // ordinal among the track's NoteOns of the key; end tick and duration -1: unpaired
+        void Finish( uint64_t llTrack, std::vector< uint64_t > &vId, std::vector< int64_t > &vEnd, std::vector< int64_t > &vDur )
+        {
+            for ( unsigned key = 0; key < 128; key++ )
+            {
+                if ( !m_a[key] ) continue;
+                Key &k = *m_a[key];
+                std::sort( k.vLong.begin(), k.vLong.end(), []( const Long &a, const Long &b ) { return a.uId < b.uId; } );
+                uint64_t llBase = ( llTrack << 48 ) | ( (uint64_t)key << 40 );
+                size_t l = 0;
+                auto LongBefore = [&]( uint64_t id ) {
+                    for ( ; l < k.vLong.size() && k.vLong[l].uId < id; l++ )
+                        if ( !Bit( k.vTwice, k.vLong[l].uId ) )
+                        {
+                            vId.push_back( llBase | k.vLong[l].uId );
+                            vEnd.push_back( k.vLong[l].llEnd );
+                            vDur.push_back( k.vLong[l].llDur );
+                        }
+                };
+                for ( size_t w = 0; w < k.vPaired.size(); w++ )
+                {
+                    uint64_t v = ~k.vPaired[w];
+                    if ( w + 1 == k.vPaired.size() && ( k.n & 63 ) ) v &= ( uint64_t( 1 ) << ( k.n & 63 ) ) - 1;
+                    for ( ; v; v &= v - 1 )
+                    {
+                        uint64_t id = w * 64 + __builtin_ctzll( v );
+                        LongBefore( id );
+                        vId.push_back( llBase | id );
+                        vEnd.push_back( -1 );
+                        vDur.push_back( -1 );
+                    }
+                }
+                LongBefore( UINT64_MAX );
+                m_a[key].reset();
+            }
+        }
+
+    private:
+        struct Run { uint32_t uFirst, uLen; int64_t llTick; };     // consecutive NoteOns at one tick
+        struct Long { uint32_t uId; int64_t llEnd, llDur; };        // a long note's first off
+        struct Key
+        {
+            uint32_t aCount[16] = {};
+            uint32_t aSlots[16][10];
+            int64_t aSlotTick[16][10];
+            uint32_t n = 0;
+            std::vector< uint64_t > vPaired, vTwice;                // bits per NoteOn
+            std::vector< Run > vStack;
+            std::vector< Long > vLong;
+        };
+        static bool Bit( const std::vector< uint64_t > &v, uint32_t id ) { return ( v[id >> 6] >> ( id & 63 ) ) & 1; }
+        static bool Paired( const Key &k, uint32_t id ) { return Bit( k.vPaired, id ); }
+        void Pair( Key &k, uint32_t id, int64_t llOnTick, int64_t llTick )
+        {
+            if ( Paired( k, id ) ) { k.vTwice[id >> 6] |= uint64_t( 1 ) << ( id & 63 ); return; }
+            k.vPaired[id >> 6] |= uint64_t( 1 ) << ( id & 63 );
+            if ( llTick - llOnTick >= m_llLongTicks ) k.vLong.push_back( { id, llTick, llTick - llOnTick } );
+        }
+        static uint32_t Back( const Key &k ) { return k.vStack.back().uFirst + k.vStack.back().uLen - 1; }
+        static void Push( Key &k, uint32_t id, int64_t llTick )
+        {
+            if ( !k.vStack.empty() && k.vStack.back().uFirst + k.vStack.back().uLen == id && k.vStack.back().llTick == llTick ) k.vStack.back().uLen++;
+            else k.vStack.push_back( { id, 1, llTick } );
+        }
+        static void PopBack( Key &k ) { if ( !--k.vStack.back().uLen ) k.vStack.pop_back(); }
+        int64_t m_llLongTicks;
+        std::unique_ptr< Key > m_a[128];
+    };
+
     struct TrackScan
     {
         uint64_t llBegin = 0, llEnd = 0;    // byte range of the track data in the file
         std::vector< GroupRec > vGroups;
+        std::vector< int64_t > vTickIndex;      // per 4096 groups: the tick of the group before (INT64_MIN: none)
+        std::vector< std::pair< uint64_t, int64_t > > vBigDelta;  // (group, delta) where uA could not hold it
+        int64_t llLastTick = 0;                 // the last group's
         std::vector< Checkpoint > vCps;
+        void AddGroup( int64_t llTick, uint32_t uSize )
+        {
+            uint64_t g = vGroups.size();
+            if ( !( g & ( ( uint64_t( 1 ) << TickIndexShift ) - 1 ) ) ) vTickIndex.push_back( g ? llLastTick : INT64_MIN );
+            int64_t d = llTick - ( g ? llLastTick : 0 );
+            if ( d >= (int64_t)UINT32_MAX ) { vBigDelta.push_back( { g, d } ); vGroups.push_back( { UINT32_MAX, uSize } ); }
+            else vGroups.push_back( { (uint32_t)d, uSize } );
+            llLastTick = llTick;
+        }
         RefTrackInfo info;
         std::vector< RefMetaEvent > vMeta;
         uint32_t aKeyCounts[128] = {};
         uint64_t llChannelEvents = 0;
         uint64_t llOutOfRange = 0;          // channel events dropped for a key, controller or program past 127
+        int64_t llLongTicks = 0;            // PairSim's threshold
+        std::vector< uint64_t > vKnownId;   // PairSim's, as Song::vKnownId and vKnownEnd (ticks here)
+        std::vector< int64_t > vKnownEnd, vKnownDur;
         // Fused read (DESIGN.md 4.2a): the track's groups as encoded by the emit pass (runs only, no group
         // headers), LZ4-compressed in chunks that hold whole groups
         struct PackedChunk
@@ -90,13 +213,48 @@ namespace
         }
     }
 
+    // A track's group ticks in order (TrackScan::AddGroup), from a group on
+    struct TickCursor
+    {
+        const TrackScan *p;
+        uint64_t g = 0;         // the next group
+        int64_t llPrev = 0;     // the tick of the group before it (0 before the first: deltas start there)
+        size_t iBig = 0;
+        explicit TickCursor( const TrackScan &s ) : p( &s ) {}
+        bool Done() const { return g >= p->vGroups.size(); }
+        int64_t Peek() const { uint32_t a = p->vGroups[g].uA; return llPrev + ( a != UINT32_MAX ? (int64_t)a : p->vBigDelta[iBig].second ); }
+        int64_t Next()
+        {
+            uint32_t a = p->vGroups[g++].uA;
+            llPrev += a != UINT32_MAX ? (int64_t)a : p->vBigDelta[iBig++].second;
+            return llPrev;
+        }
+        // Before the first group at tick t or later
+        static TickCursor At( const TrackScan &s, int64_t t )
+        {
+            TickCursor c( s );
+            const std::vector< int64_t > &vi = s.vTickIndex;
+            size_t k = (size_t)( std::lower_bound( vi.begin(), vi.end(), t ) - vi.begin() );
+            if ( k > 1 )
+            {
+                c.g = uint64_t( k - 1 ) << TickIndexShift;
+                c.llPrev = vi[k - 1];
+                c.iBig = (size_t)( std::lower_bound( s.vBigDelta.begin(), s.vBigDelta.end(), std::make_pair( c.g, INT64_MIN ) ) - s.vBigDelta.begin() );
+            }
+            while ( !c.Done() && c.Peek() < t ) c.Next();
+            return c;
+        }
+    };
+
     // One track, SMF semantics identical to RefMidi::ParseTrack (DESIGN.md 1.5).
     // Count: fills pScan (groups with their encoded sizes, checkpoints, info, meta).
-    // Emit:  re-reads from a checkpoint and writes groups [llFirstGroup, llStopGroup) to the payload.
+    // Emit:  re-reads from a checkpoint and writes groups [llFirstWrite, llStopGroup) to the payload
+    //        (the groups' runs at their offsets in it, GroupRec::uA); the groups between the checkpoint
+    //        and llFirstWrite go to pDiscard (room for the largest group).
     // Fused: Count, and also encodes the groups' runs into pScan->vPacked (DESIGN.md 4.2a).
     template < int MODE >
     void ScanTrack( const uint8_t *pTrack, const uint8_t *pEnd, const Checkpoint &start, uint64_t llStopGroup, int iTrack,
-                    TrackScan *pScan, const GroupRec *pGroups, uint8_t *pPayload )
+                    TrackScan *pScan, const GroupRec *pGroups, uint8_t *pPayload, uint64_t llFirstWrite = 0, uint8_t *pDiscard = nullptr )
     {
         constexpr bool COUNT = MODE != Emit, WRITE = MODE != Count;
         const uint8_t *p = pTrack + start.llPos;
@@ -108,6 +266,7 @@ namespace
         uint32_t uRunKey = UINT32_MAX;
         // count state
         uint32_t uSize = 0, uEvents = 0;
+        PairSim sim( COUNT ? pScan->llLongTicks : 0 );
         // emit state
         uint8_t *pDst = nullptr, *pLastKey = nullptr, *pRunHeader = nullptr;
         // fused state: the runs of the groups since the last chunk, in a buffer that grows for huge groups
@@ -199,12 +358,12 @@ namespace
                     if ( MODE == Emit && llNext >= llStopGroup ) break;
                     if ( COUNT )
                     {
-                        if ( llGroup >= 0 ) pScan->vGroups.push_back( { llGroupTick, uSize, uEvents } );
+                        if ( llGroup >= 0 ) pScan->AddGroup( llGroupTick, uSize );
                         if ( MODE == Count && llNext > 0 && llNext % CheckpointEvery == 0 )
                             pScan->vCps.push_back( { (uint64_t)( pEventStart - pTrack ), llTickBefore, llNext, (uint8_t)iRunningBefore } );
                         uSize = uEvents = 0;
                     }
-                    if ( MODE == Emit ) pDst = pPayload + pGroups[llNext].llTick;
+                    if ( MODE == Emit ) pDst = llNext >= llFirstWrite ? pPayload + pGroups[llNext].uA : pDiscard;
                     else if ( MODE == Fused && pDst - pStage.get() >= (ptrdiff_t)FusedChunk ) Flush( llNext );
                     llGroup = (int64_t)llNext;
                     llGroupTick = llTick;
@@ -250,6 +409,8 @@ namespace
 
                 if ( COUNT )
                 {
+                    if ( iType == 0x9 && aData[1] > 0 ) sim.On( iChannel, aData[0], llTick );
+                    else if ( iType == 0x8 || iType == 0x9 ) sim.Off( iChannel, aData[0], llTick );
                     uEvents++;
                     pScan->llChannelEvents++;
                     AddInfo( llTick );
@@ -319,7 +480,8 @@ namespace
         }
 
         CloseGroup();
-        if ( COUNT && llGroup >= 0 ) pScan->vGroups.push_back( { llGroupTick, uSize, uEvents } );
+        if ( COUNT && llGroup >= 0 ) pScan->AddGroup( llGroupTick, uSize );
+        if ( COUNT ) sim.Finish( (uint64_t)iTrack, pScan->vKnownId, pScan->vKnownEnd, pScan->vKnownDur );
         Flush( (uint64_t)( llGroup + 1 ) );
     }
 
@@ -383,6 +545,9 @@ namespace
         uint64_t llNextChunk = 8 + llHdr;
         std::vector< std::unique_ptr< TrackScan > > vScans;
         std::atomic< uint64_t > llBytesCounted{ 0 };
+        // A note held this long (4 beats) has its end found by the count pass (PairSim)
+        const int64_t llLongTicks = (int64_t)info.iDivision * 4;
+        std::vector< int64_t > vKnownEndTick;   // Song::vKnownEnd in ticks, until the unique ticks are known
         Parallel::For( iThreads, (size_t)iThreads, [&]( size_t, int ) {
             for ( ;; )
             {
@@ -403,6 +568,7 @@ namespace
                         pScan = vScans.back().get();
                         pScan->llBegin = llBegin;
                         pScan->llEnd = llEnd;
+                        pScan->llLongTicks = llLongTicks;
                         prog.llTracksFound = vScans.size();
                     }
                 }
@@ -428,6 +594,25 @@ namespace
         // Track info aggregation (MIDIInfo::AddTrackInfo)
         song->vTracks.resize( vScans.size() );
         song->vTrackMeta.resize( vScans.size() );
+        // The long notes kept: the longest max( 1 M, notes / 256 ). (Each one whose block is compacted
+        // before its off costs a set entry while it waits, so more is not better: ranking by the notes a
+        // hold blocks, from a beat, made Night of Nights' pairing peak 0.3 GB higher than this)
+        int64_t llKeepDur = 0;
+        {
+            uint64_t llNotes = 0;
+            std::vector< int64_t > vDur;
+            for ( auto &sc : vScans )
+            {
+                for ( int k = 0; k < 128; k++ ) llNotes += sc->aKeyCounts[k];
+                for ( int64_t d : sc->vKnownDur ) if ( d >= 0 ) vDur.push_back( d );
+            }
+            size_t iCap = (size_t)std::max< uint64_t >( 1 << 20, llNotes / 256 );
+            if ( vDur.size() > iCap )
+            {
+                std::nth_element( vDur.begin(), vDur.begin() + ( vDur.size() - iCap ), vDur.end() );
+                llKeepDur = vDur[vDur.size() - iCap];
+            }
+        }
         for ( size_t t = 0; t < vScans.size(); t++ )
         {
             const RefTrackInfo &mti = vScans[t]->info;
@@ -436,6 +621,16 @@ namespace
             stats.llMalformedTracks += mti.bMalformed;
             stats.llOutOfRange += vScans[t]->llOutOfRange;
             for ( int k = 0; k < 128; k++ ) song->aKeyNoteCounts[k] += vScans[t]->aKeyCounts[k];
+            const TrackScan &sc = *vScans[t];
+            for ( size_t i = 0; i < sc.vKnownId.size(); i++ )
+                if ( sc.vKnownDur[i] < 0 || sc.vKnownDur[i] >= llKeepDur )
+                {
+                    song->vKnownId.push_back( sc.vKnownId[i] );
+                    vKnownEndTick.push_back( sc.vKnownEnd[i] );
+                }
+            vScans[t]->vKnownId = std::vector< uint64_t >();
+            vScans[t]->vKnownEnd = std::vector< int64_t >();
+            vScans[t]->vKnownDur = std::vector< int64_t >();
             info.llTotalTicks = std::max( info.llTotalTicks, mti.llTotalTicks );
             info.llEventCount += mti.llEventCount;
             info.iNumChannels += mti.iNumChannels;
@@ -468,15 +663,14 @@ namespace
         {
             G += s->vGroups.size();
             llEvents += s->llChannelEvents;
-            if ( !s->vGroups.empty() ) llMaxTick = std::max( llMaxTick, s->vGroups.back().llTick );
+            if ( !s->vGroups.empty() ) llMaxTick = std::max( llMaxTick, s->llLastTick );
         }
         prog.aTotal[LoadProgress::Merging] = 4;
         EventStream &es = song->stream;
         es.llEvents = llEvents;
-        // Transient (global order): every group's track << 32 | run bytes (then, once its header is
-        // written, the offset of its runs in the raw stream), and each tick's first group
+        // Transient (global order): every group's track, and each tick's first group
         std::vector< uint64_t > vTickGroupStart;
-        std::vector< uint64_t > vGroups;
+        std::vector< uint32_t > vGroupTrack;
         stats.llEvents = llEvents;
         stats.llGroups = G;
 
@@ -489,8 +683,11 @@ namespace
         {
             vBits.assign( llWords, 0 );
             Parallel::For( iThreads, vScans.size(), [&]( size_t t, int ) {
-                for ( const GroupRec &g : vScans[t]->vGroups )
-                    __atomic_fetch_or( &vBits[(uint64_t)g.llTick >> 6], 1ull << ( g.llTick & 63 ), __ATOMIC_RELAXED );
+                for ( TickCursor c( *vScans[t] ); !c.Done(); )
+                {
+                    int64_t llTick = c.Next();
+                    __atomic_fetch_or( &vBits[(uint64_t)llTick >> 6], 1ull << ( llTick & 63 ), __ATOMIC_RELAXED );
+                }
             } );
             vWordRank.resize( llWords + 1 );
             uint64_t r = 0;
@@ -508,7 +705,7 @@ namespace
         else
         {
             vUnique.reserve( G );
-            for ( auto &s : vScans ) for ( const GroupRec &g : s->vGroups ) vUnique.push_back( g.llTick );
+            for ( auto &s : vScans ) for ( TickCursor c( *s ); !c.Done(); ) vUnique.push_back( c.Next() );
             std::sort( vUnique.begin(), vUnique.end() );
             vUnique.erase( std::unique( vUnique.begin(), vUnique.end() ), vUnique.end() );
         }
@@ -537,17 +734,24 @@ namespace
             return (uint64_t)( std::lower_bound( vUnique.begin() + lo, vUnique.begin() + hi, t ) - vUnique.begin() );
         };
         stats.llUniqueTicks = U;
+        // The known ends as unique ticks (an off's tick is one of its track's group ticks)
+        song->vKnownEnd.resize( vKnownEndTick.size() );
+        Parallel::For( iThreads, ( vKnownEndTick.size() + 65535 ) >> 16, [&]( size_t c, int ) {
+            for ( size_t i = c << 16; i < std::min( vKnownEndTick.size(), ( c + 1 ) << 16 ); i++ )
+                song->vKnownEnd[i] = vKnownEndTick[i] < 0 ? UINT64_MAX : Rank( vKnownEndTick[i] );
+        } );
+        vKnownEndTick = std::vector< int64_t >();
         prog.aDone[LoadProgress::Merging] = 1;
         llStep = llPhase;
         Step( bBitmap ? L"unique ticks (bitmap)" : L"unique ticks (sort)" );
 
-        // Groups per unique tick, then each group's slot in global (tick, track) order
+        // Groups per unique tick, then each group's track in global (tick, track) order
         std::vector< uint32_t > vCount( U, 0 );
         Parallel::For( iThreads, vScans.size(), [&]( size_t t, int ) {
             uint64_t u = 0;
-            for ( const GroupRec &g : vScans[t]->vGroups )
+            for ( TickCursor c( *vScans[t] ); !c.Done(); )
             {
-                u = RankFrom( g.llTick, u );
+                u = RankFrom( c.Next(), u );
                 __atomic_fetch_add( &vCount[u], 1u, __ATOMIC_RELAXED );
             }
         } );
@@ -556,10 +760,10 @@ namespace
         for ( uint64_t u = 0; u < U; u++ ) { vTickGroupStart[u] = acc; acc += vCount[u]; }
         vTickGroupStart[U] = acc;
         std::fill( vCount.begin(), vCount.end(), 0 );
-        vGroups.resize( G );
+        vGroupTrack.resize( G );
         song->vTrackLastU.assign( vScans.size(), UINT64_MAX );
         for ( size_t t = 0; t < vScans.size(); t++ )
-            if ( !vScans[t]->vGroups.empty() ) song->vTrackLastU[t] = Rank( vScans[t]->vGroups.back().llTick );
+            if ( !vScans[t]->vGroups.empty() ) song->vTrackLastU[t] = Rank( vScans[t]->llLastTick );
         prog.aDone[LoadProgress::Merging] = 2;
 
         // Tick ranges are owned by one thread each, and tracks are visited in order, so the groups of a
@@ -571,18 +775,12 @@ namespace
             int64_t t0 = vUnique[u0], t1 = u1 < U ? vUnique[u1] : INT64_MAX;
             for ( size_t t = 0; t < vScans.size(); t++ )
             {
-                std::vector< GroupRec > &vg = vScans[t]->vGroups;
-                auto it = std::lower_bound( vg.begin(), vg.end(), t0, []( const GroupRec &g, int64_t v ) { return g.llTick < v; } );
+                TickCursor c = TickCursor::At( *vScans[t], t0 );
                 uint64_t u = u0;
-                for ( ; it != vg.end() && it->llTick < t1; ++it )
+                while ( !c.Done() && c.Peek() < t1 )
                 {
-                    u = RankFrom( it->llTick, u );
-                    uint64_t slot = vTickGroupStart[u] + vCount[u]++;
-                    vGroups[slot] = ( (uint64_t)t << 32 ) | it->uSize;
-                    // The size now lives in the global entry; keep the slot in the size/event fields.
-                    // llTick must stay intact: other threads binary-search this track by tick.
-                    it->uSize = (uint32_t)slot;
-                    it->uEvents = (uint32_t)( slot >> 32 );
+                    u = RankFrom( c.Next(), u );
+                    vGroupTrack[vTickGroupStart[u] + vCount[u]++] = (uint32_t)t;
                 }
             }
         } );
@@ -592,48 +790,44 @@ namespace
         prog.aDone[LoadProgress::Merging] = 3;
         Step( L"group order" );
 
-        // Raw offsets: prefix sum in global order over group header + runs, with a seek point for the
-        // first tick that starts in each chunk, kept only where each tick range starts; then each range
-        // writes its group headers, and each group's entry becomes the offset of its runs, which the
-        // track's group records take (no per-group offset table: 8 bytes a group at the load's peak)
-        auto Track = [&]( uint64_t g ) { return (uint32_t)( vGroups[g] >> 32 ); };
-        auto Header = [&]( uint64_t g, uint64_t u, uint32_t uPrevTrack ) {
-            uint64_t llGap = g == vTickGroupStart[u] ? Track( g ) : Track( g ) - uPrevTrack - 1;
-            return ( llGap << 1 ) | ( g + 1 == vTickGroupStart[u + 1] ? 1 : 0 );
-        };
-        std::vector< uint64_t > vRangeOff( iRanges + 1 );
-        uint64_t llOff = 0;
-        for ( uint64_t u = 0, g = 0, r = 0; u < U; u++ )
+        // Group headers in global order, as the stream will hold them (about a byte a group; the order
+        // itself is then dropped: a header gives its group's track), raw offsets with a seek point for
+        // the first tick that starts in each chunk, and slices of about SliceBytes cut at ticks, which
+        // the build fills in parallel
+        std::vector< uint8_t > vHdr;
+        vHdr.reserve( (size_t)( G + G / 4 + 16 ) );
+        struct Slice { uint64_t llHdr, llRaw; };
+        std::vector< Slice > vSlices;
         {
-            while ( r < iRanges && U * r / iRanges == u ) vRangeOff[r++] = llOff;
-            if ( es.vSeek.empty() || ( es.vSeek.back().llRaw >> EventStream::ChunkShift ) != ( llOff >> EventStream::ChunkShift ) )
-                es.vSeek.push_back( { u, llOff } );
-            for ( ; g < vTickGroupStart[u + 1]; g++ )
-                llOff += EventStream::VarSize( Header( g, u, g ? Track( g - 1 ) : 0 ) ) + (uint32_t)vGroups[g];
-        }
-        es.llRawBytes = llOff;
-        std::unique_ptr< uint8_t[] > pRaw( new ( std::nothrow ) uint8_t[llOff + 16] );
-        if ( !pRaw ) { sError = L"Out of memory for the event stream."; return nullptr; }
-        Parallel::For( iThreads, iRanges, [&]( size_t r, int ) {
-            uint64_t u0 = U * r / iRanges, u1 = U * ( r + 1 ) / iRanges;
-            uint64_t llAt = vRangeOff[r];
-            uint32_t uPrevTrack = 0;
-            for ( uint64_t u = u0; u < u1; u++ )
-                for ( uint64_t g = vTickGroupStart[u]; g < vTickGroupStart[u + 1]; g++ )
+            std::vector< uint64_t > vCur( vScans.size(), 0 );
+            uint64_t llOff = 0, llSliceAt = 0;
+            uint64_t llEst = G;
+            for ( auto &sc : vScans ) for ( const GroupRec &g : sc->vGroups ) llEst += g.uSize;
+            const uint64_t SliceBytes = std::max< uint64_t >( 4 << 20, llEst / 512 );
+            uint8_t aVar[16];
+            for ( uint64_t u = 0, g = 0; u < U; u++ )
+            {
+                if ( vSlices.empty() || llOff - llSliceAt >= SliceBytes ) { vSlices.push_back( { vHdr.size(), llOff } ); llSliceAt = llOff; }
+                if ( es.vSeek.empty() || ( es.vSeek.back().llRaw >> EventStream::ChunkShift ) != ( llOff >> EventStream::ChunkShift ) )
+                    es.vSeek.push_back( { u, llOff } );
+                for ( uint32_t uPrev = 0; g < vTickGroupStart[u + 1]; g++ )
                 {
-                    uint32_t uTrack = Track( g ), uSize = (uint32_t)vGroups[g];
-                    uint8_t *p = EventStream::WriteVar( pRaw.get() + llAt, Header( g, u, uPrevTrack ) );
-                    vGroups[g] = (uint64_t)( p - pRaw.get() );
-                    llAt = vGroups[g] + uSize;
-                    uPrevTrack = uTrack;
+                    uint32_t t = vGroupTrack[g];
+                    uint64_t llGap = g == vTickGroupStart[u] ? t : t - uPrev - 1;
+                    uint64_t llHeader = ( llGap << 1 ) | ( g + 1 == vTickGroupStart[u + 1] ? 1 : 0 );
+                    unsigned n = (unsigned)( EventStream::WriteVar( aVar, llHeader ) - aVar );
+                    vHdr.insert( vHdr.end(), aVar, aVar + n );
+                    llOff += n + vScans[t]->vGroups[vCur[t]++].uSize;
+                    uPrev = t;
                 }
-        } );
-        Parallel::For( iThreads, vScans.size(), [&]( size_t t, int ) {
-            for ( GroupRec &g : vScans[t]->vGroups ) g.llTick = (int64_t)vGroups[g.uSize | ( (uint64_t)g.uEvents << 32 )];
-        } );
-        vGroups.clear(); vGroups.shrink_to_fit();
+            }
+            vSlices.push_back( { vHdr.size(), llOff } );
+            es.llRawBytes = llOff;
+        }
+        vHdr.shrink_to_fit();
+        vGroupTrack.clear(); vGroupTrack.shrink_to_fit();
         vTickGroupStart.clear(); vTickGroupStart.shrink_to_fit();
-        Step( L"offsets and headers" );
+        Step( L"group headers" );
 
         // Meta in global order, tempo map, TimeTable, packed tick table
         for ( size_t t = 0; t < vScans.size(); t++ ) song->vMeta.insert( song->vMeta.end(), vScans[t]->vMeta.begin(), vScans[t]->vMeta.end() );
@@ -652,86 +846,214 @@ namespace
         stats.adStageSeconds[LoadProgress::Merging] = Seconds( llPhase );
         if ( Cancelled() ) { sError = L"Cancelled."; return nullptr; }
 
-        // Phase 4: the payload. Two-pass: parse the file again, work items are track segments between
-        // checkpoints. Fused: copy each group out of its track's packed chunks, a chunk per work item.
+        // Phase 4: the payload, window by window. A window is a run of slices; per window, the
+        // slices count their groups per track (from the headers), which gives each slice its first
+        // group of every track; each slice then writes its headers and gives its groups their raw
+        // offsets (the track records' llTick from here on); the runs are copied in (fused: out of the
+        // tracks' packed chunks; two-pass: the emit pass re-reads each track from its checkpoint at or
+        // before the window, at most CheckpointEvery groups more); and the window's complete chunks
+        // are LZ4-compressed. Windows of about WindowBytes, so the raw stream is never whole in memory.
         llPhase = llStep = Timer::NowMicroSecs();
         prog.iStage = LoadProgress::Building;
-        struct Item { uint32_t uTrack; uint32_t uSeg; };
-        std::vector< Item > vItems;
-        for ( size_t t = 0; t < vScans.size(); t++ )
-            if ( bFused )
-                for ( uint32_t k = 0; k < vScans[t]->vPacked.size(); k++ ) vItems.push_back( { (uint32_t)t, k } );
-            else if ( !vScans[t]->vGroups.empty() )
-                for ( uint32_t k = 0; k <= vScans[t]->vCps.size(); k++ ) vItems.push_back( { (uint32_t)t, k } );
-        prog.aTotal[LoadProgress::Building] = vItems.size();
-        std::atomic< uint64_t > llItemsDone{ 0 };
+        const size_t T = vScans.size();
+        const size_t iSlices = vSlices.size() - 1;
+        const uint64_t WindowBytes = 256ull << 20;
+        std::vector< size_t > vWinCuts( 1, 0 );   // first slice of each window
+        for ( size_t s = 0; s < iSlices; s++ )
+            if ( s > vWinCuts.back() && vSlices[s].llRaw - vSlices[vWinCuts.back()].llRaw >= WindowBytes ) vWinCuts.push_back( s );
+        vWinCuts.push_back( iSlices );
+        prog.aTotal[LoadProgress::Building] = vWinCuts.size() - 1;
+
+        size_t iChunks = (size_t)( ( es.llRawBytes + EventStream::ChunkSize - 1 ) >> EventStream::ChunkShift );
+        es.vChunks.resize( iChunks );
+        std::vector< std::unique_ptr< uint8_t[] > > vPacked( iChunks );
+        std::vector< uint64_t > vCur( T, 0 );          // each track's next group
+        std::vector< uint32_t > vCounts;                // per slice of the window, per track
+        std::unique_ptr< uint8_t[] > pRaw, pPrev;
+        uint64_t llPrevBase = 0;
+        size_t iNextChunk = 0;
         std::vector< std::vector< uint8_t > > vUnpack( bFused ? iThreads : 0 );
-        Parallel::For( iThreads, vItems.size(), [&]( size_t i, int iThread ) {
-            if ( Cancelled() ) return;
-            TrackScan &s = *vScans[vItems[i].uTrack];
-            uint32_t k = vItems[i].uSeg;
-            if ( bFused )
-            {
-                TrackScan::PackedChunk &c = s.vPacked[k];
-                const uint8_t *p = c.data.get();
-                if ( c.uPacked != c.uRaw )
+        // Two-pass: a scratch group per thread for the groups re-read before a window's first
+        std::vector< std::unique_ptr< uint8_t[] > > vDiscard( bFused ? 0 : iThreads );
+        if ( !bFused )
+        {
+            uint32_t uMax = 0;
+            for ( auto &sc : vScans ) for ( const GroupRec &g : sc->vGroups ) uMax = std::max( uMax, g.uSize );
+            for ( auto &p : vDiscard ) p.reset( new uint8_t[uMax + 16] );
+        }
+        struct Item { uint32_t uTrack, uChunk; uint64_t llLo, llHi; };
+        std::vector< Item > vItems;
+        double dCopy = 0, dPack = 0;
+        for ( size_t w = 0; w + 1 < vWinCuts.size(); w++ )
+        {
+            if ( Cancelled() ) break;
+            size_t s0 = vWinCuts[w], s1 = vWinCuts[w + 1], nS = s1 - s0;
+            uint64_t llWin0 = vSlices[s0].llRaw, llWin1 = vSlices[s1].llRaw;
+            // The buffer starts at the window's first chunk: the tail of the last window's partial chunk
+            // comes along
+            uint64_t llBase = ( llWin0 >> EventStream::ChunkShift ) << EventStream::ChunkShift;
+            if ( llWin1 - llBase >= UINT32_MAX ) { sError = L"A tick holds too many events."; return nullptr; }   // GroupRec::uA
+            pRaw.reset( new ( std::nothrow ) uint8_t[llWin1 - llBase + 16] );
+            if ( !pRaw ) { sError = L"Out of memory for the event stream."; return nullptr; }
+            if ( llBase < llWin0 ) memcpy( pRaw.get(), pPrev.get() + ( llBase - llPrevBase ), (size_t)( llWin0 - llBase ) );
+            pPrev.reset();
+            long long llT0 = Timer::NowMicroSecs();
+
+            // Groups per track per slice, then each slice's first group of each track
+            vCounts.assign( nS * T, 0 );
+            Parallel::For( iThreads, nS, [&]( size_t i, int ) {
+                uint32_t *pCount = &vCounts[i * T];
+                const uint8_t *p = vHdr.data() + vSlices[s0 + i].llHdr, *pEnd = vHdr.data() + vSlices[s0 + i + 1].llHdr;
+                uint32_t uTrack = 0;
+                bool bFirst = true;
+                while ( p < pEnd )
                 {
-                    std::vector< uint8_t > &v = vUnpack[iThread];
-                    if ( v.size() < c.uRaw + Lz4::Slack ) v.resize( c.uRaw + Lz4::Slack );
-                    Lz4::Decompress( c.data.get(), c.uPacked, v.data(), c.uRaw );
-                    p = v.data();
+                    uint64_t h = EventStream::ReadVar( p );
+                    uTrack = bFirst ? (uint32_t)( h >> 1 ) : uTrack + 1 + (uint32_t)( h >> 1 );
+                    bFirst = h & 1;
+                    pCount[uTrack]++;
                 }
-                // A group ends with the run whose header has bit 4 set
-                const uint8_t *pEnd = p + c.uRaw;
-                for ( uint64_t g = c.llFirstGroup; p < pEnd; g++ )
+            } );
+            std::vector< uint64_t > vCurEnd( vCur );
+            Parallel::For( iThreads, ( T + 255 ) / 256, [&]( size_t c, int ) {
+                for ( size_t t = c * 256; t < std::min( T, ( c + 1 ) * 256 ); t++ )
+                {
+                    uint64_t n = vCur[t];
+                    for ( size_t i = 0; i < nS; i++ ) { uint32_t k = vCounts[i * T + t]; vCounts[i * T + t] = (uint32_t)( n - vCur[t] ); n += k; }
+                    vCurEnd[t] = n;
+                }
+            } );
+            // Headers, and each group's raw offset of its runs
+            Parallel::For( iThreads, nS, [&]( size_t i, int ) {
+                uint32_t *pRel = &vCounts[i * T];
+                const uint8_t *p = vHdr.data() + vSlices[s0 + i].llHdr, *pEnd = vHdr.data() + vSlices[s0 + i + 1].llHdr;
+                uint64_t llOff = vSlices[s0 + i].llRaw;
+                uint32_t uTrack = 0;
+                bool bFirst = true;
+                while ( p < pEnd )
                 {
                     const uint8_t *q = p;
-                    unsigned h;
-                    do
-                    {
-                        h = *q++;
-                        unsigned op = h >> 5;
-                        if ( op <= 2 ) { q += op != 2; while ( !( *q++ & 0x80 ) ) {} }
-                        else q += ( op == 5 || op == 6 ) ? 1 : 2;
-                    } while ( !( h & 0x10 ) );
-                    memcpy( pRaw.get() + s.vGroups[g].llTick, p, (size_t)( q - p ) );
-                    p = q;
+                    uint64_t h = EventStream::ReadVar( p );
+                    uTrack = bFirst ? (uint32_t)( h >> 1 ) : uTrack + 1 + (uint32_t)( h >> 1 );
+                    bFirst = h & 1;
+                    memcpy( pRaw.get() + ( llOff - llBase ), q, (size_t)( p - q ) );
+                    llOff += (uint64_t)( p - q );
+                    GroupRec &g = vScans[uTrack]->vGroups[vCur[uTrack] + pRel[uTrack]++];
+                    uint32_t uSize = g.uSize;
+                    g.uA = (uint32_t)( llOff - llBase );
+                    llOff += uSize;
                 }
-                c.data.reset();
+            } );
+
+            // The runs
+            if ( bFused )
+            {
+                vItems.clear();
+                for ( size_t t = 0; t < T; t++ )
+                {
+                    if ( vCurEnd[t] == vCur[t] ) continue;
+                    const std::vector< TrackScan::PackedChunk > &vc = vScans[t]->vPacked;
+                    size_t k = (size_t)( std::upper_bound( vc.begin(), vc.end(), vCur[t], []( uint64_t v, const TrackScan::PackedChunk &c ) { return v < c.llFirstGroup; } ) - vc.begin() ) - 1;
+                    for ( ; k < vc.size() && vc[k].llFirstGroup < vCurEnd[t]; k++ ) vItems.push_back( { (uint32_t)t, (uint32_t)k, vCur[t], vCurEnd[t] } );
+                }
+                Parallel::For( iThreads, vItems.size(), [&]( size_t i, int iThread ) {
+                    const Item &it = vItems[i];
+                    TrackScan &s = *vScans[it.uTrack];
+                    TrackScan::PackedChunk &c = s.vPacked[it.uChunk];
+                    const uint8_t *p = c.data.get();
+                    if ( c.uPacked != c.uRaw )
+                    {
+                        std::vector< uint8_t > &v = vUnpack[iThread];
+                        if ( v.size() < c.uRaw + Lz4::Slack ) v.resize( c.uRaw + Lz4::Slack );
+                        Lz4::Decompress( c.data.get(), c.uPacked, v.data(), c.uRaw );
+                        p = v.data();
+                    }
+                    // A group ends with the run whose header has bit 4 set
+                    const uint8_t *pEnd = p + c.uRaw;
+                    uint64_t g = c.llFirstGroup;
+                    for ( ; p < pEnd && g < it.llHi; g++ )
+                    {
+                        const uint8_t *q = p;
+                        unsigned h;
+                        do
+                        {
+                            h = *q++;
+                            unsigned op = h >> 5;
+                            if ( op <= 2 ) { q += op != 2; while ( !( *q++ & 0x80 ) ) {} }
+                            else q += ( op == 5 || op == 6 ) ? 1 : 2;
+                        } while ( !( h & 0x10 ) );
+                        if ( g >= it.llLo ) memcpy( pRaw.get() + s.vGroups[g].uA, p, (size_t)( q - p ) );
+                        p = q;
+                    }
+                    if ( p >= pEnd ) c.data.reset();     // every group of the chunk is in
+                } );
             }
             else
             {
-                Checkpoint start = k == 0 ? Checkpoint{ 0, 0, 0, 0 } : s.vCps[k - 1];
-                uint64_t llStop = k < s.vCps.size() ? s.vCps[k].llGroup : UINT64_MAX;
-                ScanTrack< Emit >( pData + s.llBegin, pData + s.llEnd, start, llStop, (int)vItems[i].uTrack, nullptr, s.vGroups.data(), pRaw.get() );
+                // Each track's groups of the window, from the checkpoint at or before the first, in
+                // segments between checkpoints
+                struct Seg { uint32_t uTrack; uint32_t uCp; uint64_t llFirst, llStop; };
+                std::vector< Seg > vSegs;
+                for ( size_t t = 0; t < T; t++ )
+                {
+                    if ( vCurEnd[t] == vCur[t] ) continue;
+                    const std::vector< Checkpoint > &vc = vScans[t]->vCps;
+                    // checkpoint k (1-based; 0: the track's start) begins at group vc[k - 1].llGroup
+                    size_t k = (size_t)( std::upper_bound( vc.begin(), vc.end(), vCur[t], []( uint64_t v, const Checkpoint &c ) { return v < c.llGroup; } ) - vc.begin() );
+                    for ( ; ; k++ )
+                    {
+                        uint64_t llFrom = k == 0 ? 0 : vc[k - 1].llGroup, llTo = k < vc.size() ? vc[k].llGroup : UINT64_MAX;
+                        vSegs.push_back( { (uint32_t)t, (uint32_t)k, std::max( llFrom, vCur[t] ), std::min( llTo, vCurEnd[t] ) } );
+                        if ( llTo >= vCurEnd[t] ) break;
+                    }
+                }
+                Parallel::For( iThreads, vSegs.size(), [&]( size_t i, int iThread ) {
+                    if ( Cancelled() ) return;
+                    const Seg &sg = vSegs[i];
+                    TrackScan &s = *vScans[sg.uTrack];
+                    Checkpoint start = sg.uCp == 0 ? Checkpoint{ 0, 0, 0, 0 } : s.vCps[sg.uCp - 1];
+                    ScanTrack< Emit >( pData + s.llBegin, pData + s.llEnd, start, sg.llStop, (int)sg.uTrack, nullptr, s.vGroups.data(), pRaw.get(), sg.llFirst,
+                                       vDiscard[iThread].get() );
+                } );
             }
-            prog.aDone[LoadProgress::Building] = ++llItemsDone;
-        } );
+            vCur.swap( vCurEnd );
+            long long llT1 = Timer::NowMicroSecs();
+            dCopy += ( llT1 - llT0 ) / 1e6;
+
+            // LZ4 per 64 KiB chunk (stored as is when that is not smaller): the chunks that end in the
+            // window (the last window: all the rest)
+            size_t iEnd = s1 == iSlices ? iChunks : (size_t)( llWin1 >> EventStream::ChunkShift );
+            Parallel::For( iThreads, iEnd - iNextChunk, [&]( size_t i, int ) {
+                size_t c = iNextChunk + i;
+                const uint8_t *pSrc = pRaw.get() + ( ( (uint64_t)c << EventStream::ChunkShift ) - llBase );
+                size_t iRaw = es.ChunkRaw( c );
+                std::unique_ptr< uint8_t[] > pTmp( new uint8_t[Lz4::Bound( iRaw )] );
+                size_t iSize = Lz4::Compress( pSrc, iRaw, pTmp.get() );
+                if ( iSize >= iRaw ) { iSize = iRaw; memcpy( pTmp.get(), pSrc, iRaw ); }
+                vPacked[c].reset( new uint8_t[iSize] );
+                memcpy( vPacked[c].get(), pTmp.get(), iSize );
+                es.vChunks[c].uSize = (uint32_t)iSize;
+            } );
+            iNextChunk = iEnd;
+            dPack += ( Timer::NowMicroSecs() - llT1 ) / 1e6;
+            pPrev = std::move( pRaw );
+            llPrevBase = llBase;
+            prog.aDone[LoadProgress::Building] = w + 1;
+        }
+        pPrev.reset();
         vUnpack.clear();
+        vDiscard.clear();
+        vHdr.clear(); vHdr.shrink_to_fit();
         // The per-track scans (group records, checkpoints, packed tracks) are not needed after the
         // build; freed here rather than after pairing, where they would add to its peak
         vScans.clear();
         vScans.shrink_to_fit();
         if ( pFile ) pFile->Close(); // the mapping is not needed after the build (4.0)
-        Step( bFused ? L"copy from packed tracks" : L"parse into the stream" );
         if ( Cancelled() ) { sError = L"Cancelled."; return nullptr; }
+        stats.vSteps.push_back( { prog.iStage.load(), bFused ? L"copy from packed tracks" : L"parse into the stream", dCopy, PrivateBytes() } );
+        stats.vSteps.push_back( { prog.iStage.load(), L"LZ4 chunks", dPack, PrivateBytes() } );
+        llStep = Timer::NowMicroSecs();
 
-        // LZ4 per 64 KiB chunk (stored as is when that is not smaller), then one allocation
-        size_t iChunks = (size_t)( ( es.llRawBytes + EventStream::ChunkSize - 1 ) >> EventStream::ChunkShift );
-        es.vChunks.resize( iChunks );
-        std::vector< std::unique_ptr< uint8_t[] > > vPacked( iChunks );
-        Parallel::For( iThreads, iChunks, [&]( size_t c, int ) {
-            const uint8_t *pSrc = pRaw.get() + ( (uint64_t)c << EventStream::ChunkShift );
-            size_t iRaw = es.ChunkRaw( c );
-            std::unique_ptr< uint8_t[] > pTmp( new uint8_t[Lz4::Bound( iRaw )] );
-            size_t iSize = Lz4::Compress( pSrc, iRaw, pTmp.get() );
-            if ( iSize >= iRaw ) { iSize = iRaw; memcpy( pTmp.get(), pSrc, iRaw ); }
-            vPacked[c].reset( new uint8_t[iSize] );
-            memcpy( vPacked[c].get(), pTmp.get(), iSize );
-            es.vChunks[c].uSize = (uint32_t)iSize;
-        } );
-        Step( L"LZ4 chunks" );
-        pRaw.reset();
         uint64_t llData = 0;
         for ( size_t c = 0; c < iChunks; c++ ) { es.vChunks[c].llOffset = llData; llData += es.vChunks[c].uSize; }
         es.llDataBytes = llData;
@@ -749,6 +1071,8 @@ namespace
         song->bFirstPairingOnly = prog.bFirstPairingOnly;
         if ( !prog.bSkipPairing && !BuildVisualStore( *song, iThreads, &prog.aDone[LoadProgress::Pairing], &prog.bCancel, !prog.bFullVisual, prog.bLzVisual, prog.bNoteStats ) )
         { sError = L"Cancelled."; return nullptr; }
+        song->vKnownId = std::vector< uint64_t >();
+        song->vKnownEnd = std::vector< uint64_t >();
         song->info.llFirstNote = std::max( 0LL, song->visual.llFirstNote );
         stats.llPairedNotes = song->visual.llNotes;
         stats.llUnpairedNotes = song->visual.llUnpaired;
