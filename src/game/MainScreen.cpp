@@ -400,6 +400,7 @@ GameState::GameError MainScreen::Logic()
         m_pPlayback->SetSkipping( cPerf.bVelocitySkip, cPerf.iSkipLagMs );
         m_pPlayback->SetSendLimits( cPerf.bCollapseStacks, cPerf.bSendLimit ? cPerf.iMaxSendsPerSec : 0 );
         m_pPlayback->SetMinVelocity( cPerf.bVelocityFloor ? cPerf.iMinVelocity : 0 );
+        m_pPlayback->SetMaxThreads( cPerf.iWorkerThreads );
     }
     if ( m_pEngine->LodOn() != config.GetPerformanceSettings().bLodCache ) m_pEngine->SetLod( config.GetPerformanceSettings().bLodCache );
 

@@ -42,7 +42,7 @@ namespace
 PlaybackEngine::PlaybackEngine( std::shared_ptr< const Song > pSong, PlaybackClock &clock, int iThreads )
     : m_pSong( std::move( pSong ) ), m_Clock( clock ), m_Decoder( *m_pSong )
 {
-    m_iMaxLanes = std::max( 1, Parallel::ThreadCount( iThreads ) );
+    SetMaxThreads( iThreads );
     size_t iTracks = std::max< size_t >( 1, m_pSong->vTracks.size() );
     m_pMuteMask.reset( new std::atomic< uint16_t >[iTracks] );
     for ( size_t i = 0; i < iTracks; i++ ) m_pMuteMask[i].store( 0, std::memory_order_relaxed );
@@ -114,6 +114,13 @@ void PlaybackEngine::SetChannelMuted( int iTrack, int iChannel, bool bMuted )
     else m_pMuteMask[iTrack].fetch_and( (uint16_t)~uBit, std::memory_order_relaxed );
 }
 
+void PlaybackEngine::SetMaxThreads( int iThreads )
+{
+    if ( iThreads == m_iThreadsSetting ) return;
+    m_iThreadsSetting = iThreads;
+    m_iMaxLanes.store( std::max( 1, Parallel::ThreadCount( iThreads ) ), std::memory_order_relaxed );
+}
+
 void PlaybackEngine::SetSkipping( bool bVelocitySkip, int iSkipLagMs )
 {
     m_bVelocitySkip.store( bVelocitySkip, std::memory_order_relaxed );
@@ -150,7 +157,7 @@ PlaybackEngine::Stats PlaybackEngine::GetStats()
     s.llCollapsed = m_llCollapsed.load( std::memory_order_relaxed );
     s.budget.iVelocity = m_iBudgetVel.load( std::memory_order_relaxed );
     s.budget.dKeep = m_dBudgetKeep.load( std::memory_order_relaxed );
-    s.iLanes = m_iLanesNow.load( std::memory_order_relaxed );
+    s.iLanes = m_iLanesPeak.exchange( 1, std::memory_order_relaxed );
     return s;
 }
 
@@ -235,8 +242,9 @@ void PlaybackEngine::DecoderThread()
         long long llNow = m_Clock.Now();
 
         // Parallel when one thread cannot keep up
-        int iLanes = m_iMaxLanes > 1 ? LanesWanted( p, llNow ) : 1;
+        int iLanes = m_iMaxLanes.load( std::memory_order_relaxed ) > 1 ? LanesWanted( p, llNow ) : 1;
         m_iLanesNow.store( iLanes, std::memory_order_relaxed );
+        if ( iLanes > m_iLanesPeak.load( std::memory_order_relaxed ) ) m_iLanesPeak.store( iLanes, std::memory_order_relaxed );
         if ( iLanes > 1 && RunBatch( iLanes, p, llNow, uEpoch, hTimer ) ) continue;
 
         long long llHorizon = llNow + std::max< long long >( 1000, (long long)( 4000 * p.dSpeed ) );
@@ -298,18 +306,18 @@ int PlaybackEngine::LanesWanted( const PlaybackDecoder::Params &p, long long llN
     double dShare = llOns * 2.2 / m_dRate / dWindowUs;      // of one thread's time
     double dLateUs = ( llNow - tNext ) / p.dSpeed;
     bool bParallel = m_iLanesNow.load( std::memory_order_relaxed ) > 1;
+    int iMax = m_iMaxLanes.load( std::memory_order_relaxed );
     if ( !( bParallel ? dShare > 0.3 || dLateUs > 2000 : dShare > 0.6 || dLateUs > 10000 ) ) return 1;
-    int n = dLateUs > 10000 ? m_iMaxLanes : (int)std::ceil( dShare / 0.5 );
-    return std::clamp( n, 2, m_iMaxLanes );
+    if ( iMax < 2 ) return 1;
+    int n = dLateUs > 10000 ? iMax : (int)std::ceil( dShare / 0.5 );
+    return std::clamp( n, 2, iMax );
 }
 
 void PlaybackEngine::EnsureLanes( int iLanes )
 {
+    // The helpers only touch these vectors during a job, and they only grow between jobs (here)
     if ( m_vLaneDec.empty() )
     {
-        m_vLaneDec.reserve( m_iMaxLanes );
-        m_vLaneOut.reserve( m_iMaxLanes );
-        m_vLaneThreads.reserve( m_iMaxLanes );
         m_vLaneDec.emplace_back();      // lane 0 is the decoder itself
         m_vLaneOut.emplace_back();
     }

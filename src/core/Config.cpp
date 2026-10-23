@@ -349,7 +349,7 @@ void PlaybackSettings::LoadDefaultValues()
     m_bPlayable = false;
     m_bPaused = true;
     m_dSpeed = 1.0;
-    m_dNSpeed = 1.0;
+    m_dNSpeed = 0.06;
     m_dVolume = 1.0;
     m_eMetronome = Off;
 }

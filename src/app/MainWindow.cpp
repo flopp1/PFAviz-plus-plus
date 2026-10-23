@@ -7,10 +7,35 @@
 #include <commdlg.h>
 #include <shellapi.h>
 #include <algorithm>
+#include <cmath>
 
 #include "core/Config.h"
 #include "game/GameState.h"
 #include "resource.h"
+
+namespace
+{
+    // The note speed slider (0 to 1000): logarithmic in two halves, from the slowest note speed (10,
+    // left) through the default 0.06 (the middle) to the fastest (0.005, right), so the low values
+    // most songs use get half of it. Config's limits are the same.
+    const double NSpeedSlow = 10.0, NSpeedMid = 0.06, NSpeedFast = 0.005;
+    const int NSpeedSteps = 1000;
+
+    double SliderToNSpeed( int iPos )
+    {
+        double t = std::clamp( iPos, 0, NSpeedSteps ) / (double)NSpeedSteps;
+        if ( t <= 0.5 ) return NSpeedSlow * std::pow( NSpeedMid / NSpeedSlow, t / 0.5 );
+        return NSpeedMid * std::pow( NSpeedFast / NSpeedMid, ( t - 0.5 ) / 0.5 );
+    }
+
+    int NSpeedToSlider( double d )
+    {
+        d = std::clamp( d, NSpeedFast, NSpeedSlow );
+        double t = d >= NSpeedMid ? 0.5 * std::log( d / NSpeedSlow ) / std::log( NSpeedMid / NSpeedSlow )
+                                  : 0.5 + 0.5 * std::log( d / NSpeedMid ) / std::log( NSpeedFast / NSpeedMid );
+        return (int)std::lround( t * NSpeedSteps );
+    }
+}
 
 using std::max;
 using std::min;
@@ -99,7 +124,7 @@ LRESULT WINAPI WndProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
                     cPlayback.SetNSpeed( cPlayback.GetNSpeed() * ( 1.0 + cControls.dSpeedUpPct / 100.0 ), true );
                     return 0;
                 case ID_PLAY_NRESET:
-                    cPlayback.SetNSpeed( 1.0, true );
+                    cPlayback.SetNSpeed( NSpeedMid, true );
                     return 0;
                 case ID_PLAY_VOLUMEUP:
                     cPlayback.SetVolume( min( cPlayback.GetVolume() + 0.1, 1.0 ), true );
@@ -424,8 +449,9 @@ static LRESULT WINAPI BarProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam
                         else cPlayback.SetSpeed( iPos / 100.0, false );
                         return 0;
                     case IDC_NSPEED:
-                        if ( iPos < 108 && iPos > 92 && iPos != 100 ) cPlayback.SetNSpeed( 1.0, true );
-                        else cPlayback.SetNSpeed( ( 200 - iPos ) / 100.0, false );
+                        // Snaps to the default around the middle
+                        if ( std::abs( iPos - NSpeedSteps / 2 ) < 8 && iPos != NSpeedSteps / 2 ) cPlayback.SetNSpeed( NSpeedMid, true );
+                        else cPlayback.SetNSpeed( SliderToNSpeed( iPos ), false );
                         return 0;
                 }
             }
@@ -560,7 +586,7 @@ HWND CreateRebar( HWND hWndOwner )
                                         629, 8, 35, 13, hWndToolbar, nullptr, g_hInstance, nullptr );
     HWND hWndNSpeed = CreateWindowExW( 0, TRACKBAR_CLASSW, nullptr, WS_CHILD | WS_VISIBLE | WS_TABSTOP | TBS_BOTH | TBS_NOTICKS,
                                        665, 2, 100, 26, hWndToolbar, ( HMENU )IDC_NSPEED, g_hInstance, nullptr );
-    SendMessageW( hWndNSpeed, TBM_SETRANGE, FALSE, MAKELONG( 5, 195 ) );
+    SendMessageW( hWndNSpeed, TBM_SETRANGE, FALSE, MAKELONG( 0, NSpeedSteps ) );
     SendMessageW( hWndNSpeed, TBM_SETLINESIZE, 0, 10 );
 
     for ( HWND h : { hWndVolume, hWndSpeed, hWndNSpeed } )
@@ -595,7 +621,7 @@ HWND CreateRebar( HWND hWndOwner )
     g_hWndBar = hWndRebar; // SetMute needs it
     SetMute( cPlayback.GetMute() );
     SendMessageW( hWndSpeed, TBM_SETPOS, TRUE, ( LONG )( 100 * cPlayback.GetSpeed() + .5 ) );
-    SendMessageW( hWndNSpeed, TBM_SETPOS, TRUE, ( LONG )( 100 * ( 2.0 - cPlayback.GetNSpeed() ) + .5 ) );
+    SendMessageW( hWndNSpeed, TBM_SETPOS, TRUE, NSpeedToSlider( cPlayback.GetNSpeed() ) );
     SendMessageW( hWndVolume, TBM_SETPOS, TRUE, ( LONG )( 100 * cPlayback.GetVolume() + .5 ) );
     SendMessageW( hWndMetronome, CB_SETCURSEL, cPlayback.GetMetronome(), 0 );
 
@@ -960,7 +986,7 @@ VOID SetSpeed( double dSpeed )
 VOID SetNSpeed( double dNSpeed )
 {
     HWND hWndToolbar = GetDlgItem( g_hWndBar, IDC_TOPTOOLBAR );
-    SendMessageW( GetDlgItem( hWndToolbar, IDC_NSPEED ), TBM_SETPOS, TRUE, ( LONG )( 100 * ( 2.0 - dNSpeed ) + .5 ) );
+    SendMessageW( GetDlgItem( hWndToolbar, IDC_NSPEED ), TBM_SETPOS, TRUE, NSpeedToSlider( dNSpeed ) );
 }
 
 VOID SetVolume( double dVolume )

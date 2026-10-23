@@ -35,7 +35,7 @@ public:
         double dNsPerMsg = 0.0;         // the output's measured cost per message
         int iSkipVelocity = 0;          // note-ons below this velocity are being skipped (0: none)
         PlaybackDecoder::BudgetCut budget;  // the send budget's cut
-        int iLanes = 1;                 // threads decoding (1: the decoder thread alone)
+        int iLanes = 1;                 // the most threads decoding since the last GetStats (1: the decoder thread alone)
         // Where the time goes: microseconds each thread spent working (the decoder in Fill and the
         // chase, the sender in SendBatch), and the ring's fill (in slices) summed and counted each
         // time the sender takes a slice. All cumulative: the stats box shows the change per interval.
@@ -67,6 +67,8 @@ public:
     // Stack collapsing and the send budget (messages per second, 0: none); see PlaybackDecoder::Params
     void SetSendLimits( bool bCollapse, long long llMaxSendsPerSec );
     void SetMinVelocity( int iMinVelocity ) { m_iMinVelocity.store( iMinVelocity, std::memory_order_relaxed ); }     // 0: none
+    // The most threads decoding may use (0: the logical core count); takes effect at the next decode
+    void SetMaxThreads( int iThreads );
 
     std::wstring OutputName() const;
     bool HasOutput() const { return m_bHasOutput.load( std::memory_order_acquire ); }
@@ -135,7 +137,8 @@ private:
     std::thread m_DecoderThread, m_SenderThread;
 
     // Parallel decoding (decoder thread; lane k > 0 runs on helper thread k)
-    int m_iMaxLanes = 1;
+    std::atomic< int > m_iMaxLanes{ 1 };
+    int m_iThreadsSetting = -1;         // what SetMaxThreads was last given (its caller's thread only)
     double m_dRate = 150.0;             // one thread's decoding speed, events per microsecond (measured)
     std::vector< std::unique_ptr< PlaybackDecoder > > m_vLaneDec;
     std::vector< PlaybackDecoder::LaneOut > m_vLaneOut;
@@ -146,5 +149,5 @@ private:
     int m_iJobLanes = 0, m_iLanesLeft = 0;
     bool m_bLanesStop = false;
     const std::function< void( int ) > *m_pJobFn = nullptr;
-    std::atomic< int > m_iLanesNow{ 1 };
+    std::atomic< int > m_iLanesNow{ 1 }, m_iLanesPeak{ 1 };
 };

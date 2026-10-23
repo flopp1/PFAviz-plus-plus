@@ -17,6 +17,7 @@ A performance rewrite of [Piano From Above](https://github.com/brian-pantano/Pia
 - An optional **LOD cache** (on by default) keeps, for the current window size and note speed, only the notes that can show, built in the background around the playhead. Dense songs draw several times faster with the same pixels.
 - **Hidden channels** get their own drawing data, built in the background ("Applying hidden channels..." until ready), so hiding most of a black MIDI's tracks makes it faster.
 - **128 keys** by default ("Show all 88 keys" is still there).
+- The **note speed slider** is logarithmic and covers the whole range: 10 at the left, 0.06 (the default) in the middle, 0.005 at the right.
 
 **Playback**
 - Audio runs on its own decoder and sender threads, off a microsecond clock, independent of the frame rate. KDMAPI (OmniMIDI) is used when available, WinMM otherwise.
@@ -25,7 +26,7 @@ A performance rewrite of [Piano From Above](https://github.com/brian-pantano/Pia
   - **Always skip notes quieter than velocity N** (default 20), with their note-offs.
   - **Collapse stacked notes**: one voice per channel, key and tick, lasting until the last of the stacked notes ends. RFTMIS rev10 sends 42 % fewer note-ons.
   - **Limit sending to N messages/s**: looks 50 ms ahead and skips the quietest note-ons first so the rest fit; within the last velocity it thins evenly, so songs with one velocity still play partly. Note-ons stay within N/2 per second; total messages average N but can briefly reach about 1.5 N as earlier notes end.
-- When one thread cannot decode a dense passage in time, decoding spreads over more threads, up to the Performance tab's thread setting, and back to one when the passage ends. The visuals stay exact; audio may differ slightly from one thread's: with collapsing on, a tick split between threads can sound a key once per thread, and the send budget is shared between them. Night of Nights' busiest second (224 M events) decodes in 0.18 s on 16 threads with collapsing, the budget and the velocity floor on, against 0.96 s on one.
+- When one thread cannot decode a dense passage in time, decoding spreads over more threads, up to the Performance tab's thread setting (a change applies at once), and back to one when the passage ends. The visuals stay exact; audio may differ slightly from one thread's: with collapsing on, a tick split between threads can sound a key once per thread, and the send budget is shared between them. Night of Nights' busiest second (224 M events) decodes in 0.18 s on 16 threads with collapsing, the budget and the velocity floor on, against 0.96 s on one.
 - Mute, volume, pause, stop, seeking (with controller and program chase) and the metronome behave as in the original (clicks inside a parallel stretch are left out).
 
 **Statistics**
