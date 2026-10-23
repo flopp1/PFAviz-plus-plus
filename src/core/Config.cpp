@@ -94,7 +94,7 @@ void VisualSettings::LoadDefaultValues()
 {
     eKeysShown = All128;
     bAlwaysShowControls = false;
-    bShowTime = bShowScore = true;
+    uStats = ( 1u << StatTime ) | ( 1u << StatScore ) | NoteStats;
     iFirstKey = Notes::A0;
     iLastKey = Notes::C8;
 
@@ -127,8 +127,14 @@ void VisualSettings::Load( const IniFile &ini )
 {
     eKeysShown = static_cast< KeysShown >( std::clamp( ini.GetInt( "Visual", "KeysShown", eKeysShown ), 0, 3 ) );
     bAlwaysShowControls = ini.GetBool( "Visual", "AlwaysShowControls", bAlwaysShowControls );
-    bShowTime = ini.GetBool( "Visual", "ShowTime", bShowTime );
-    bShowScore = ini.GetBool( "Visual", "ShowScore", bShowScore );
+    if ( ini.Has( "Visual", "Stats" ) ) uStats = (unsigned)ini.GetInt( "Visual", "Stats", (int)uStats ) & AllStats;
+    else
+    {
+        // A config from before the Statistics dialog: its separate stats box switches
+        uStats = ( ini.GetBool( "Visual", "ShowTime", true ) ? 1u << StatTime : 0 ) | ( ini.GetBool( "Video", "ShowFPS", false ) ? 1u << StatFPS : 0 ) |
+                 ( ini.GetBool( "Visual", "ShowScore", true ) ? 1u << StatScore : 0 ) | ( ini.GetBool( "Performance", "ExtraStats", true ) ? NoteStats : 0 ) |
+                 ( ini.GetBool( "Performance", "ShowPlaybackStats", false ) ? SynthStats | FrameStats : 0 );
+    }
     iFirstKey = std::clamp( ini.GetInt( "Visual", "FirstKey", iFirstKey ), 0, 127 );
     iLastKey = std::clamp( ini.GetInt( "Visual", "LastKey", iLastKey ), 0, 127 );
     for ( int i = 0; i < 16; i++ )
@@ -140,8 +146,7 @@ void VisualSettings::Save( IniFile &ini ) const
 {
     ini.SetInt( "Visual", "KeysShown", eKeysShown );
     ini.SetInt( "Visual", "AlwaysShowControls", bAlwaysShowControls );
-    ini.SetInt( "Visual", "ShowTime", bShowTime );
-    ini.SetInt( "Visual", "ShowScore", bShowScore );
+    ini.SetInt( "Visual", "Stats", (int)uStats );
     ini.SetInt( "Visual", "FirstKey", iFirstKey );
     ini.SetInt( "Visual", "LastKey", iLastKey );
     for ( int i = 0; i < 16; i++ )
@@ -203,18 +208,15 @@ void AudioSettings::Save( IniFile &ini ) const
 void VideoSettings::LoadDefaultValues()
 {
     bLimitFPS = true;
-    bShowFPS = false;
 }
 
 void VideoSettings::Load( const IniFile &ini )
 {
-    bShowFPS = ini.GetBool( "Video", "ShowFPS", bShowFPS );
     bLimitFPS = ini.GetBool( "Video", "LimitFPS", bLimitFPS );
 }
 
 void VideoSettings::Save( IniFile &ini ) const
 {
-    ini.SetInt( "Video", "ShowFPS", bShowFPS );
     ini.SetInt( "Video", "LimitFPS", bLimitFPS );
 }
 
@@ -292,8 +294,6 @@ void PerformanceSettings::LoadDefaultValues()
     iBlockCacheMB = 64;
     bLodCache = true;
     bShowLoadStats = true;
-    bShowPlaybackStats = false;
-    bExtraStats = true;
 }
 
 void PerformanceSettings::Load( const IniFile &ini )
@@ -312,8 +312,6 @@ void PerformanceSettings::Load( const IniFile &ini )
     iBlockCacheMB = std::clamp( ini.GetInt( "Performance", "BlockCacheMB", iBlockCacheMB ), 16, 65536 );
     bLodCache = ini.GetBool( "Performance", "LodCache", bLodCache );
     bShowLoadStats = ini.GetBool( "Performance", "ShowLoadStats", bShowLoadStats );
-    bShowPlaybackStats = ini.GetBool( "Performance", "ShowPlaybackStats", bShowPlaybackStats );
-    bExtraStats = ini.GetBool( "Performance", "ExtraStats", bExtraStats );
 }
 
 void PerformanceSettings::Save( IniFile &ini ) const
@@ -332,8 +330,6 @@ void PerformanceSettings::Save( IniFile &ini ) const
     ini.SetInt( "Performance", "BlockCacheMB", iBlockCacheMB );
     ini.SetInt( "Performance", "LodCache", bLodCache );
     ini.SetInt( "Performance", "ShowLoadStats", bShowLoadStats );
-    ini.SetInt( "Performance", "ShowPlaybackStats", bShowPlaybackStats );
-    ini.SetInt( "Performance", "ExtraStats", bExtraStats );
 }
 
 //-----------------------------------------------------------------------------

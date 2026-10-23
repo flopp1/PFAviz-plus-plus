@@ -155,8 +155,9 @@ private:
     void RenderGlobals();
     void RenderText();
     // The stats box: its line count (0: not drawn) and its text, with the lines the settings show
-    int StatusLines( bool bPlaybackStats ) const;
-    void RenderStatus( Renderer *pRenderer, LPRECT prcPos, long long llTime, double dFPS, bool bPlaybackStats );
+    // The stats box for the lines in uStats (VisualSettings::Stat bits)
+    static int StatusLines( unsigned uStats );
+    void RenderStatus( Renderer *pRenderer, LPRECT prcPos, long long llTime, double dFPS, unsigned uStats );
     void RenderMessage( LPRECT prcMsg, const wchar_t *sMsg );
 
     // Song
@@ -178,15 +179,12 @@ private:
     TextPath m_tpMessage;
 
     // FPS
-    bool m_bShowFPS;
-    bool m_bShowTime = true, m_bShowScore = true;
+    unsigned m_uStats = 0;              // the stats box lines shown live (VisualSettings::uStats, less what has no data)
     int m_iFPSCount;
     long long m_llFPSTime;
     double m_dFPS;
 
     // Debug statistics (Performance tab option; not shown by default)
-    bool m_bShowPlaybackStats = false;
-    bool m_bShowExtraStats = false;     // notes passed, NPS, polyphony (Song::noteStats)
     uint64_t m_llStatSent = 0, m_llStatSkipped = 0;
     double m_dSentPerSec = 0.0, m_dSkippedPerSec = 0.0, m_dCollapsedPerSec = 0.0;
     uint64_t m_llStatCollapsed = 0;

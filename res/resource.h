@@ -19,6 +19,7 @@
 #define IDD_LOADING                     150
 #define IDD_VIDEOEXPORT                 151
 #define IDD_VIDEOPROGRESS               152
+#define IDD_STATS                       153
 
 #define IDC_PICTURE                     1089
 #define IDC_LICENSE                     1093
@@ -80,7 +81,6 @@
 #define IDC_UDARROWS                    1025
 #define IDC_UDARROWSSPIN                1026
 #define IDC_MIDIOUT                     1029
-#define IDC_DISPLAYFPS                  1034
 #define IDC_LIMITFPS                    1035
 #define IDC_RESTOREDEFAULTS             1048
 #define IDC_FILE                        1057
@@ -99,14 +99,12 @@
 #define IDC_PERF_SKIPPING               1073
 #define IDC_PERF_MAXLAG                 1074
 #define IDC_PERF_MAXLAGSPIN             1075
-#define IDC_PERF_PLAYSTATS              1077
 #define IDC_PERF_COMPACT                1078
 #define IDC_PERF_CACHEMB                1079
 #define IDC_PERF_LOD                    1080
 #define IDC_PERF_VIDEO                  1081
-#define IDC_PERF_EXTRASTATS             1082
-#define IDC_SHOWTIME                    1083
-#define IDC_SHOWSCORE                   1084
+#define IDC_STATSBOX                    1083
+#define IDC_STATSCOUNT                  1084
 #define IDC_PERF_COLLAPSE               1085
 #define IDC_PERF_SENDLIMIT              1086
 #define IDC_PERF_MAXSENDS               1087
@@ -125,6 +123,9 @@
 #define IDC_VID_CRF                     1307
 #define IDC_VID_PRESET                  1308
 #define IDC_VID_STATS                   1309
+#define IDC_STAT_FIRST                  1400    // + VisualSettings::Stat, through 1414
+#define IDC_STATS_ALL                   1420
+#define IDC_STATS_NONE                  1421
 #define IDC_VIDP_FILE                   1320
 #define IDC_VIDP_PREVIEW                1321
 #define IDC_VIDP_BAR                    1322

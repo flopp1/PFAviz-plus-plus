@@ -9,6 +9,7 @@ A performance rewrite of [Piano From Above](https://github.com/brian-pantano/Pia
 - The loader is memory-mapped and multi-threaded. A 100 M-note file loads in about 2.6 s on a 6-core CPU; files that do not fit in memory are read once, at the disk's sequential speed.
 - Events are stored LZ4-compressed (0.2–0.4 bytes per event on black MIDIs), and notes that can never show are dropped: a 1.1 billion-note, 6.3 GB file takes about 270 MB once loaded.
 - **Compact visual store** (Performance tab) packs the notes about 25–35 % smaller, at about the same drawing speed.
+- Notes transposed past key 127 (a common black MIDI artefact) are read as stock Piano From Above reads them and dropped, instead of throwing the rest of their track out of step; velocities and controller values past 127 are clamped.
 - **Ignore weird notes** (Performance tab, off by default): a note that a later note-off would pair a second time keeps its first pairing. Songs with such notes then load with one pairing pass instead of two (*Night of Nights*, 2.3 B notes: 221 s → 139 s, peak memory 17.7 → 11.9 GB). Those notes end at their first note-off, unlike the original.
 
 **Drawing**
@@ -27,13 +28,15 @@ A performance rewrite of [Piano From Above](https://github.com/brian-pantano/Pia
 - Mute, volume, pause, stop, seeking (with controller and program chase) and the metronome behave as in the original.
 
 **Statistics**
-- The stats box (Visual tab) can show the time, the frame rate and the score; with every line off it is not drawn.
-- **Extra statistics** (Performance tab, on by default): notes passed, NPS (note-ons in the last second) and polyphony (note-ons minus the note-offs that release a held note of the same track, channel and key), from 1 ms tables built while the notes are paired at load time.
-- **Debug statistics** (Performance tab): messages sent, skipped and collapsed per second, the sender's lag, the skipping threshold, and each frame's time split into logic, notes, the rest of the scene and Present.
+- Each line of the stats box is chosen in Visual > **Statistics...**; with every line off the box is not drawn. The lines:
+  - Time, frame rate and score (on by default: time and score).
+  - Notes passed, NPS (note-ons in the last second) and polyphony (note-ons minus the note-offs that release a held note of the same track, channel and key), from 1 ms tables built while the notes are paired at load time (on by default; not counted while all three are off).
+  - Synth: messages sent, skipped and collapsed per second, the sender's lag and the skipping threshold.
+  - Frame time, split into logic, notes, the rest of the scene and Present.
 
 **Video rendering** (Performance tab, "Render video...")
 - Renders the open song from start to end to an MP4, off-screen at any resolution up to 8192 × 8192 and 1–240 fps, with H.264 quality (CRF, default 20) and encoder preset choices.
-- A frame is what the window shows (keyboard and notes with the current view, note speed, colours and hidden channels) plus, optionally, the stats box. There is no sound.
+- A frame is what the window shows (keyboard and notes with the current view, note speed, colours and hidden channels) plus, optionally, the stats box (its chosen lines, less the synth and frame-time ones). There is no sound.
 - Needs `ffmpeg.exe` in the current folder, next to `PFAviz++.exe`, or on the PATH. The progress popup shows a preview; Cancel keeps a playable video of the part done so far.
 
 ## Requirements

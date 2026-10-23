@@ -45,6 +45,7 @@ struct LoadStats
     bool bSeekPenalty = false, bSequentialRead = false, bFusedRead = false;
     uint64_t llFusedBytes = 0;          // fused read: the packed per-track streams (freed after the build)
     int iThreads = 0;
+    uint64_t llOutOfRange = 0;          // channel events dropped for a key, controller or program past 127
     uint64_t llTracks = 0, llMalformedTracks = 0, llEvents = 0, llNotes = 0, llUniqueTicks = 0, llGroups = 0, llPayloadBytes = 0;
     bool bBitmapMerge = false;
     size_t aMem[7] = {}; // stream (compressed), stream index, tick table, time table, unused, metadata, notes

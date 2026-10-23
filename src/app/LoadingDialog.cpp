@@ -38,7 +38,7 @@ namespace
         LoadJob *pJob = static_cast< LoadJob * >( p );
         const PerformanceSettings &cPerf = Config::GetConfig().GetPerformanceSettings();
         pJob->progress.bLzVisual = cPerf.bCompactVisual;
-        pJob->progress.bNoteStats = cPerf.bExtraStats;
+        pJob->progress.bNoteStats = ( Config::GetConfig().GetVisualSettings().uStats & VisualSettings::NoteStats ) != 0;
         pJob->progress.bFirstPairingOnly = cPerf.bIgnoreWeird;
         SetLzCacheBytes( (size_t)cPerf.iBlockCacheMB << 20 );
         pJob->song = Loader::LoadFile( pJob->sFile, cPerf.iWorkerThreads, pJob->progress, pJob->stats, pJob->sError );

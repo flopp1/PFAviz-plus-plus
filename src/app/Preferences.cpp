@@ -36,12 +36,62 @@ namespace
         EnableWindow( GetDlgItem( hWnd, IDC_LASTKEY ), bEnable );
     }
 
-    // Sets the values in the visual settings page. Used at init and when restoring defaults
-    VOID SetVisualProc( HWND hWnd, const VisualSettings &cVisual, bool bShowFPS )
+    // The stats box lines chosen in the Statistics dialog, saved with the Visual page
+    unsigned g_uStats = 0;
+
+    VOID ShowStatsCount( HWND hWnd )
     {
-        CheckDlgButton( hWnd, IDC_SHOWTIME, cVisual.bShowTime ? BST_CHECKED : BST_UNCHECKED );
-        CheckDlgButton( hWnd, IDC_DISPLAYFPS, bShowFPS ? BST_CHECKED : BST_UNCHECKED );
-        CheckDlgButton( hWnd, IDC_SHOWSCORE, cVisual.bShowScore ? BST_CHECKED : BST_UNCHECKED );
+        wchar_t buf[64];
+        int iShown = __builtin_popcount( g_uStats );
+        if ( !iShown ) swprintf( buf, 64, L"Hidden (no lines)" );
+        else swprintf( buf, 64, L"%d of %d lines", iShown, VisualSettings::StatCount );
+        SetDlgItemTextW( hWnd, IDC_STATSCOUNT, buf );
+    }
+
+    // Statistics...: a checkbox per stats box line (IDC_STAT_FIRST + VisualSettings::Stat), on the
+    // mask passed in lParam
+    INT_PTR CALLBACK StatsProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
+    {
+        switch ( msg )
+        {
+            case WM_INITDIALOG:
+            {
+                SetWindowLongPtrW( hWnd, GWLP_USERDATA, lParam );
+                unsigned uStats = *reinterpret_cast< unsigned * >( lParam );
+                for ( int i = 0; i < VisualSettings::StatCount; i++ )
+                    CheckDlgButton( hWnd, IDC_STAT_FIRST + i, ( uStats >> i ) & 1 ? BST_CHECKED : BST_UNCHECKED );
+                return TRUE;
+            }
+            case WM_COMMAND:
+                switch ( LOWORD( wParam ) )
+                {
+                    case IDC_STATS_ALL: case IDC_STATS_NONE:
+                        for ( int i = 0; i < VisualSettings::StatCount; i++ )
+                            CheckDlgButton( hWnd, IDC_STAT_FIRST + i, LOWORD( wParam ) == IDC_STATS_ALL ? BST_CHECKED : BST_UNCHECKED );
+                        return TRUE;
+                    case IDOK:
+                    {
+                        unsigned &uStats = *reinterpret_cast< unsigned * >( GetWindowLongPtrW( hWnd, GWLP_USERDATA ) );
+                        uStats = 0;
+                        for ( int i = 0; i < VisualSettings::StatCount; i++ )
+                            if ( IsDlgButtonChecked( hWnd, IDC_STAT_FIRST + i ) == BST_CHECKED ) uStats |= 1u << i;
+                        EndDialog( hWnd, IDOK );
+                        return TRUE;
+                    }
+                    case IDCANCEL:
+                        EndDialog( hWnd, IDCANCEL );
+                        return TRUE;
+                }
+                break;
+        }
+        return FALSE;
+    }
+
+    // Sets the values in the visual settings page. Used at init and when restoring defaults
+    VOID SetVisualProc( HWND hWnd, const VisualSettings &cVisual )
+    {
+        g_uStats = cVisual.uStats;
+        ShowStatsCount( hWnd );
         for ( int i = 0; i < 4; i++ )
             CheckDlgButton( hWnd, aKeyModeIds[i], i == cVisual.eKeysShown ? BST_CHECKED : BST_UNCHECKED );
         EnableCustomKeys( hWnd, cVisual.eKeysShown == VisualSettings::Custom );
@@ -63,7 +113,7 @@ namespace
                     SendDlgItemMessageW( hWnd, IDC_FIRSTKEY, CB_ADDSTRING, 0, ( LPARAM )Notes::NoteName( i ) );
                     SendDlgItemMessageW( hWnd, IDC_LASTKEY, CB_ADDSTRING, 0, ( LPARAM )Notes::NoteName( i ) );
                 }
-                SetVisualProc( hWnd, Config::GetConfig().GetVisualSettings(), Config::GetConfig().GetVideoSettings().bShowFPS );
+                SetVisualProc( hWnd, Config::GetConfig().GetVisualSettings() );
                 return TRUE;
             // Draws the coloured buttons
             case WM_DRAWITEM:
@@ -87,6 +137,17 @@ namespace
                     case IDC_SHOWALLKEYS: case IDC_SHOWSONGKEYS: case IDC_SHOWALL128KEYS:
                         EnableCustomKeys( hWnd, FALSE );
                         return TRUE;
+                    case IDC_STATSBOX:
+                    {
+                        unsigned uStats = g_uStats;
+                        if ( DialogBoxParamW( GetModuleHandleW( nullptr ), MAKEINTRESOURCEW( IDD_STATS ), GetParent( hWnd ), StatsProc,
+                                              ( LPARAM )&uStats ) == IDOK )
+                        {
+                            g_uStats = uStats;
+                            ShowStatsCount( hWnd );
+                        }
+                        return TRUE;
+                    }
                     // Colour buttons: pop up the colour chooser
                     case IDC_COLOR1: case IDC_COLOR2: case IDC_COLOR3:
                     case IDC_COLOR4: case IDC_COLOR5: case IDC_COLOR6:
@@ -110,10 +171,8 @@ namespace
                     {
                         VisualSettings cVisual;
                         cVisual.LoadDefaultValues();
-                        VideoSettings cVideo;
-                        cVideo.LoadDefaultValues();
                         SendMessageW( hWnd, WM_SETREDRAW, FALSE, 0 );
-                        SetVisualProc( hWnd, cVisual, cVideo.bShowFPS );
+                        SetVisualProc( hWnd, cVisual );
                         SendMessageW( hWnd, WM_SETREDRAW, TRUE, 0 );
                         InvalidateRect( hWnd, nullptr, FALSE );
                         return TRUE;
@@ -134,11 +193,7 @@ namespace
                         if ( IsDlgButtonChecked( hWnd, aKeyModeIds[i] ) == BST_CHECKED )
                             cVisual.eKeysShown = static_cast< VisualSettings::KeysShown >( i );
                     cVisual.bAlwaysShowControls = IsDlgButtonChecked( hWnd, IDC_SHOWCONTROLS ) == BST_CHECKED;
-                    cVisual.bShowTime = IsDlgButtonChecked( hWnd, IDC_SHOWTIME ) == BST_CHECKED;
-                    cVisual.bShowScore = IsDlgButtonChecked( hWnd, IDC_SHOWSCORE ) == BST_CHECKED;
-                    VideoSettings cVideo = config.GetVideoSettings();
-                    cVideo.bShowFPS = IsDlgButtonChecked( hWnd, IDC_DISPLAYFPS ) == BST_CHECKED;
-                    config.SetVideoSettings( cVideo );
+                    cVisual.uStats = g_uStats;
                     cVisual.iFirstKey = (int)SendDlgItemMessageW( hWnd, IDC_FIRSTKEY, CB_GETCURSEL, 0, 0 );
                     cVisual.iLastKey = (int)SendDlgItemMessageW( hWnd, IDC_LASTKEY, CB_GETCURSEL, 0, 0 );
                     for ( int i = 0; i < IDC_COLOR6 - IDC_COLOR1 + 1; i++ )
@@ -316,14 +371,12 @@ namespace
                 CheckDlgButton( hWnd, IDC_PERF_LOD, cPerf.bLodCache ? BST_CHECKED : BST_UNCHECKED );
                 SetDlgItemInt( hWnd, IDC_PERF_CACHEMB, (UINT)cPerf.iBlockCacheMB, FALSE );
                 CheckDlgButton( hWnd, IDC_PERF_KDMAPI, cPerf.bPreferKDMAPI ? BST_CHECKED : BST_UNCHECKED );
-                CheckDlgButton( hWnd, IDC_PERF_PLAYSTATS, cPerf.bShowPlaybackStats ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_PERF_COLLAPSE, cPerf.bCollapseStacks ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_PERF_VELFLOOR, cPerf.bVelocityFloor ? BST_CHECKED : BST_UNCHECKED );
                 SetDlgItemInt( hWnd, IDC_PERF_MINVEL, (UINT)cPerf.iMinVelocity, FALSE );
                 CheckDlgButton( hWnd, IDC_PERF_IGNOREWEIRD, cPerf.bIgnoreWeird ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_PERF_SENDLIMIT, cPerf.bSendLimit ? BST_CHECKED : BST_UNCHECKED );
                 SetDlgItemInt( hWnd, IDC_PERF_MAXSENDS, (UINT)cPerf.iMaxSendsPerSec, FALSE );
-                CheckDlgButton( hWnd, IDC_PERF_EXTRASTATS, cPerf.bExtraStats ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_LIMITFPS, cVideo.bLimitFPS ? BST_CHECKED : BST_UNCHECKED );
                 EnableWindow( GetDlgItem( hWnd, IDC_PERF_KDMAPI ), MidiOutputs::KdmapiAvailable() || cPerf.bPreferKDMAPI );
                 return TRUE;
@@ -395,8 +448,6 @@ namespace
                     cPerf.bLodCache = IsDlgButtonChecked( hWnd, IDC_PERF_LOD ) == BST_CHECKED;
                     cPerf.iBlockCacheMB = (int)uCache;
                     cPerf.bPreferKDMAPI = IsDlgButtonChecked( hWnd, IDC_PERF_KDMAPI ) == BST_CHECKED;
-                    cPerf.bShowPlaybackStats = IsDlgButtonChecked( hWnd, IDC_PERF_PLAYSTATS ) == BST_CHECKED;
-                    cPerf.bExtraStats = IsDlgButtonChecked( hWnd, IDC_PERF_EXTRASTATS ) == BST_CHECKED;
                     cVideo.bLimitFPS = IsDlgButtonChecked( hWnd, IDC_LIMITFPS ) == BST_CHECKED;
 
                     config.SetPerformanceSettings( cPerf );

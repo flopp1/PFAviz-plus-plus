@@ -54,6 +54,7 @@ namespace
         std::vector< RefMetaEvent > vMeta;
         uint32_t aKeyCounts[128] = {};
         uint64_t llChannelEvents = 0;
+        uint64_t llOutOfRange = 0;          // channel events dropped for a key, controller or program past 127
         // Fused read (DESIGN.md 4.2a): the track's groups as encoded by the emit pass (runs only, no group
         // headers), LZ4-compressed in chunks that hold whole groups
         struct PackedChunk
@@ -101,8 +102,6 @@ namespace
         const uint8_t *p = pTrack + start.llPos;
         long long llTick = start.llTick;
         int iRunning = start.cRunning;
-        bool bPendingStatus = false;
-        uint8_t cPendingStatus = 0;
 
         int64_t llGroup = (int64_t)start.llGroup - 1;
         long long llGroupTick = LLONG_MIN;
@@ -165,40 +164,32 @@ namespace
             const uint8_t *pEventStart = p;
             long long llTickBefore = llTick;
             int iRunningBefore = iRunning;
-            bool bWasPending = bPendingStatus;
 
             int iStatus;
-            if ( bPendingStatus )
-            {
-                bPendingStatus = false;
-                iStatus = cPendingStatus;
-                p++;
-            }
-            else
-            {
-                long long llDelta;
-                if ( !ReadVarLen( p, pEnd, llDelta ) ) { if ( COUNT ) pScan->info.bMalformed = true; break; }
-                llTick += llDelta;
-                if ( p >= pEnd ) { if ( COUNT ) pScan->info.bMalformed = true; break; }
-                if ( *p >= 0x80 ) iStatus = *p++;
-                else if ( iRunning ) iStatus = iRunning;
-                else { if ( COUNT ) pScan->info.bMalformed = true; break; }
-            }
+            long long llDelta;
+            if ( !ReadVarLen( p, pEnd, llDelta ) ) { if ( COUNT ) pScan->info.bMalformed = true; break; }
+            llTick += llDelta;
+            if ( p >= pEnd ) { if ( COUNT ) pScan->info.bMalformed = true; break; }
+            if ( *p >= 0x80 ) iStatus = *p++;
+            else if ( iRunning ) iStatus = iRunning;
+            else { if ( COUNT ) pScan->info.bMalformed = true; break; }
 
             if ( iStatus < 0xF0 )
             {
                 iRunning = iStatus;
                 unsigned iType = iStatus >> 4, iChannel = iStatus & 0xF;
                 int iDataBytes = ( iType == 0xC || iType == 0xD ) ? 1 : 2;
-                uint8_t aData[2] = { 0, 0 };
-                bool bTruncated = false;
-                for ( int i = 0; i < iDataBytes; i++ )
+                if ( pEnd - p < iDataBytes ) { if ( COUNT ) pScan->info.bMalformed = true; break; }
+                // Data bytes are read as data, as the original reads them (DESIGN.md 1.5). A key, controller
+                // or program past 127 drops the event (its tick still counts for the length); a second
+                // byte past 127 (velocity, value) is clamped
+                uint8_t aData[2] = { p[0], iDataBytes == 2 ? std::min< uint8_t >( p[1], 0x7F ) : (uint8_t)0 };
+                p += iDataBytes;
+                if ( aData[0] >= 0x80 )
                 {
-                    if ( p >= pEnd ) { bTruncated = true; if ( COUNT ) pScan->info.bMalformed = true; break; }
-                    if ( *p >= 0x80 ) { bTruncated = true; bPendingStatus = true; cPendingStatus = *p; break; }
-                    aData[i] = *p++;
+                    if ( COUNT ) { pScan->llOutOfRange++; pScan->info.llTotalTicks = std::max( pScan->info.llTotalTicks, llTick ); }
+                    continue;
                 }
-                if ( bTruncated ) { if ( !bPendingStatus ) break; continue; }
 
                 // A channel event at a new tick opens the next group
                 if ( llTick != llGroupTick )
@@ -209,7 +200,7 @@ namespace
                     if ( COUNT )
                     {
                         if ( llGroup >= 0 ) pScan->vGroups.push_back( { llGroupTick, uSize, uEvents } );
-                        if ( MODE == Count && llNext > 0 && llNext % CheckpointEvery == 0 && !bWasPending )
+                        if ( MODE == Count && llNext > 0 && llNext % CheckpointEvery == 0 )
                             pScan->vCps.push_back( { (uint64_t)( pEventStart - pTrack ), llTickBefore, llNext, (uint8_t)iRunningBefore } );
                         uSize = uEvents = 0;
                     }
@@ -445,6 +436,7 @@ namespace
             song->vTracks[t] = mti;
             song->vTrackMeta[t] = vScans[t]->vMeta;
             stats.llMalformedTracks += mti.bMalformed;
+            stats.llOutOfRange += vScans[t]->llOutOfRange;
             for ( int k = 0; k < 128; k++ ) song->aKeyNoteCounts[k] += vScans[t]->aKeyCounts[k];
             info.llTotalTicks = std::max( info.llTotalTicks, mti.llTotalTicks );
             info.llEventCount += mti.llEventCount;
@@ -866,12 +858,14 @@ std::wstring LoadStats::Format() const
                 wcscat( aStages, s );
             }
     }
+    wchar_t sOutOfRange[64] = L"";
+    if ( llOutOfRange ) swprintf( sOutOfRange, 64, L" (%llu past key/value 127, dropped)", (unsigned long long)llOutOfRange );
     swprintf( buf, 8192,
         L"File: %ls\r\n"
         L"Size: %.1f MB, %ls%ls\r\n"
         L"Threads: %d\r\n\r\n"
         L"Tracks: %llu (%llu malformed)\r\n"
-        L"Channel events: %llu\r\n"
+        L"Channel events: %llu%ls\r\n"
         L"Notes: %llu (%llu paired, %llu unpaired, %llu paired more than once)\r\n"
         L"Unique ticks: %llu\r\n"
         L"Tick groups: %llu (%ls merge)\r\n\r\n"
@@ -890,7 +884,7 @@ std::wstring LoadStats::Format() const
         bSeekPenalty ? L"spinning disk" : L"SSD or cached",
         bFusedRead ? L" (one sequential read, fused parse)" : bSequentialRead ? L" (sequential reader)" : L"",
         iThreads,
-        (unsigned long long)llTracks, (unsigned long long)llMalformedTracks, (unsigned long long)llEvents,
+        (unsigned long long)llTracks, (unsigned long long)llMalformedTracks, (unsigned long long)llEvents, sOutOfRange,
         (unsigned long long)llNotes, (unsigned long long)llPairedNotes, (unsigned long long)llUnpairedNotes, (unsigned long long)llWeirdNotes,
         (unsigned long long)llUniqueTicks, (unsigned long long)llGroups, bBitmapMerge ? L"bitmap" : L"sort",
         dTotalSeconds, aStages, sDisk,

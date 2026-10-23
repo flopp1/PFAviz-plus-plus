@@ -218,46 +218,31 @@ bool RefMidi::ParseTrack( const unsigned char *p, const unsigned char *pEnd, int
 {
     long long llTick = 0;
     int iRunning = 0;           // running status (channel status only); 0 = none
-    bool bPendingStatus = false;
-    unsigned char cPendingStatus = 0;
 
     auto AddInfo = [&]( long long llAt ) { info.llEventCount++; info.llTotalTicks = std::max( info.llTotalTicks, llAt ); };
 
     while ( p < pEnd )
     {
         int iStatus;
-        if ( bPendingStatus )
-        {
-            // A status byte arrived where a data byte was expected: new event with delta 0
-            bPendingStatus = false;
-            iStatus = cPendingStatus;
-            p++;
-        }
-        else
-        {
-            long long llDelta;
-            if ( !ReadVarLen( p, pEnd, llDelta ) ) { info.bMalformed = true; break; }
-            llTick += llDelta;
-            if ( p >= pEnd ) { info.bMalformed = true; break; }
-            if ( *p >= 0x80 ) iStatus = *p++;
-            else if ( iRunning ) iStatus = iRunning;
-            else { info.bMalformed = true; break; }
-        }
+        long long llDelta;
+        if ( !ReadVarLen( p, pEnd, llDelta ) ) { info.bMalformed = true; break; }
+        llTick += llDelta;
+        if ( p >= pEnd ) { info.bMalformed = true; break; }
+        if ( *p >= 0x80 ) iStatus = *p++;
+        else if ( iRunning ) iStatus = iRunning;
+        else { info.bMalformed = true; break; }
 
         if ( iStatus < 0xF0 )
         {
             iRunning = iStatus;
             int iType = iStatus >> 4, iChannel = iStatus & 0xF;
             int iDataBytes = ( iType == 0xC || iType == 0xD ) ? 1 : 2;
-            unsigned char aData[2] = { 0, 0 };
-            bool bTruncated = false;
-            for ( int i = 0; i < iDataBytes; i++ )
-            {
-                if ( p >= pEnd ) { bTruncated = true; info.bMalformed = true; break; }
-                if ( *p >= 0x80 ) { bTruncated = true; bPendingStatus = true; cPendingStatus = *p; break; }
-                aData[i] = *p++;
-            }
-            if ( bTruncated ) { if ( !bPendingStatus ) break; continue; }
+            if ( pEnd - p < iDataBytes ) { info.bMalformed = true; break; }
+            // Data bytes are read as data, as the original reads them. A key, controller or program past
+            // 127 drops the event (its tick still counts for the length); a second byte past 127 is clamped
+            unsigned char aData[2] = { p[0], iDataBytes == 2 ? std::min< unsigned char >( p[1], 0x7F ) : (unsigned char)0 };
+            p += iDataBytes;
+            if ( aData[0] >= 0x80 ) { info.llTotalTicks = std::max( info.llTotalTicks, llTick ); continue; }
 
             TrackEvent te;
             te.llTick = llTick;

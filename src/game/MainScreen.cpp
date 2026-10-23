@@ -80,7 +80,6 @@ void MainScreen::InitState()
     m_llTimeSpan = static_cast< long long >( 3.0 * cPlayback.GetNSpeed() * 1000000 );
     m_bShowKB = cView.GetKeyboard();
     m_bZoomMove = false;
-    m_bShowFPS = false;
 
     AdvanceIterators( m_llStartTime, true );
 }
@@ -393,9 +392,7 @@ GameState::GameError MainScreen::Logic()
     m_fOffsetY = cView.GetOffsetY();
     m_fZoomX = cView.GetZoomX();
     if ( !m_bZoomMove ) m_bTrackPos = m_bTrackZoom = false;
-    m_bShowFPS = cVideo.bShowFPS;
-    m_bShowTime = cVisual.bShowTime;
-    m_bShowScore = cVisual.bShowScore;
+    m_uStats = cVisual.uStats & ( m_pPlayback ? VisualSettings::AllStats : ~VisualSettings::SynthStats );
     m_pRenderer->SetLimitFPS( cVideo.bLimitFPS );
     m_Colors.SetBackground( cVisual.iBkgColor );
 
@@ -455,8 +452,6 @@ GameState::GameError MainScreen::Logic()
         m_llEnvRunUs += 500000;
         if ( dEnvExitAfter > 0 && m_llEnvRunUs >= (long long)( dEnvExitAfter * 1e6 ) ) PostMessageW( g_hWnd, WM_CLOSE, 0, 0 );
     }
-    m_bShowPlaybackStats = config.GetPerformanceSettings().bShowPlaybackStats && m_pPlayback;
-    m_bShowExtraStats = config.GetPerformanceSettings().bExtraStats;
 
     // If we just paused, kill the music
     if ( ( bPausedChanged || bMuteChanged ) && ( m_bPaused || m_bMute ) && m_pPlayback )
@@ -597,7 +592,7 @@ ViewInputs MainScreen::GetViewInputs( int iWidth, int iHeight, long long llStart
 
 void MainScreen::RenderText()
 {
-    int iLines = StatusLines( m_bShowPlaybackStats );
+    int iLines = StatusLines( m_uStats );
 
     RECT rcStatus = { m_pRenderer->GetBufferWidth() - 156, 0, m_pRenderer->GetBufferWidth(), 6 + 16 * iLines };
 
@@ -615,7 +610,7 @@ void MainScreen::RenderText()
             static_cast< float >( rcMsg.right - rcMsg.left ), static_cast< float >( rcMsg.bottom - rcMsg.top ), iBkgColor );
 
     m_pRenderer->BeginText();
-    RenderStatus( m_pRenderer, &rcStatus, m_llStartTime, m_dFPS, m_bShowPlaybackStats );
+    RenderStatus( m_pRenderer, &rcStatus, m_llStartTime, m_dFPS, m_uStats );
     if ( m_pEngine->DrawsPreviousMask() )
     {
         // Hidden channels change once their draw view is built (FastEngine::SetHidden)
@@ -631,14 +626,13 @@ void MainScreen::RenderText()
     m_pRenderer->EndText();
 }
 
-int MainScreen::StatusLines( bool bPlaybackStats ) const
+int MainScreen::StatusLines( unsigned uStats )
 {
-    return ( m_bShowTime ? 1 : 0 ) + ( m_bShowFPS ? 1 : 0 ) + ( m_bShowScore ? 1 : 0 ) + ( m_bShowExtraStats ? 3 : 0 ) +
-           ( bPlaybackStats ? 5 + PartCount : 0 );
+    return __builtin_popcount( uStats & VisualSettings::AllStats );
 }
 
 // The top-right stats area's text (the video renderer passes its own renderer, time and frame rate)
-void MainScreen::RenderStatus( Renderer *pRenderer, LPRECT prcStatus, long long llTime, double dFPS, bool bPlaybackStats )
+void MainScreen::RenderStatus( Renderer *pRenderer, LPRECT prcStatus, long long llTime, double dFPS, unsigned uStats )
 {
     wchar_t sTime[128];
     const RefMidiInfo &mInfo = m_pSong->info;
@@ -670,11 +664,12 @@ void MainScreen::RenderStatus( Renderer *pRenderer, LPRECT prcStatus, long long 
         pRenderer->DrawText( sLabel, Renderer::Small, prcStatus, 0, 0xFFFFFFFF );
         pRenderer->DrawText( sValue, Renderer::Small, prcStatus, DT_RIGHT, 0xFFFFFFFF );
     };
-    if ( m_bShowTime ) Line( L"Time:", sTime );
-    if ( m_bShowFPS ) Line( L"FPS:", sFPS );
-    if ( m_bShowScore ) Line( L"Score:", sScore );
+    auto Shown = [&]( int iStat ) { return ( uStats >> iStat ) & 1; };
+    if ( Shown( VisualSettings::StatTime ) ) Line( L"Time:", sTime );
+    if ( Shown( VisualSettings::StatFPS ) ) Line( L"FPS:", sFPS );
+    if ( Shown( VisualSettings::StatScore ) ) Line( L"Score:", sScore );
 
-    if ( m_bShowExtraStats )
+    if ( uStats & VisualSettings::NoteStats )
     {
         // From the tables counted while loading (n/a: the song was loaded with them off)
         const NoteStats &ns = m_pSong->noteStats;
@@ -697,10 +692,10 @@ void MainScreen::RenderStatus( Renderer *pRenderer, LPRECT prcStatus, long long 
             Count( aValues[2], ns.Polyphony( llTime ) );
         }
         const wchar_t *aLabels[3] = { L"Notes:", L"NPS:", L"Polyphony:" };
-        for ( int i = 0; i < 3; i++ ) Line( aLabels[i], aValues[i] );
+        for ( int i = 0; i < 3; i++ ) if ( Shown( VisualSettings::StatNotes + i ) ) Line( aLabels[i], aValues[i] );
     }
 
-    if ( bPlaybackStats )
+    if ( uStats & ( VisualSettings::SynthStats | VisualSettings::FrameStats ) )
     {
         auto Rate = []( wchar_t *s, double d ) {
             if ( d >= 1e6 ) swprintf( s, 32, L"%.2lfM", d / 1e6 );
@@ -723,7 +718,7 @@ void MainScreen::RenderStatus( Renderer *pRenderer, LPRECT prcStatus, long long 
         for ( int i = 0; i < PartCount; i++ ) swprintf( aValues[5 + i], 32, L"%.2f / %.2f", m_adPartAvgShown[i], m_adPartMaxShown[i] );
         const wchar_t *aLabels[5 + PartCount] = { L"Sent/s:", L"Skipped/s:", L"Collapsed/s:", L"Lag:", L"Skipping:",
                                                   L"Other ms:", L"Notes ms:", L"Scene ms:", L"Present ms:" };
-        for ( int i = 0; i < 5 + PartCount; i++ ) Line( aLabels[i], aValues[i] );
+        for ( int i = 0; i < 5 + PartCount; i++ ) if ( Shown( VisualSettings::StatSent + i ) ) Line( aLabels[i], aValues[i] );
     }
 }
 

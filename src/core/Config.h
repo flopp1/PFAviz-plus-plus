@@ -26,7 +26,14 @@ struct VisualSettings
     enum KeysShown { All, Song, Custom, All128 } eKeysShown;
     int iFirstKey, iLastKey;
     bool bAlwaysShowControls;
-    bool bShowTime, bShowScore;     // stats box lines (the frame rate line is VideoSettings::bShowFPS)
+    // The stats box's lines, in display order (Visual > Statistics...); uStats has bit 1 << Stat for each one shown
+    enum Stat { StatTime, StatFPS, StatScore, StatNotes, StatNPS, StatPolyphony, StatSent, StatSkipped, StatCollapsed, StatLag,
+                StatSkipping, StatOtherMs, StatNotesMs, StatSceneMs, StatPresentMs, StatCount };
+    static constexpr unsigned NoteStats = 7u << StatNotes;      // counted while a song loads (Song::noteStats)
+    static constexpr unsigned SynthStats = 31u << StatSent;     // need a MIDI output
+    static constexpr unsigned FrameStats = 15u << StatOtherMs;  // frame time parts, live only
+    static constexpr unsigned AllStats = ( 1u << StatCount ) - 1;
+    unsigned uStats;
     unsigned int colors[16], iBkgColor;
 };
 
@@ -48,7 +55,7 @@ struct VideoSettings
     void Load( const IniFile &ini );
     void Save( IniFile &ini ) const;
 
-    bool bShowFPS, bLimitFPS;
+    bool bLimitFPS;
 };
 
 struct ControlsSettings
@@ -95,11 +102,9 @@ struct PerformanceSettings
     int iMaxSendsPerSec;
     bool bCompactVisual;
     int iBlockCacheMB;
-    bool bLodCache;
-    bool bIgnoreWeird;          // keep each note's first pairing (Song::bFirstPairingOnly), off: stock-exact             // the fast renderer's LOD cache (DESIGN.md 8.11)
+    bool bLodCache;             // the fast renderer's LOD cache (DESIGN.md 8.11)
+    bool bIgnoreWeird;          // keep each note's first pairing (Song::bFirstPairingOnly), off: stock-exact
     bool bShowLoadStats;
-    bool bShowPlaybackStats;    // "Debug statistics": synth, events, frame time
-    bool bExtraStats;           // notes passed, NPS and polyphony (counted while loading: Song::noteStats)
 };
 
 class PlaybackSettings
