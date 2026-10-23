@@ -32,7 +32,7 @@ void MainScreen::InitSong()
     m_pEngine->SetLod( Config::GetConfig().GetPerformanceSettings().bLodCache );
     m_pMeter = new MeterTracker( m_pSong->vMeta, m_pSong->info );
     m_vTrackSettings.resize( m_pSong->info.iNumTracks );
-    if ( m_pSong ) m_pPlayback = std::make_unique< PlaybackEngine >( m_pSong, m_Clock );
+    if ( m_pSong ) m_pPlayback = std::make_unique< PlaybackEngine >( m_pSong, m_Clock, Config::GetConfig().GetPerformanceSettings().iWorkerThreads );
 
     std::vector< TextPath::TextPathVertex > vPath;
     vPath.push_back( { 0.0f, 0.0f, 0.0f, 0xFF } );
@@ -720,7 +720,8 @@ void MainScreen::RenderStatus( Renderer *pRenderer, LPRECT prcStatus, long long 
         // a busy sender is the output's (a rising send cost: the synth pushing back)
         const int P = 5 + PartCount;
         Rate( aValues[P], m_dDecodedPerSec );
-        swprintf( aValues[P + 1], 32, L"%.0f%%", m_dDecoderBusy * 100.0 );
+        if ( m_Stats.iLanes > 1 ) swprintf( aValues[P + 1], 32, L"%.0f%% ×%d", m_dDecoderBusy * 100.0, m_Stats.iLanes );    // x threads
+        else swprintf( aValues[P + 1], 32, L"%.0f%%", m_dDecoderBusy * 100.0 );
         swprintf( aValues[P + 2], 32, L"%.0f%%", m_dSenderBusy * 100.0 );
         swprintf( aValues[P + 3], 32, L"%.0f%% avg, %.0f%% max", m_dRingAvg * 100.0, m_dRingMax * 100.0 );
         swprintf( aValues[P + 4], 32, L"%.1f ns/msg", m_Stats.dNsPerMsg );

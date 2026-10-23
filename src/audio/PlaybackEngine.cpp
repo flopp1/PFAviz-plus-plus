@@ -2,7 +2,10 @@
 
 #include <avrt.h>
 #include <algorithm>
+#include <cmath>
+#include <cstring>
 
+#include "core/ThreadPool.h"
 #include "core/Util.h"
 
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
@@ -36,9 +39,10 @@ namespace
     }
 }
 
-PlaybackEngine::PlaybackEngine( std::shared_ptr< const Song > pSong, PlaybackClock &clock )
+PlaybackEngine::PlaybackEngine( std::shared_ptr< const Song > pSong, PlaybackClock &clock, int iThreads )
     : m_pSong( std::move( pSong ) ), m_Clock( clock ), m_Decoder( *m_pSong )
 {
+    m_iMaxLanes = std::max( 1, Parallel::ThreadCount( iThreads ) );
     size_t iTracks = std::max< size_t >( 1, m_pSong->vTracks.size() );
     m_pMuteMask.reset( new std::atomic< uint16_t >[iTracks] );
     for ( size_t i = 0; i < iTracks; i++ ) m_pMuteMask[i].store( 0, std::memory_order_relaxed );
@@ -71,6 +75,16 @@ void PlaybackEngine::Stop()
     m_bStop = true;
     if ( m_DecoderThread.joinable() ) m_DecoderThread.join();
     if ( m_SenderThread.joinable() ) m_SenderThread.join();
+    {
+        std::lock_guard< std::mutex > lock( m_mxLanes );
+        m_bLanesStop = true;
+    }
+    m_cvLanes.notify_all();
+    for ( std::thread &t : m_vLaneThreads ) if ( t.joinable() ) t.join();
+    m_vLaneThreads.clear();
+    m_vLaneDec.clear();
+    m_vLaneOut.clear();
+    m_bLanesStop = false;
 }
 
 void PlaybackEngine::Seek( long long llTarget, long long llClamped, long long llPrevTime )
@@ -136,6 +150,7 @@ PlaybackEngine::Stats PlaybackEngine::GetStats()
     s.llCollapsed = m_llCollapsed.load( std::memory_order_relaxed );
     s.budget.iVelocity = m_iBudgetVel.load( std::memory_order_relaxed );
     s.budget.dKeep = m_dBudgetKeep.load( std::memory_order_relaxed );
+    s.iLanes = m_iLanesNow.load( std::memory_order_relaxed );
     return s;
 }
 
@@ -219,10 +234,20 @@ void PlaybackEngine::DecoderThread()
 
         long long llNow = m_Clock.Now();
 
+        // Parallel when one thread cannot keep up
+        int iLanes = m_iMaxLanes > 1 ? LanesWanted( p, llNow ) : 1;
+        m_iLanesNow.store( iLanes, std::memory_order_relaxed );
+        if ( iLanes > 1 && RunBatch( iLanes, p, llNow, uEpoch, hTimer ) ) continue;
+
         long long llHorizon = llNow + std::max< long long >( 1000, (long long)( 4000 * p.dSpeed ) );
         long long llDue, t0 = Timer::NowMicroSecs();
+        uint64_t llRead0 = m_Decoder.EventsRead();
         size_t n = m_Decoder.Fill( s->aMsgs, SliceMsgs, llHorizon, llNow, p, llDue );
-        m_llDecodeBusyUs.fetch_add( Timer::NowMicroSecs() - t0, std::memory_order_relaxed );
+        long long llBusy = Timer::NowMicroSecs() - t0;
+        m_llDecodeBusyUs.fetch_add( llBusy, std::memory_order_relaxed );
+        // One thread's speed, from calls that read enough to time
+        uint64_t llRead = m_Decoder.EventsRead() - llRead0;
+        if ( llRead >= 32768 && llBusy > 0 ) m_dRate = std::max( 10.0, m_dRate * 0.8 + 0.2 * llRead / llBusy );
 
         const PlaybackDecoder::Counters &c = m_Decoder.GetCounters();
         m_llDecoded.store( c.llSent, std::memory_order_relaxed );
@@ -251,6 +276,151 @@ void PlaybackEngine::DecoderThread()
         WaitUs( hTimer, std::max< long long >( llWait, 300 ) );
     }
     if ( hTimer ) CloseHandle( hTimer );
+}
+
+//-----------------------------------------------------------------------------
+// Parallel decoding (DESIGN.md 7.11)
+//-----------------------------------------------------------------------------
+
+// Lanes for the next 20 ms of real time: its note-ons (the song's bins, with their offs) against one
+// thread's measured speed, each lane at most about half busy; all of them when decoding is 10 ms late.
+// Once parallel, it stays so until the load falls to about a third of one thread.
+int PlaybackEngine::LanesWanted( const PlaybackDecoder::Params &p, long long llNow )
+{
+    long long tNext = m_Decoder.NextTime( PlaybackDecoder::MetOff );
+    if ( tNext == LLONG_MAX ) return 1;
+    const VelocityBins &vb = m_pSong->aSendOns[0];
+    const double dWindowUs = 20000.0;
+    long long llWin = (long long)( dWindowUs * p.dSpeed );
+    uint64_t llOns = 0;
+    for ( size_t b = (size_t)( std::max( 0LL, tNext ) / VelocityBins::BinUs ); (long long)b * VelocityBins::BinUs <= tNext + llWin && b < vb.Bins(); b++ )
+        llOns += vb.Total( b );
+    double dShare = llOns * 2.2 / m_dRate / dWindowUs;      // of one thread's time
+    double dLateUs = ( llNow - tNext ) / p.dSpeed;
+    bool bParallel = m_iLanesNow.load( std::memory_order_relaxed ) > 1;
+    if ( !( bParallel ? dShare > 0.3 || dLateUs > 2000 : dShare > 0.6 || dLateUs > 10000 ) ) return 1;
+    int n = dLateUs > 10000 ? m_iMaxLanes : (int)std::ceil( dShare / 0.5 );
+    return std::clamp( n, 2, m_iMaxLanes );
+}
+
+void PlaybackEngine::EnsureLanes( int iLanes )
+{
+    if ( m_vLaneDec.empty() )
+    {
+        m_vLaneDec.reserve( m_iMaxLanes );
+        m_vLaneOut.reserve( m_iMaxLanes );
+        m_vLaneThreads.reserve( m_iMaxLanes );
+        m_vLaneDec.emplace_back();      // lane 0 is the decoder itself
+        m_vLaneOut.emplace_back();
+    }
+    while ( (int)m_vLaneDec.size() < iLanes )
+    {
+        int k = (int)m_vLaneDec.size();
+        m_vLaneDec.emplace_back( new PlaybackDecoder( *m_pSong ) );
+        m_vLaneDec.back()->SetMuteMask( m_pMuteMask.get() );
+        m_vLaneOut.emplace_back();
+        // Its first job is the next one (jobs are only posted on this thread, after this)
+        unsigned uJob;
+        {
+            std::lock_guard< std::mutex > lock( m_mxLanes );
+            uJob = m_uLaneJob;
+        }
+        m_vLaneThreads.emplace_back( &PlaybackEngine::LaneThread, this, k, uJob );
+    }
+}
+
+void PlaybackEngine::LaneThread( int k, unsigned uSeen )
+{
+    SetThreadPriority( GetCurrentThread(), THREAD_PRIORITY_HIGHEST );
+    std::unique_lock< std::mutex > lock( m_mxLanes );
+    for ( ;; )
+    {
+        m_cvLanes.wait( lock, [&] { return m_bLanesStop || m_uLaneJob != uSeen; } );
+        if ( m_bLanesStop ) return;
+        uSeen = m_uLaneJob;
+        if ( k >= m_iJobLanes ) continue;
+        const std::function< void( int ) > *pFn = m_pJobFn;
+        lock.unlock();
+        ( *pFn )( k );
+        lock.lock();
+        if ( --m_iLanesLeft == 0 ) m_cvLanesDone.notify_one();
+    }
+}
+
+void PlaybackEngine::RunOnLanes( int iLanes, const std::function< void( int ) > &fn )
+{
+    {
+        std::lock_guard< std::mutex > lock( m_mxLanes );
+        m_pJobFn = &fn;
+        m_iJobLanes = iLanes;
+        m_iLanesLeft = iLanes - 1;
+        m_uLaneJob++;
+    }
+    m_cvLanes.notify_all();
+    fn( 0 );
+    std::unique_lock< std::mutex > lock( m_mxLanes );
+    m_cvLanesDone.wait( lock, [&] { return m_iLanesLeft == 0; } );
+}
+
+// A batch up to 8 ms (x speed) ahead of the clock, about 2 MB of the stream per lane: lane 0 here,
+// the others on the helper threads, then stitched into slices (grouped as Fill groups them)
+bool PlaybackEngine::RunBatch( int iLanes, const PlaybackDecoder::Params &p, long long llNow, unsigned uEpoch, HANDLE hTimer )
+{
+    PlaybackDecoder::Batch b;
+    long long llHorizon = llNow + std::max< long long >( 2000, (long long)( 8000 * p.dSpeed ) );
+    if ( !m_Decoder.PlanBatch( iLanes, llHorizon, (uint64_t)iLanes << 21, llNow, b ) ) return false;
+    EnsureLanes( iLanes );
+    long long t0 = Timer::NowMicroSecs();
+    RunOnLanes( iLanes, [&]( int k ) {
+        if ( k == 0 ) m_Decoder.RunMainLane( b, p, m_vLaneOut[0] );
+        else m_vLaneDec[k]->RunLane( b, k, p, m_vLaneOut[k] );
+    } );
+
+    std::vector< PlaybackDecoder * > vLanes( iLanes );
+    for ( int k = 1; k < iLanes; k++ ) vLanes[k] = m_vLaneDec[k].get();
+    long long llGroupUs = std::max< long long >( 1, (long long)( 500 * p.dSpeed ) );
+    Slice *pCur = nullptr;
+    bool bAbort = false;
+    auto Parallel = [&]( const std::function< void( int ) > &fn ) { RunOnLanes( iLanes, [&]( int k ) { if ( k ) fn( k ); } ); };
+    bool bTimed = false;
+    m_Decoder.FinishBatch( b, vLanes.data(), m_vLaneOut.data(), iLanes, Parallel, [&]( const uint32_t *pm, size_t n, long long llDue ) {
+        // The decoding is done once the messages come (only waiting for the ring after)
+        if ( !bTimed ) { bTimed = true; m_llDecodeBusyUs.fetch_add( Timer::NowMicroSecs() - t0, std::memory_order_relaxed ); }
+        while ( n && !bAbort )
+        {
+            if ( pCur && ( pCur->n + n > SliceMsgs || llDue - pCur->llDue > llGroupUs ) ) { Commit(); pCur = nullptr; }
+            if ( !pCur )
+            {
+                while ( !( pCur = WriteSlot() ) )
+                {
+                    // A seek or stop while the ring is full: the rest is not needed
+                    if ( m_bStop.load( std::memory_order_relaxed ) || m_Clock.Epoch() != uEpoch ) { bAbort = true; return; }
+                    WaitUs( hTimer, 300 );
+                }
+                pCur->uEpoch = uEpoch;
+                pCur->llDue = llDue;
+                pCur->bImmediate = false;
+                pCur->n = 0;
+            }
+            size_t k = std::min( n, SliceMsgs - pCur->n );
+            memcpy( pCur->aMsgs + pCur->n, pm, k * sizeof( uint32_t ) );
+            pCur->n += (uint32_t)k;
+            pm += k;
+            n -= k;
+        }
+    } );
+    if ( pCur && !bAbort ) Commit();
+    if ( !bTimed ) m_llDecodeBusyUs.fetch_add( Timer::NowMicroSecs() - t0, std::memory_order_relaxed );
+
+    const PlaybackDecoder::Counters &c = m_Decoder.GetCounters();
+    m_llDecoded.store( c.llSent, std::memory_order_relaxed );
+    m_llNoteOns.store( c.llNoteOns, std::memory_order_relaxed );
+    m_llSkipped.store( c.llSkipped, std::memory_order_relaxed );
+    m_iSkipVelocity.store( m_Decoder.SkipVelocity(), std::memory_order_relaxed );
+    m_llCollapsed.store( c.llCollapsed, std::memory_order_relaxed );
+    m_iBudgetVel.store( m_Decoder.GetBudgetCut().iVelocity, std::memory_order_relaxed );
+    m_dBudgetKeep.store( m_Decoder.GetBudgetCut().dKeep, std::memory_order_relaxed );
+    return true;
 }
 
 //-----------------------------------------------------------------------------

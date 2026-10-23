@@ -8,6 +8,7 @@
 #include <atomic>
 #include <climits>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -71,6 +72,40 @@ public:
     // llDue <= llHorizon: call again.
     size_t Fill( uint32_t *pOut, size_t iCap, long long llHorizon, long long llNow, const Params &p, long long &llDue );
 
+    // Parallel decoding (DESIGN.md 7.11), on demand when one thread cannot keep up: a batch of whole
+    // ticks from the cursor, split by stream bytes into lanes. Lane 0 is this decoder, with its state;
+    // each other lane is a decoder of its own (RunLane), from no state, starting at the first group at or
+    // after its cut (inside a tick, for a tick too big for one lane). FinishBatch stitches the lanes'
+    // messages in order: each channel and key's note-offs owed to note-ons not sent (skipped, muted or
+    // held by collapsing) are dropped from the first offs the later lanes sent, so no note sounds
+    // longer than it would have. Only the send budget's sharing and collapsing within a split tick
+    // differ from one thread's decoding; with neither on, the messages are the same.
+    struct Batch
+    {
+        size_t uEnd = 0;                    // the batch ends at this tick
+        std::vector< uint64_t > vCut;       // lane k: from the first group at or after vCut[k] to vCut[k + 1] (raw stream bytes)
+        long long llNow = 0;                // the playback time (for the lag)
+        double dTokens = 0.0;               // the send budget's tokens at the start
+    };
+    struct LaneOut
+    {
+        std::vector< uint32_t > vMsgs;
+        std::vector< std::pair< uint32_t, long long > > vGroups;    // messages and the time they are due, as Fill returns them
+        void Clear() { vMsgs.clear(); vGroups.clear(); }
+    };
+    // Plans a batch of iLanes lanes up to the first tick after llHorizon and about llMaxBytes of the
+    // stream (at least the rest of the cursor's tick); false when nothing is due by llHorizon
+    bool PlanBatch( int iLanes, long long llHorizon, uint64_t llMaxBytes, long long llNow, Batch &b );
+    void RunMainLane( const Batch &b, const Params &p, LaneOut &out );                  // lane 0, on this decoder
+    void RunLane( const Batch &b, int k, const Params &p, LaneOut &out );               // lane k > 0, on its own decoder
+    // Stitches the lanes (aLanes[k] ran lane k; aLanes[0] is unused) and moves this decoder to the
+    // batch's end; emit( msgs, n, due ) gets the messages in order. parallel( fn ) runs fn( k ) for
+    // every lane k > 0 at once (each lane drops its owed offs itself).
+    void FinishBatch( const Batch &b, PlaybackDecoder *const *aLanes, LaneOut *aOut, int iLanes,
+                      const std::function< void( const std::function< void( int ) > & ) > &parallel,
+                      const std::function< void( const uint32_t *, size_t, long long ) > &emit );
+    uint64_t EventsRead() const { return m_llRead; }
+
     const Counters &GetCounters() const { return m_Counters; }
     int SkipVelocity() const { return m_iSkipVelocity; }  // the last threshold (0: not skipping)
     BudgetCut GetBudgetCut() const { return m_Cut; }
@@ -93,6 +128,7 @@ private:
     long long GetBeatTick( long long iTick ) const;
     long long CurrentTick( long long llTime ) const;
     void SetBeat( long long llBeatTick );
+    void FillLane( const Params &p, long long llNow, LaneOut &out );
 
     const Song &m_Song;
     const EventStream &m_Stream;
@@ -124,6 +160,7 @@ private:
     {
         size_t uVoiceTick = SIZE_MAX, uCursorTick = SIZE_MAX;
         uint32_t uPending = 0, uHeld = 0, uVoices = 0, uVoiceOut = 0, uVoiceCall = 0;
+        uint32_t uSentOffs = 0;         // offs sent (a lane's, for the stitch)
     };
     KeyState m_aKey[2048];
     int m_iSkipVelocity = 0;
@@ -144,6 +181,12 @@ private:
     long long m_llTokenTime = LLONG_MIN;
     BudgetCut m_Cut;
     double m_dKeepAcc = 0.0;
+    // A lane of a parallel batch: the budget's cut comes from the bins alone (with the batch's tokens),
+    // and the lane's own tokens are what it gains over its stretch of song time
+    bool m_bLane = false;
+    double m_dLaneTokens = 0.0;
+    double m_dDepth = 0.0;              // the bucket's depth at the last tick
 
     Counters m_Counters;
+    uint64_t m_llRead = 0;              // events read by Fill
 };

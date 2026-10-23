@@ -119,6 +119,12 @@ public:
         }
     }
     inline void Need() { if ( __builtin_expect( end - p < 16, 0 ) ) Refill(); }
+    // Offset of p in the raw stream
+    uint64_t Pos() const
+    {
+        if ( !m_es ) return 0;
+        return std::min< uint64_t >( (uint64_t)m_iNext << EventStream::ChunkShift, m_es->llRawBytes ) - (uint64_t)( end - p );
+    }
     __attribute__( ( noinline ) ) void Refill()
     {
         size_t iTail = (size_t)( end - p );
@@ -300,6 +306,15 @@ struct VelocityBins
             unsigned v = *q++;
             a[v] += EventStream::ReadVar( q );
         }
+    }
+    // Note-ons in bin b
+    uint64_t Total( size_t b ) const
+    {
+        if ( b >= Bins() ) return 0;
+        uint64_t n = 0;
+        const uint8_t *q = vData.data() + vOffset[b], *qEnd = vData.data() + vOffset[b + 1];
+        while ( q < qEnd ) { q++; n += EventStream::ReadVar( q ); }
+        return n;
     }
     size_t MemoryBytes() const { return vOffset.capacity() * 8 + vData.capacity(); }
 };

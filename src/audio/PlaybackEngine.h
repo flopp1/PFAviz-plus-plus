@@ -3,10 +3,16 @@
 // each slice when it is due. Slices of an older epoch (before a seek) are dropped. Neither thread
 // ever waits on the render thread, and the clock never waits on them. Every event is sent unless
 // stack collapsing, the send budget or velocity skipping is on (PlaybackDecoder).
+// When one thread cannot decode fast enough (the song's precomputed note-on counts say so for the
+// next 20 ms, or decoding falls behind), the decoder thread decodes in parallel batches with helper
+// threads, started the first time they are needed, up to the loading and drawing threads setting
+// (DESIGN.md 7.11).
 #pragma once
 
 #include <windows.h>
 #include <atomic>
+#include <condition_variable>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -29,6 +35,7 @@ public:
         double dNsPerMsg = 0.0;         // the output's measured cost per message
         int iSkipVelocity = 0;          // note-ons below this velocity are being skipped (0: none)
         PlaybackDecoder::BudgetCut budget;  // the send budget's cut
+        int iLanes = 1;                 // threads decoding (1: the decoder thread alone)
         // Where the time goes: microseconds each thread spent working (the decoder in Fill and the
         // chase, the sender in SendBatch), and the ring's fill (in slices) summed and counted each
         // time the sender takes a slice. All cumulative: the stats box shows the change per interval.
@@ -38,7 +45,8 @@ public:
     };
     static const int RingSlices = 63;   // the ring's capacity in slices (RingSize - 1)
 
-    PlaybackEngine( std::shared_ptr< const Song > pSong, PlaybackClock &clock );
+    // iThreads: the most threads decoding may use (0: the logical core count)
+    PlaybackEngine( std::shared_ptr< const Song > pSong, PlaybackClock &clock, int iThreads = 0 );
     ~PlaybackEngine();
 
     // Opens the configured output (on the sender thread) and starts both threads
@@ -78,6 +86,12 @@ private:
 
     void DecoderThread();
     void SenderThread();
+    // Parallel decoding: how many lanes the load ahead needs (1: none), the helper threads, a batch
+    int LanesWanted( const PlaybackDecoder::Params &p, long long llNow );
+    void EnsureLanes( int iLanes );
+    void LaneThread( int k, unsigned uSeen );
+    void RunOnLanes( int iLanes, const std::function< void( int ) > &fn );     // fn( k ) for every lane, 0 on this thread
+    bool RunBatch( int iLanes, const PlaybackDecoder::Params &p, long long llNow, unsigned uEpoch, HANDLE hTimer );
     Slice *WriteSlot();
     void Commit();
 
@@ -119,4 +133,18 @@ private:
     std::atomic< bool > m_bHasOutput{ false }, m_bNotesOff{ false }, m_bReopen{ true }, m_bStop{ false };
 
     std::thread m_DecoderThread, m_SenderThread;
+
+    // Parallel decoding (decoder thread; lane k > 0 runs on helper thread k)
+    int m_iMaxLanes = 1;
+    double m_dRate = 150.0;             // one thread's decoding speed, events per microsecond (measured)
+    std::vector< std::unique_ptr< PlaybackDecoder > > m_vLaneDec;
+    std::vector< PlaybackDecoder::LaneOut > m_vLaneOut;
+    std::vector< std::thread > m_vLaneThreads;
+    std::mutex m_mxLanes;
+    std::condition_variable m_cvLanes, m_cvLanesDone;
+    unsigned m_uLaneJob = 0;
+    int m_iJobLanes = 0, m_iLanesLeft = 0;
+    bool m_bLanesStop = false;
+    const std::function< void( int ) > *m_pJobFn = nullptr;
+    std::atomic< int > m_iLanesNow{ 1 };
 };
