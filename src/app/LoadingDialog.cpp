@@ -5,7 +5,6 @@
 #include <memory>
 
 #include "app/MainWindow.h"
-#include "app/TrackSettings.h"
 #include "core/Config.h"
 #include "core/Util.h"
 #include "game/GameState.h"
@@ -17,7 +16,6 @@ namespace
     struct LoadJob
     {
         std::wstring sFile;
-        bool bCustomSettings = false;
         LoadProgress progress;
         LoadStats stats;
         std::unique_ptr< Song > song;
@@ -26,7 +24,6 @@ namespace
         long long allStageStart[LoadProgress::StageCount] = {};
         HANDLE hThread = nullptr;
         bool bFinished = false;
-        bool bOpened = false;
     };
 
     LoadJob *g_pJob = nullptr;
@@ -101,9 +98,6 @@ namespace
     {
         std::wstring s = g_pJob->stats.Format();
         if ( !g_pJob->sError.empty() ) s = L"Load failed: " + g_pJob->sError + L"\r\n\r\n" + s;
-        else if ( !g_pJob->bOpened && !g_pJob->progress.bCancel )
-            s = L"Loaded. Drawing and playing files with more than 40 million events needs the renderer and "
-                L"playback engine of the next milestones, so this file is not opened yet.\r\n\r\n" + s;
         for ( int i = 0; i < LoadProgress::StageCount; i++ )
         {
             ShowWindow( GetDlgItem( g_hWndDlg, IDC_LOAD_STAGE0 + i ), SW_HIDE );
@@ -199,7 +193,7 @@ namespace
 bool IsLoading() { return g_pJob && !g_pJob->bFinished; }
 HWND GetLoadingDialog() { return g_hWndDlg; }
 
-bool StartLoad( const std::wstring &sFileIn, bool bCustomSettings )
+bool StartLoad( const std::wstring &sFileIn )
 {
     if ( IsLoading() ) return false;
     if ( g_hWndDlg ) DestroyWindow( g_hWndDlg ); // a previous statistics window
@@ -208,7 +202,6 @@ bool StartLoad( const std::wstring &sFileIn, bool bCustomSettings )
     DWORD dwLen = GetFullPathNameW( sFileIn.c_str(), MAX_PATH * 4, sFull, nullptr );
     g_pJob = new LoadJob();
     g_pJob->sFile = ( dwLen > 0 && dwLen < MAX_PATH * 4 ) ? std::wstring( sFull ) : sFileIn;
-    g_pJob->bCustomSettings = bCustomSettings;
     g_pJob->llStart = Timer::NowMicroSecs();
 
     CreateDialogParamW( g_hInstance, MAKEINTRESOURCEW( IDD_LOADING ), g_hWnd, LoadingProc, 0 );
@@ -238,30 +231,15 @@ void FinishLoad( LPARAM lParam )
     bool bCancelled = pJob->progress.bCancel;
     bool bOk = !bCancelled && pJob->song && pJob->sError.empty();
 
-    pJob->bOpened = bOk;
-    std::shared_ptr< const Song > pSong;
-    std::vector< bool > vMuted, vHidden;
-    std::vector< unsigned > vColors;
-    if ( bOk )
-    {
-        const VisualSettings &cVisual = Config::GetConfig().GetVisualSettings();
-        pSong.reset( pJob->song.release() );
-        vColors.assign( cVisual.colors, cVisual.colors + 16 );
-        // "Practice Using Custom Settings...": cancelling the track settings keeps the current song
-        if ( pJob->bCustomSettings && !GetCustomSettings( g_hWnd, *pSong, pJob->sFile, vMuted, vHidden, vColors ) )
-        {
-            bCancelled = true;
-            bOk = pJob->bOpened = false;
-        }
-    }
     if ( bOk )
     {
         PlaybackSettings &cPlayback = Config::GetConfig().GetPlaybackSettings();
         ViewSettings &cView = Config::GetConfig().GetViewSettings();
+        std::shared_ptr< const Song > pSong( pJob->song.release() );
         MainScreen *pGameState = new MainScreen( pSong, nullptr, nullptr );
-        pGameState->SetChannelSettings( vMuted, vHidden, vColors );
+        pGameState->SetChannelColors( Config::GetConfig().GetVisualSettings().colors );
         if ( !cPlayback.GetPlayable() ) cPlayback.SetPlayable( true, true );
-        if ( cPlayback.GetPlayMode() != PlayMode::Practice ) cPlayback.SetPlayMode( PlayMode::Practice, true );
+        if ( cPlayback.GetPlayMode() != PlayMode::Play ) cPlayback.SetPlayMode( PlayMode::Play, true );
         cPlayback.SetPaused( false, true );
         cPlayback.SetPosition( 0 );
         cView.SetZoomMove( false, true );

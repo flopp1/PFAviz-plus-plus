@@ -1,14 +1,17 @@
 // MainScreen::RenderVideo: the whole song rendered off-screen, frame by frame at the video's rate,
 // and streamed to ffmpeg (app/VideoExport.h). A frame is the live window's scene at the video's size
 // (background, measure lines, notes, keyboard, border) plus, optionally, the top-right stats area;
-// the notes come from an engine of its own, so the live view is left as it was.
+// the notes come from an engine of its own, so the live view is left as it was. Frames are read back
+// a few frames late (render/FrameCapture.h), packed as YUV 4:2:0 on the GPU where possible.
 #include "game/GameState.h"
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 
 #include "app/VideoExport.h"
 #include "core/Config.h"
+#include "render/FrameCapture.h"
 
 void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
 {
@@ -31,8 +34,14 @@ void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
         swprintf( buf, 128, L"Direct3D could not create a %d x %d frame to render into.", iW, iH );
         return job.Finish( false, buf );
     }
-    FfmpegPipe pipe;
+    // Frames in flight between drawing and readback (developer switches: PFAVIZ_CAPTUREDEPTH=n,
+    // PFAVIZ_BGRXPIPE=1 sends BGRX frames for ffmpeg to convert)
+    int iDepth = getenv( "PFAVIZ_CAPTUREDEPTH" ) ? std::clamp( atoi( getenv( "PFAVIZ_CAPTUREDEPTH" ) ), 1, 8 ) : 3;
+    FrameCapture cap;
     std::wstring sError;
+    if ( !cap.Init( r, iW, iH, !getenv( "PFAVIZ_BGRXPIPE" ), iDepth, sError ) ) return job.Finish( false, sError );
+    job.bYuv = cap.Yuv();
+    FfmpegPipe pipe;
     if ( !pipe.Start( job, sError ) ) return job.Finish( false, sError );
 
     // Its own engine, with the hidden channels and the LOD cache ready before each frame is drawn
@@ -48,6 +57,7 @@ void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
     // Frame f shows song time llFirst + f / fps, from the start of playback to its end
     const long long llFirst = GetMinTime(), llLast = GetMaxTime();
     const long long llFrames = ( llLast - llFirst ) * job.iFPS / 1000000 + 1;
+    auto FrameTime = [&]( long long f ) { return llFirst + (long long)std::llround( f * 1e6 / job.iFPS ); };
     job.llFrames = llFrames;
     job.llSongEnd = llLast;
     job.eState = VideoJob::Rendering;
@@ -58,11 +68,56 @@ void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
     RECT rcStatusBox = { iW - 156, 0, iW, 6 + 16 * iLines };
 
     const int iPreviewW = std::min( iW, 480 ), iPreviewH = std::max( 1, (int)( (long long)iH * iPreviewW / iW ) );
-    long long llLastPreview = 0;
-    long long f = 0;
-    for ( ; f < llFrames && !job.bCancel && !pipe.Failed(); f++ )
+    long long llLastPreview = 0, llSent = 0;
+
+    // The oldest frame read back goes to ffmpeg (and, a few times a second, to the progress popup)
+    auto Emit = [&]() {
+        std::vector< uint8_t > *pFrame = pipe.Acquire();
+        if ( !pFrame ) return false;
+        if ( !cap.Read( pFrame->data() ) )
+        {
+            pipe.Submit( pFrame );
+            sError = L"Reading the rendered frame back from Direct3D failed.";
+            return false;
+        }
+        long long llNow = Timer::NowMicroSecs();
+        if ( llNow - llLastPreview >= 200000 || llSent + 1 == llFrames )
+        {
+            llLastPreview = llNow;
+            std::lock_guard< std::mutex > lk( job.mx );
+            job.vPreview.resize( (size_t)iPreviewW * iPreviewH );
+            const uint8_t *p = pFrame->data();
+            for ( int y = 0; y < iPreviewH; y++ )
+            {
+                int sy = (int)( (long long)y * iH / iPreviewH );
+                for ( int x = 0; x < iPreviewW; x++ )
+                {
+                    int sx = (int)( (long long)x * iW / iPreviewW );
+                    DWORD &d = job.vPreview[(size_t)y * iPreviewW + x];
+                    if ( !cap.Yuv() ) { d = reinterpret_cast< const DWORD * >( p )[(size_t)sy * iW + sx]; continue; }
+                    // BT.709 limited range back to RGB
+                    size_t iC = (size_t)( sy / 2 ) * ( iW / 2 ) + sx / 2, iY = (size_t)iW * iH;
+                    float Y = ( p[(size_t)sy * iW + sx] - 16 ) / 219.0f, Pb = ( p[iY + iC] - 128 ) / 224.0f, Pr = ( p[iY + iY / 4 + iC] - 128 ) / 224.0f;
+                    float R = Y + 1.5748f * Pr, B = Y + 1.8556f * Pb, G = ( Y - 0.2126f * R - 0.0722f * B ) / 0.7152f;
+                    auto C = []( float v ) { return (DWORD)std::clamp( (int)( v * 255.0f + 0.5f ), 0, 255 ); };
+                    d = ( C( R ) << 16 ) | ( C( G ) << 8 ) | C( B );
+                }
+            }
+            job.iPreviewW = iPreviewW;
+            job.iPreviewH = iPreviewH;
+            job.uPreviewGen++;
+        }
+        pipe.Submit( pFrame );
+        job.llSongTime = FrameTime( llSent );
+        job.llFrame = ++llSent;
+        return true;
+    };
+
+    bool bOk = true;
+    for ( long long f = 0; f < llFrames && !job.bCancel && !pipe.Failed() && bOk; f++ )
     {
-        long long llTime = llFirst + (long long)std::llround( f * 1e6 / job.iFPS );
+        if ( cap.Ready( false ) && !( bOk = Emit() ) ) break;
+        long long llTime = FrameTime( f );
         if ( f == 0 )
         {
             engine.Jump( llTime, llTime, llTime + m_llTimeSpan );
@@ -73,6 +128,7 @@ void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
         meter.Advance( llTime );
         FrameGlobals g = Scene::ComputeGlobals( GetViewInputs( iW, iH, llTime ) );
 
+        cap.Begin();
         r.Clear( 0x00000000 );
         r.BeginScene();
         Scene::DrawBackground( &r, g, m_Colors );
@@ -98,51 +154,30 @@ void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
             r.EndText();
         }
         r.EndScene();
-
-        std::vector< uint8_t > *pFrame = pipe.Acquire();
-        if ( !pFrame ) break;
-        if ( !r.ReadBackRaw( pFrame->data() ) )
-        {
-            pipe.Submit( pFrame );
-            sError = L"Reading the rendered frame back from Direct3D failed.";
-            break;
-        }
-
-        // A scaled-down copy for the progress popup, a few times a second
-        long long llNow = Timer::NowMicroSecs();
-        if ( llNow - llLastPreview >= 200000 || f + 1 == llFrames )
-        {
-            llLastPreview = llNow;
-            std::lock_guard< std::mutex > lk( job.mx );
-            job.vPreview.resize( (size_t)iPreviewW * iPreviewH );
-            const DWORD *pSrc = reinterpret_cast< const DWORD * >( pFrame->data() );
-            for ( int y = 0; y < iPreviewH; y++ )
-            {
-                const DWORD *pRow = pSrc + (size_t)( (long long)y * iH / iPreviewH ) * iW;
-                for ( int x = 0; x < iPreviewW; x++ ) job.vPreview[(size_t)y * iPreviewW + x] = pRow[(long long)x * iW / iPreviewW];
-            }
-            job.iPreviewW = iPreviewW;
-            job.iPreviewH = iPreviewH;
-            job.uPreviewGen++;
-        }
-        pipe.Submit( pFrame );
-        job.llFrame = f + 1;
-        job.llSongTime = llTime;
+        cap.End();
     }
+    // The frames still in flight were drawn: they go to ffmpeg too
+    while ( bOk && !pipe.Failed() && cap.Ready( true ) ) bOk = Emit();
 
     // ffmpeg finishes what it got (a cancelled render leaves a shorter, playable video)
     job.eState = VideoJob::Finishing;
     std::wstring sFfmpegError;
     bool bEncoded = pipe.Finish( &job.bAbort, sFfmpegError );
     if ( !sError.empty() ) return job.Finish( false, sError );
-    if ( !bEncoded ) return job.Finish( false, sFfmpegError );
+    if ( !bEncoded )
+    {
+        if ( job.iEncoder != ExportSettings::X264 )
+            sFfmpegError += L"\n\nThe hardware encoders need a graphics card and driver that have them: NVENC on NVIDIA, AMF on AMD, "
+                            L"QSV on Intel. x264 runs on any computer.";
+        return job.Finish( false, sFfmpegError );
+    }
     if ( pipe.Failed() ) return job.Finish( false, L"ffmpeg stopped reading frames." );
 
     WIN32_FILE_ATTRIBUTE_DATA fad = {};
     double dMB = GetFileAttributesExW( job.sOutFile.c_str(), GetFileExInfoStandard, &fad ) ? ( ( (ULONGLONG)fad.nFileSizeHigh << 32 ) | fad.nFileSizeLow ) / 1048576.0 : 0.0;
     wchar_t buf[256];
     if ( job.bCancel )
-        swprintf( buf, 256, L"Stopped at %lld of %lld frames; the part rendered so far was saved (%.1f MB).", f, llFrames, dMB );
+        swprintf( buf, 256, L"Stopped at %lld of %lld frames; the part rendered so far was saved (%.1f MB).", llSent, llFrames, dMB );
     else
         swprintf( buf, 256, L"Done: saved %.1f MB.", dMB );
     job.Finish( true, buf );

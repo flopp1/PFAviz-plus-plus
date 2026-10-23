@@ -303,8 +303,6 @@ bool RefMidi::ParseTrack( const unsigned char *p, const unsigned char *pEnd, int
                 memcpy( m.aData, pMeta, (size_t)llLen );
                 m_vMetaScratch.push_back( m );
             }
-            else if ( cType == 0x03 )
-                info.sSequenceName.assign( reinterpret_cast< const char * >( pMeta ), (size_t)llLen );
         }
         else
         {

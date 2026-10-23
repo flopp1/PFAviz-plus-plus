@@ -35,7 +35,8 @@ A performance rewrite of [Piano From Above](https://github.com/brian-pantano/Pia
   - Frame time, split into logic, notes, the rest of the scene and Present.
 
 **Video rendering** (Performance tab, "Render video...")
-- Renders the open song from start to end to an MP4, off-screen at any resolution up to 8192 × 8192 and 1–240 fps, with H.264 quality (CRF, default 20) and encoder preset choices.
+- Renders the open song from start to end to an MP4, off-screen at any resolution up to 8192 × 8192 and 1–240 fps, with x264 (CPU) or a hardware encoder (NVIDIA NVENC, AMD AMF or Intel QSV; H.264 or HEVC), a quality setting (CRF, CQ or QP; default 20) and a speed preset.
+- Frames are converted to YUV 4:2:0 (BT.709) on the GPU and read back a few frames behind the GPU, so ffmpeg only encodes. At 1080p60 on an RTX 3060: about 290 fps with x264 veryfast, 540 fps with NVENC.
 - A frame is what the window shows (keyboard and notes with the current view, note speed, colours and hidden channels) plus, optionally, the stats box (its chosen lines, less the synth and frame-time ones). There is no sound.
 - Needs `ffmpeg.exe` in the current folder, next to `PFAviz++.exe`, or on the PATH. The progress popup shows a preview; Cancel keeps a playable video of the part done so far.
 
@@ -46,16 +47,15 @@ A performance rewrite of [Piano From Above](https://github.com/brian-pantano/Pia
 
 ## Usage
 
-Open a song with File > Practice Song, or pass it on the command line:
+Open a song with File > Play Song, or pass it on the command line:
 
 ```
 PFAviz++.exe "song.mid"
-PFAviz++.exe --custom "song.mid"
 ```
 
-`--custom` opens the track settings first, like "Practice Using Custom Settings...". Settings are kept in `%APPDATA%\PFAviz++\config.ini`.
+Settings are kept in `%APPDATA%\PFAviz++\config.ini`.
 
-Environment variables for timed test runs: `PFAVIZ_MUTE=1`, `PFAVIZ_UNCAPPED=1`, `PFAVIZ_NOTESPEED=x`, `PFAVIZ_MAXIMIZE=1`, `PFAVIZ_FRAMELOG=file` (frame times every half second), `PFAVIZ_EXIT_AFTER=seconds` (closes the window without saving the configuration) and `PFAVIZ_RENDER=out.mp4` (renders the song with the saved video settings, then closes).
+Environment variables for timed test runs: `PFAVIZ_MUTE=1`, `PFAVIZ_UNCAPPED=1`, `PFAVIZ_NOTESPEED=x`, `PFAVIZ_MAXIMIZE=1`, `PFAVIZ_FRAMELOG=file` (frame times every half second), `PFAVIZ_GDITEXT=1` (the GDI text fallback even with D3DX installed), `PFAVIZ_EXIT_AFTER=seconds` (closes the window without saving the configuration) and `PFAVIZ_RENDER=out.mp4` (renders the song with the saved video settings, then closes; with `PFAVIZ_ENCODER=n`, the n-th encoder of the list instead, `PFAVIZ_CAPTUREDEPTH=n` frames in flight, `PFAVIZ_BGRXPIPE=1` BGRX frames converted by ffmpeg).
 
 ## Building
 

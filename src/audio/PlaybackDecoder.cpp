@@ -323,7 +323,6 @@ size_t PlaybackDecoder::Fill( uint32_t *pOut, size_t iCap, long long llHorizon, 
                 continue;
             }
             uint32_t ch = uMsg & 0x0F, idx = ( ch << 7 ) | ( ( uMsg >> 8 ) & 0x7F ), uVel = uMsg >> 16;
-            bool bMuted = uStatus == 0x90 && ( p.bMute || ( pMute && ( ( pMute[uTrack].load( std::memory_order_relaxed ) >> ch ) & 1 ) ) );
             if ( uStatus == 0x90 && uVel )
             {
                 // The scout counted it (muted or not), so it leaves the window here
@@ -332,7 +331,13 @@ size_t PlaybackDecoder::Fill( uint32_t *pOut, size_t iCap, long long llHorizon, 
                     if ( p.bCollapse ) m_aCursorTick[idx] = u;
                     if ( m_aWindow[uVel] ) m_aWindow[uVel]--;
                 }
-                if ( bMuted ) continue;
+                // Muted: not sent, so its off is dropped too (DESIGN.md 1.6). Every other off is sent,
+                // muted or not: a note that was sounding when its channel was muted still ends
+                if ( p.bMute || ( pMute && ( ( pMute[uTrack].load( std::memory_order_relaxed ) >> ch ) & 1 ) ) )
+                {
+                    m_aPendingSkip[idx]++;
+                    continue;
+                }
                 m_Counters.llNoteOns++;
                 uint32_t uOutVel = m_aVelLut[uVel];
                 if ( p.bCollapse && m_aVoices[idx] && m_aVoiceTick[idx] == u )
@@ -370,7 +375,6 @@ size_t PlaybackDecoder::Fill( uint32_t *pOut, size_t iCap, long long llHorizon, 
                 if ( m_aHeld[idx] >= m_aVoices[idx] ) continue;
                 m_aVoices[idx]--;
             }
-            if ( bMuted ) continue;
             pOut[n++] = uMsg;
         }
     }

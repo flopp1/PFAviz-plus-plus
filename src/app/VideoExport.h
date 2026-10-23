@@ -1,6 +1,7 @@
 // Offline video rendering (Performance > Render video...). The UI thread collects the settings and
-// finds ffmpeg; the game thread renders every frame off-screen (MainScreen::RenderVideo) and
-// FfmpegPipe streams them to ffmpeg's stdin as raw BGRX frames. The progress popup polls the job.
+// finds ffmpeg; the game thread renders every frame off-screen (MainScreen::RenderVideo, through
+// FrameCapture) and FfmpegPipe streams them to ffmpeg's stdin as raw YUV 4:2:0 or BGRX frames. The
+// progress popup polls the job.
 #pragma once
 
 #include <windows.h>
@@ -17,9 +18,10 @@
 struct VideoJob
 {
     // Set by the UI before the job goes to the game thread
-    std::wstring sFfmpeg, sOutFile, sPreset;
-    int iWidth = 0, iHeight = 0, iFPS = 60, iCRF = 14;
+    std::wstring sFfmpeg, sOutFile;
+    int iWidth = 0, iHeight = 0, iFPS = 60, iCRF = 20, iPreset = 2, iEncoder = 0;
     bool bShowStats = true;
+    bool bYuv = false;                  // set by the renderer: frames are YUV 4:2:0 (packed on the GPU), else BGRX
 
     // Progress, written by the game thread
     enum State { Starting, Rendering, Finishing, Done };

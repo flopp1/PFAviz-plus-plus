@@ -9,7 +9,6 @@
 #define IDD_PP3_VIDEO                   109
 #define IDD_PP5_PERFORMANCE             110
 #define IDB_MEDIAICONSSMALL             125
-#define IDD_TRACKSETTINGS               127
 #define IDD_PP4_CONTROLS                128
 #define IDI_PFAICON                     134
 #define IDB_SPLASH                      135
@@ -51,21 +50,20 @@
 #define ID_VIEW_ALWAYSONTOP             40096
 #define ID_VIEW_RESETDEVICE             40100
 #define IDC_INACTIVITYTIMER             40103
+#define IDT_DEVICECHANGE                40104
 #define IDC_POSNCTRL                    40105
 #define ID_VIEW_MOVEANDZOOM             40109
 #define ID_VIEW_CANCELMOVEANDZOOM       40114
 #define ID_VIEW_RESETMOVEANDZOOM        40115
-#define ID_FILE_PRACTICESONG            40119
+#define ID_FILE_PLAYSONG            40119
 #define ID_CHANGESTATE                  40121
 #define ID_GAMEERROR                    40142
 #define ID_HELP_ABOUT                   40152
-#define ID_FILE_PRACTICESONGCUSTOM      40158
 #define ID_PLAY_NRESET                  40162
 #define ID_PLAY_NSLOWER                 40164
 #define ID_PLAY_NFASTER                 40166
 
 // Preferences and track settings (values from the original resource.h, new ones from 1065)
-#define IDC_TRACKS                      1001
 #define IDC_COLOR1                      1006
 #define IDC_COLOR2                      1007
 #define IDC_COLOR3                      1008
@@ -83,10 +81,6 @@
 #define IDC_MIDIOUT                     1029
 #define IDC_LIMITFPS                    1035
 #define IDC_RESTOREDEFAULTS             1048
-#define IDC_FILE                        1057
-#define IDC_FOLDER                      1058
-#define IDC_NOTES                       1059
-#define IDC_LENGTH                      1060
 #define IDC_SHOWCONTROLS                1061
 #define IDC_FIRSTKEY                    1062
 #define IDC_LASTKEY                     1063
@@ -123,6 +117,7 @@
 #define IDC_VID_CRF                     1307
 #define IDC_VID_PRESET                  1308
 #define IDC_VID_STATS                   1309
+#define IDC_VID_ENCODER                 1310
 #define IDC_STAT_FIRST                  1400    // + VisualSettings::Stat, through 1414
 #define IDC_STATS_ALL                   1420
 #define IDC_STATS_NONE                  1421

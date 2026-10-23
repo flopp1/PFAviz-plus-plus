@@ -262,9 +262,16 @@ void FastEngine::PrepareFrame( const FrameGlobals &g )
             F.vG[h] = lo;
         }
     }
+    // From one frame to the next R moves by a few rows, so each row's tick is searched for from where
+    // it was last frame (or from the row before: Theta decreases down the rows)
+    bool bHints = F.vURow.size() == F.vTheta.size();
     F.vURow.resize( F.vTheta.size() );
     for ( size_t i = 0; i < F.vTheta.size(); i++ )
-        F.vURow[i] = LowerBoundTime( F.R + F.vTheta[i] );
+    {
+        long long t = F.R + F.vTheta[i];
+        size_t iHint = bHints ? (size_t)F.vURow[i] : i ? (size_t)F.vURow[i - 1] : 0;
+        F.vURow[i] = t <= 0 ? 0 : m_Times.LowerBoundFrom( (uint64_t)t, iHint );
+    }
 }
 
 //-----------------------------------------------------------------------------
@@ -379,21 +386,25 @@ void FastEngine::SweepKey( const VisualStore &S, const uint64_t *pCpos, int k, c
                 for ( size_t q = pSeg->LowerBound( k, hi ); q-- > 0; )
                 {
                     const LodCache::Entry &e = v[q];
-                    if ( e.llStart < tA )
+                    long long llS = pSeg->Start( e );
+                    if ( llS < tA )
                     {
-                        iB = Beta( e.llStart - F.R );
+                        iB = Beta( llS - F.R );
                         if ( iB >= F.iRowHi ) { bDone = true; break; }
                         tA = F.R + F.Theta( iB );
                         u = MaxUnpainted( iB );
                     }
-                    if ( u == INT_MIN || e.llEnd - e.llStart < F.vG[iB - u] ) continue;
-                    size_t pos = (size_t)( e.llPos & ~LodCache::Entry::WeirdBit );
+                    if ( u == INT_MIN ) continue;
+                    long long llD = pSeg->Dur( k, q, e );
+                    if ( llD < F.vG[iB - u] ) continue;
+                    long long llE = llS + llD;
+                    size_t pos = (size_t)e.Pos();
                     bool bVisible;
                     if ( pos >= bd.iB ) bVisible = true;
-                    else if ( e.llPos & LodCache::Entry::WeirdBit ) { ks.Get( pos, n ); bVisible = Visible( S, pCpos, k, pos, n, bd ); }
-                    else bVisible = !( pos < bd.iJ && pos < pCpos[k] ) && e.llEnd > bd.llEth;
+                    else if ( e.Weird() ) { ks.Get( pos, n ); bVisible = Visible( S, pCpos, k, pos, n, bd ); }
+                    else bVisible = !( pos < bd.iJ && pos < pCpos[k] ) && llE > bd.llEth;
                     if ( !bVisible ) continue;
-                    vOwners.push_back( Paint( pos, e.llStart, e.llEnd, e.uSlot ) );
+                    vOwners.push_back( Paint( pos, llS, llE, e.uSlot ) );
                     u = MaxUnpainted( iB );
                 }
                 long long llSegStart = pSeg->llIndex * m_LodView.llSegUs;
@@ -502,20 +513,19 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
     m_bLodFrame = false;
     if ( m_bLod && m_pLod && !m_bSkipHidden )
     {
-        LodCache::Setting ls;
+        LodCache::Setting &ls = m_LodSetting;
         ls.fNotesY = m_F.fNotesY;
         ls.fNotesCY = m_F.fNotesCY;
         ls.llSpan = m_F.llSpan;
         ls.llUsPP = m_F.llUsPP;
         ls.iRowLo = m_F.iRowLo;
         ls.iRowHi = m_F.iRowHi;
-        ls.vTheta = m_F.vTheta;
         std::shared_ptr< const VisualStore > pStore = bView ? m_pView : std::shared_ptr< const VisualStore >( std::shared_ptr< const VisualStore >(), &m_Store );
-        m_pLod->Configure( ls, pStore, bView ? 1 + 2 * m_uViewGen : 0, &m_Times );
+        m_pLod->Configure( ls, m_F.vTheta, pStore, bView ? 1 + 2 * m_uViewGen : 0, &m_Times );
         long long t0 = m_F.R + m_F.vTheta.back(), t1 = m_F.R + m_F.vTheta.front();
         long long llBuild = Timer::NowMicroSecs();
-        m_pLod->Retire( std::move( m_LodView ) );     // the segments only it held are freed off this thread
-        m_LodView = m_pLod->Get( t0, t1, t1 + 2 * ls.SegmentUs(), m_bLodSync, m_iThreads );
+        m_pLod->Retire( m_LodView );                  // the segments only it held are freed off this thread
+        m_pLod->Get( m_LodView, t0, t1, t1 + 2 * ls.SegmentUs(), m_bLodSync, m_iThreads );
         m_bLodFrame = !m_LodView.v.empty();
         // A synchronous build is not part of drawing the frame
         llBuild = Timer::NowMicroSecs() - llBuild;
@@ -524,11 +534,12 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
     }
 
     // Per key: columns (with the flipped inner rect of narrow keys), degenerate flag, on screen?
-    struct KeyCols { int iKey; int iLo, iHi; bool bDegenerate; };
     float fDeflate = g.fWhiteCX * 0.15f / 2.0f;
     fDeflate = floor( fDeflate + 0.5f );
     fDeflate = std::max( std::min( fDeflate, 3.0f ), 1.0f );
-    std::vector< KeyCols > aClass[2];
+    std::vector< KeyCols > *aClass = m_aClass;
+    aClass[0].clear();
+    aClass[1].clear();
     for ( int k = 0; k < 128; k++ )
     {
         if ( !S.aKeys[k].Size() ) continue;
@@ -545,14 +556,20 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
         aClass[bSharp].push_back( kc );
     }
 
-    std::vector< int > vActive;
-    std::vector< bool > abDegenerate( 128, false );
-    for ( auto &v : aClass )
-        for ( const KeyCols &kc : v ) { vActive.push_back( kc.iKey ); abDegenerate[kc.iKey] = kc.bDegenerate; }
-    std::vector< size_t > vQueries( vActive.size(), 0 );
-    std::vector< long long > vSweepUs( vActive.size(), 0 ), vVertUs( vActive.size(), 0 );
-    std::vector< double > vPixels( vActive.size(), 0.0 );
-    std::vector< std::vector< uint64_t > > vScratch( m_iThreads + 1 );
+    std::vector< int > &vActive = m_vActive;
+    vActive.clear();
+    bool abDegenerate[128] = {};
+    for ( int c = 0; c < 2; c++ )
+        for ( const KeyCols &kc : aClass[c] ) { vActive.push_back( kc.iKey ); abDegenerate[kc.iKey] = kc.bDegenerate; }
+    std::vector< size_t > &vQueries = m_vQueries;
+    std::vector< long long > &vSweepUs = m_vSweepUs, &vVertUs = m_vVertUs;
+    std::vector< double > &vPixels = m_vPixels;
+    vQueries.assign( vActive.size(), 0 );
+    vSweepUs.assign( vActive.size(), 0 );
+    vVertUs.assign( vActive.size(), 0 );
+    vPixels.assign( vActive.size(), 0.0 );
+    std::vector< std::vector< uint64_t > > &vScratch = m_vScratch;
+    if ( vScratch.size() < (size_t)m_iThreads + 1 ) vScratch.resize( m_iThreads + 1 );
     Parallel::For( m_iThreads, vActive.size(), [&]( size_t i, int t ) {
         int k = vActive[i];
         long long tK0 = Timer::NowMicroSecs();
@@ -627,10 +644,10 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
     // whose pixel columns cannot touch are independent; keys that might share a column (sliver
     // edges, or flipped narrow-key rects) are merged by (start, OrderKey), the global index order.
     NoteView n;
-    struct Item { uint64_t llU, llOrder; int iKey; uint64_t llIdx; };
-    std::vector< Item > vMerge;
-    for ( auto &v : aClass )
+    std::vector< MergeItem > &vMerge = m_vMerge;
+    for ( int c = 0; c < 2; c++ )
     {
+        std::vector< KeyCols > &v = aClass[c];
         std::sort( v.begin(), v.end(), []( const KeyCols &a, const KeyCols &b ) { return a.iLo < b.iLo; } );
         for ( size_t i = 0; i < v.size(); )
         {
@@ -652,10 +669,10 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
                         S.aKeys[v[c].iKey].Get( m_aOwners[v[c].iKey][o].llPos, n );
                         vMerge.push_back( { n.llStartU, OrderKey( n.uSlot, n.uRank ), v[c].iKey, o } );
                     }
-                std::sort( vMerge.begin(), vMerge.end(), []( const Item &a, const Item &b ) {
+                std::sort( vMerge.begin(), vMerge.end(), []( const MergeItem &a, const MergeItem &b ) {
                     return a.llU != b.llU ? a.llU < b.llU : a.llOrder < b.llOrder;
                 } );
-                for ( const Item &it : vMerge )
+                for ( const MergeItem &it : vMerge )
                 {
                     const std::vector< uint32_t > &vStart = m_aVertStart[it.iKey];
                     pRenderer->DrawQuads( m_aVerts[it.iKey].data() + vStart[it.llIdx], ( vStart[it.llIdx + 1] - vStart[it.llIdx] ) / 4 );

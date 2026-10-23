@@ -41,7 +41,6 @@ struct RefTrackInfo
     int iNumChannels = 0;
     int iMinNote = 0, iMaxNote = 0, iMaxVolume = 0;
     long long llNoteCount = 0, llVolumeSum = 0, llEventCount = 0, llTotalTicks = 0;
-    std::string sSequenceName;
     bool bMalformed = false;
 };
 

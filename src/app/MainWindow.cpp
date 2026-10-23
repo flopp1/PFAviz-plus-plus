@@ -46,7 +46,7 @@ LRESULT WINAPI WndProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
             int iCode = HIWORD( wParam );
             switch ( iId )
             {
-                case ID_FILE_PRACTICESONG: case ID_FILE_PRACTICESONGCUSTOM:
+                case ID_FILE_PLAYSONG:
                 {
                     CheckActivity( TRUE );
                     OPENFILENAMEW ofn = { 0 };
@@ -59,11 +59,11 @@ LRESULT WINAPI WndProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
                     ofn.lpstrTitle = L"Please select a song to play";
                     ofn.Flags = OFN_EXPLORER | OFN_HIDEREADONLY | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
                     if ( GetOpenFileNameW( &ofn ) )
-                        PlayFile( sFilename, iId == ID_FILE_PRACTICESONGCUSTOM );
+                        PlayFile( sFilename );
                     return 0;
                 }
                 case ID_FILE_CLOSEFILE:
-                    if ( cPlayback.GetPlayMode() != PlayMode::Practice ) break;
+                    if ( cPlayback.GetPlayMode() != PlayMode::Play ) break;
                     cPlayback.SetPlayMode( PlayMode::Intro, true );
                     cPlayback.SetPlayable( false, true );
                     cPlayback.SetPosition( 0 );
@@ -71,7 +71,7 @@ LRESULT WINAPI WndProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
                     HandOffMsg( WM_COMMAND, ID_CHANGESTATE, ( LPARAM )new IntroScreen( nullptr, nullptr ) );
                     return 0;
                 case ID_PLAY_PLAY:
-                    if ( cPlayback.GetPlayMode() == PlayMode::Practice ) cPlayback.SetPaused( false, true );
+                    if ( cPlayback.GetPlayMode() == PlayMode::Play ) cPlayback.SetPaused( false, true );
                     return 0;
                 case ID_PLAY_PAUSE:
                     cPlayback.SetPaused( true, true );
@@ -81,7 +81,7 @@ LRESULT WINAPI WndProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
                     return 0;
                 case ID_PLAY_STOP:
                 case ID_PLAY_SKIPFWD: case ID_PLAY_SKIPBACK:
-                    if ( cPlayback.GetPlayMode() == PlayMode::Practice ) HandOffMsg( msg, wParam, lParam );
+                    if ( cPlayback.GetPlayMode() == PlayMode::Play ) HandOffMsg( msg, wParam, lParam );
                     return 0;
                 case ID_PLAY_INCREASERATE:
                     cPlayback.SetSpeed( cPlayback.GetSpeed() * ( 1.0 + cControls.dSpeedUpPct / 100.0 ), true );
@@ -193,10 +193,15 @@ LRESULT WINAPI WndProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
             bInSizeMove = false;
             return 0;
         case WM_DEVICECHANGE:
-            Sleep( 200 );
+            // Plugging a device in sends a burst of these: the list is read again once they settle
+            SetTimer( hWnd, IDT_DEVICECHANGE, 200, nullptr );
+            break;
+        case WM_TIMER:
+            if ( wParam != IDT_DEVICECHANGE ) break;
+            KillTimer( hWnd, IDT_DEVICECHANGE );
             Config::GetConfig().LoadMIDIDevices();
             HandOffMsg( WM_DEVICECHANGE, 0, 0 );
-            break;
+            return 0;
         case WM_APP_LOADDONE:
             FinishLoad( lParam );
             return 0;
@@ -984,20 +989,20 @@ VOID SetPlayMode( INT ePlayMode )
 {
     HWND hWndToolbar = GetDlgItem( g_hWndBar, IDC_TOPTOOLBAR );
     HMENU hMenu = GetMainMenu();
-    BOOL bPractice = ( ePlayMode == PlayMode::Practice );
+    BOOL bPlay = ( ePlayMode == PlayMode::Play );
 
     int iPlayButtons[] = { ID_PLAY_PLAY, ID_PLAY_PAUSE, ID_PLAY_STOP, ID_PLAY_SKIPFWD, ID_PLAY_SKIPBACK };
     for ( int id : iPlayButtons )
-        SendMessageW( hWndToolbar, TB_ENABLEBUTTON, id, bPractice );
+        SendMessageW( hWndToolbar, TB_ENABLEBUTTON, id, bPlay );
 
     SendMessageW( hWndToolbar, TB_PRESSBUTTON, ID_PLAY_PLAY, TRUE );
     SetZoomMove( FALSE );
 
     int iMenuItems[] = { ID_FILE_CLOSEFILE, ID_PLAY_PLAYPAUSE, ID_PLAY_STOP, ID_VIEW_MOVEANDZOOM, ID_PLAY_SKIPFWD, ID_PLAY_SKIPBACK };
     for ( int id : iMenuItems )
-        EnableMenuItem( hMenu, id, MF_BYCOMMAND | ( bPractice ? MF_ENABLED : MF_GRAYED ) );
+        EnableMenuItem( hMenu, id, MF_BYCOMMAND | ( bPlay ? MF_ENABLED : MF_GRAYED ) );
 
-    EnableWindow( GetDlgItem( g_hWndBar, IDC_POSNCTRL ), bPractice );
+    EnableWindow( GetDlgItem( g_hWndBar, IDC_POSNCTRL ), bPlay );
 }
 
 VOID SetPlayPauseStop( BOOL bPlay, BOOL bPause, BOOL bStop )
@@ -1009,14 +1014,14 @@ VOID SetPlayPauseStop( BOOL bPlay, BOOL bPause, BOOL bStop )
 }
 
 // Starts the asynchronous load; MainScreen is created in FinishLoad (LoadingDialog.cpp)
-BOOL PlayFile( const std::wstring &sFile, bool bCustomSettings )
+BOOL PlayFile( const std::wstring &sFile )
 {
     if ( IsLoading() )
     {
         MessageBoxW( g_hWnd, L"A file is already loading.", APPNAME, MB_OK | MB_ICONINFORMATION );
         return FALSE;
     }
-    return StartLoad( sFile, bCustomSettings ) ? TRUE : FALSE;
+    return StartLoad( sFile ) ? TRUE : FALSE;
 }
 
 VOID CheckActivity( BOOL bIsActive, POINT *ptNew, BOOL bToggleEnable )

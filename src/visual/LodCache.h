@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <climits>
 #include <condition_variable>
 #include <cstdint>
 #include <memory>
@@ -35,7 +36,7 @@ public:
         float fNotesY = 0, fNotesCY = 0;
         long long llSpan = 0, llUsPP = 0;
         int iRowLo = 0, iRowHi = 0;
-        std::vector< long long > vTheta;    // the frame's Theta table (rows iRowLo - 1 ...)
+        std::vector< long long > vTheta;    // the frame's Theta table (rows iRowLo - 1 ...), set by Configure
         // Segment length: 8 note spans, from 1 to 10 s, so fast note speeds (few notes per cell
         // dropped) keep a few seconds of song around the playhead rather than a minute
         long long SegmentUs() const { return std::min( 10000000LL, std::max( 1000000LL, llSpan * 8 ) ); }
@@ -45,24 +46,36 @@ public:
                    iRowLo == o.iRowLo && iRowHi == o.iRowHi;
         }
     };
+    // A kept note in 16 bytes: its store position (39 bits), the re-paired flag and its start in
+    // microseconds from the segment's start (24 bits: a segment is at most 10 s) in one word; its slot;
+    // its duration in microseconds (LongDur: 71 minutes or more, kept apart in Segment::avLong)
     struct Entry
     {
-        static const uint64_t WeirdBit = 1ull << 63;
-        uint64_t llPos;                     // store position, | WeirdBit for a re-paired note
-        long long llStart, llEnd;           // microseconds
+        static const unsigned WeirdShift = 39, StartShift = 40;
+        static const uint64_t PosMask = ( 1ull << WeirdShift ) - 1;
+        static const uint32_t LongDur = UINT32_MAX;
+        uint64_t uPosStart;
         uint32_t uSlot;                     // track * 16 + channel
+        uint32_t uDur;
+        uint64_t Pos() const { return uPosStart & PosMask; }
+        bool Weird() const { return ( uPosStart >> WeirdShift ) & 1; }
     };
     struct Segment
     {
-        static const unsigned BlockShift = 4;
         long long llIndex = 0;              // covers starts in [llIndex, llIndex + 1) * SegmentUs
+        long long llStartUs = 0;            // llIndex * SegmentUs
         std::vector< Entry > av[128];       // per key, ascending position
-        std::vector< long long > avMaxDur[128]; // per key, the longest duration of every 16 entries
+        std::vector< std::pair< uint32_t, long long > > avLong[128];   // per key: (entry, duration) of the LongDur entries
         size_t iBytes = 0;
 
+        long long Start( const Entry &e ) const { return llStartUs + (long long)( e.uPosStart >> Entry::StartShift ); }
+        long long Dur( int k, size_t q, const Entry &e ) const
+        {
+            if ( e.uDur != Entry::LongDur ) return e.uDur;
+            const std::vector< std::pair< uint32_t, long long > > &v = avLong[k];
+            return std::lower_bound( v.begin(), v.end(), std::make_pair( (uint32_t)q, LLONG_MIN ) )->second;
+        }
         size_t LowerBound( int k, uint64_t llPos ) const;   // first entry of key k at or after a position
-        // Rightmost entry of key k in [lo, hi) lasting at least llDur microseconds, or -1
-        int64_t RightmostDur( int k, size_t lo, size_t hi, long long llDur ) const;
     };
     // What a frame reads: the ready segments for a range of segment indices (null where not built)
     struct View
@@ -76,14 +89,17 @@ public:
     LodCache();
     ~LodCache();
 
-    // The setting and store of the current frame; a change discards everything built
-    void Configure( const Setting &s, std::shared_ptr< const VisualStore > pStore, unsigned uStoreGen, const PackedMonotone *pTimes );
-    // The segments covering starts in [t0, t1), and a request to build what is missing around them
-    // (bSync: build it now, on the calling thread's pool, before returning)
-    View Get( long long t0, long long t1, long long llPrefetchEnd, bool bSync, int iThreads );
-    // Hands a view the frame no longer needs to the worker thread, which frees the segments only it
-    // still held: freeing a segment (tens of MB at fast note speeds) cost frames 2-4 ms
-    void Retire( View &&v );
+    // The setting (its Theta table apart: copied only when the setting changes) and store of the
+    // current frame; a change discards everything built
+    void Configure( const Setting &s, const std::vector< long long > &vTheta, std::shared_ptr< const VisualStore > pStore, unsigned uStoreGen,
+                    const PackedMonotone *pTimes );
+    // Into v: the segments covering starts in [t0, t1), and a request to build what is missing around
+    // them (bSync: build it now, on the calling thread's pool, before returning)
+    void Get( View &v, long long t0, long long t1, long long llPrefetchEnd, bool bSync, int iThreads );
+    // Hands the segments of a view the frame no longer needs to the worker thread, which frees the
+    // ones only it still held (freeing a segment, tens of MB at fast note speeds, cost frames 2-4 ms);
+    // v is left empty, its capacity kept
+    void Retire( View &v );
     size_t MemoryBytes() const;
 
 private:

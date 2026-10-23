@@ -99,13 +99,45 @@ bool FfmpegPipe::Start( const VideoJob &job, std::wstring &sError )
     m_sLog = std::wstring( sTemp ) + L"PFAviz++ ffmpeg.log";
     HANDLE hLog = CreateFileW( m_sLog.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr );
 
-    // Raw BGRX frames in; H.264 4:2:0 with BT.709 colours out (what players assume for HD video)
+    // Raw frames in: YUV 4:2:0 already converted (BT.709, limited range), or BGRX that ffmpeg converts.
+    // 4:2:0 with BT.709 colours out (what players assume for HD video), from the chosen encoder
+    wchar_t sIn[256], sEnc[256];
+    // (the frames carry the colour description: ffmpeg takes it from them, not from the output options)
+    const wchar_t *sTags = L"setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv";
+    if ( job.bYuv )
+        swprintf( sIn, 256, L"-f rawvideo -pix_fmt yuv420p -video_size %dx%d -framerate %d -i - -an -vf %ls", job.iWidth, job.iHeight, job.iFPS, sTags );
+    else
+        swprintf( sIn, 256, L"-f rawvideo -pix_fmt bgr0 -video_size %dx%d -framerate %d -i - -an -vf scale=out_color_matrix=bt709:out_range=tv,%ls",
+                  job.iWidth, job.iHeight, job.iFPS, sTags );
+    // The x264 preset onto the hardware encoders' speed levels (ultrafast ... veryslow)
+    int iP = std::clamp( job.iPreset, 0, ExportSettings::PresetCount - 1 ), iLast = ExportSettings::PresetCount - 1;
+    const wchar_t *sAmf = iP < 3 ? L"speed" : iP < 6 ? L"balanced" : L"quality";
+    const wchar_t *sQsv = ExportSettings::Presets[std::max( iP, 2 )];   // QSV has no ultrafast or superfast
+    int q = job.iCRF;
+    switch ( job.iEncoder )
+    {
+        case ExportSettings::NvencH264: case ExportSettings::NvencHevc:
+            swprintf( sEnc, 256, L"-c:v %ls -preset p%d -tune hq -rc vbr -cq %d -b:v 0 -pix_fmt yuv420p%ls",
+                      job.iEncoder == ExportSettings::NvencH264 ? L"h264_nvenc" : L"hevc_nvenc", 1 + iP * 6 / iLast, std::max( q, 1 ),
+                      job.iEncoder == ExportSettings::NvencHevc ? L" -tag:v hvc1" : L"" );
+            break;
+        case ExportSettings::AmfH264: case ExportSettings::AmfHevc:
+            swprintf( sEnc, 256, L"-c:v %ls -quality %ls -rc cqp -qp_i %d -qp_p %d -pix_fmt yuv420p%ls",
+                      job.iEncoder == ExportSettings::AmfH264 ? L"h264_amf" : L"hevc_amf", sAmf, q, q,
+                      job.iEncoder == ExportSettings::AmfHevc ? L" -tag:v hvc1" : L"" );
+            break;
+        case ExportSettings::QsvH264: case ExportSettings::QsvHevc:
+            swprintf( sEnc, 256, L"-c:v %ls -preset %ls -global_quality %d -pix_fmt nv12%ls",
+                      job.iEncoder == ExportSettings::QsvH264 ? L"h264_qsv" : L"hevc_qsv", sQsv, std::max( q, 1 ),
+                      job.iEncoder == ExportSettings::QsvHevc ? L" -tag:v hvc1" : L"" );
+            break;
+        default:
+            swprintf( sEnc, 256, L"-c:v libx264 -preset %ls -crf %d -pix_fmt yuv420p", ExportSettings::Presets[iP], q );
+            break;
+    }
     wchar_t sArgs[1024];
-    swprintf( sArgs, 1024,
-              L"-hide_banner -loglevel warning -f rawvideo -pix_fmt bgr0 -video_size %dx%d -framerate %d -i - -an "
-              L"-vf scale=out_color_matrix=bt709:out_range=tv -c:v libx264 -preset %ls -crf %d -pix_fmt yuv420p "
-              L"-colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv -movflags +faststart -y",
-              job.iWidth, job.iHeight, job.iFPS, job.sPreset.c_str(), job.iCRF );
+    swprintf( sArgs, 1024, L"-hide_banner -loglevel warning %ls %ls -colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv -movflags +faststart -y",
+              sIn, sEnc );
     std::wstring sCmd = L"\"" + job.sFfmpeg + L"\" " + sArgs + L" \"" + job.sOutFile + L"\"";
     std::vector< wchar_t > vCmd( sCmd.begin(), sCmd.end() );
     vCmd.push_back( 0 );
@@ -131,7 +163,7 @@ bool FfmpegPipe::Start( const VideoJob &job, std::wstring &sError )
     m_hProcess = pi.hProcess;
 
     // Three frames in flight: one being filled, one being written, one waiting
-    size_t iBytes = (size_t)job.iWidth * job.iHeight * 4;
+    size_t iBytes = job.bYuv ? (size_t)job.iWidth * job.iHeight * 3 / 2 : (size_t)job.iWidth * job.iHeight * 4;
     for ( int i = 0; i < 3; i++ )
     {
         m_vBufs.push_back( std::make_unique< std::vector< uint8_t > >( iBytes ) );
@@ -291,7 +323,7 @@ namespace
             CoTaskMemFree( pPath );
         }
         const std::wstring &sSong = GetOpenedFile();
-        if ( !sSong.empty() && Config::GetConfig().GetPlaybackSettings().GetPlayMode() == PlayMode::Practice )
+        if ( !sSong.empty() && Config::GetConfig().GetPlaybackSettings().GetPlayMode() == PlayMode::Play )
         {
             sName = sSong.substr( sSong.find_last_of( L"\\/" ) + 1 );
             sName = sName.substr( 0, sName.find_last_of( L'.' ) ) + L".mp4";
@@ -324,6 +356,7 @@ namespace
         s.bUseWindowSize = IsDlgButtonChecked( hWnd, IDC_VID_WINDOWSIZE ) == BST_CHECKED;
         s.bShowStats = IsDlgButtonChecked( hWnd, IDC_VID_STATS ) == BST_CHECKED;
         s.iPreset = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_VID_PRESET, CB_GETCURSEL, 0, 0 ) );
+        s.iEncoder = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_VID_ENCODER, CB_GETCURSEL, 0, 0 ) );
 
         auto Bad = [&]( int iId, const wchar_t *sError ) {
             if ( bValidate )
@@ -348,7 +381,7 @@ namespace
         if ( !bOk || u < 1 || u > 240 ) return Bad( IDC_VID_FPS, L"Please specify a frame rate between 1 and 240 fps." );
         s.iFPS = (int)u;
         u = GetDlgItemInt( hWnd, IDC_VID_CRF, &bOk, FALSE );
-        if ( !bOk || u > 51 ) return Bad( IDC_VID_CRF, L"Please specify an H.264 quality (CRF) between 0 and 51." );
+        if ( !bOk || u > 51 ) return Bad( IDC_VID_CRF, L"Please specify a quality between 0 and 51." );
         s.iCRF = (int)u;
         return true;
     }
@@ -422,8 +455,8 @@ namespace
                         if ( const char *sLog = getenv( "PFAVIZ_FRAMELOG" ) )
                             if ( FILE *f = fopen( sLog, "a" ) )
                             {
-                                fprintf( f, "render %s: %s | %lld frames in %.2f s (%.1f fps)\n", bOk ? "ok" : "FAILED",
-                                         Util::WideToUtf8( sResult ).c_str(), llFrame, dElapsed, dFps );
+                                fprintf( f, "render %s: %s | %lld frames in %.2f s (%.1f fps), %s frames, encoder %d\n", bOk ? "ok" : "FAILED",
+                                         Util::WideToUtf8( sResult ).c_str(), llFrame, dElapsed, dFps, pJob->bYuv ? "YUV" : "BGRX", pJob->iEncoder );
                                 fclose( f );
                             }
                         g_pProgress = nullptr;
@@ -502,7 +535,8 @@ namespace
         auto pJob = std::make_shared< VideoJob >();
         pJob->sFfmpeg = sFfmpeg;
         pJob->sOutFile = sOut;
-        pJob->sPreset = ExportSettings::Presets[s.iPreset];
+        pJob->iPreset = s.iPreset;
+        pJob->iEncoder = s.iEncoder;
         if ( s.bUseWindowSize ) WindowSize( pJob->iWidth, pJob->iHeight );
         else { pJob->iWidth = s.iWidth; pJob->iHeight = s.iHeight; }
         pJob->iFPS = s.iFPS;
@@ -527,7 +561,7 @@ namespace
         config.SetExportSettings( s );
 
         PlaybackSettings &cPlayback = config.GetPlaybackSettings();
-        if ( cPlayback.GetPlayMode() != PlayMode::Practice )
+        if ( cPlayback.GetPlayMode() != PlayMode::Play )
         {
             MessageBoxW( hWnd, L"Please open a song first.", L"Render Video", MB_OK | MB_ICONEXCLAMATION );
             return false;
@@ -591,6 +625,9 @@ namespace
                 for ( int i = 0; i < ExportSettings::PresetCount; i++ )
                     SendDlgItemMessageW( hWnd, IDC_VID_PRESET, CB_ADDSTRING, 0, ( LPARAM )ExportSettings::Presets[i] );
                 SendDlgItemMessageW( hWnd, IDC_VID_PRESET, CB_SETCURSEL, s.iPreset, 0 );
+                for ( int i = 0; i < ExportSettings::EncoderCount; i++ )
+                    SendDlgItemMessageW( hWnd, IDC_VID_ENCODER, CB_ADDSTRING, 0, ( LPARAM )ExportSettings::Encoders[i] );
+                SendDlgItemMessageW( hWnd, IDC_VID_ENCODER, CB_SETCURSEL, s.iEncoder, 0 );
                 CheckDlgButton( hWnd, IDC_VID_STATS, s.bShowStats ? BST_CHECKED : BST_UNCHECKED );
                 UpdateSizeControls( hWnd );
                 return TRUE;
@@ -634,7 +671,14 @@ namespace
                         ExportSettings s = config.GetExportSettings();
                         ExportSettings sRead = s;
                         if ( ReadExport( hWnd, sRead, false ) ) s = sRead;
-                        else { s.sOutFile = sRead.sOutFile; s.bUseWindowSize = sRead.bUseWindowSize; s.bShowStats = sRead.bShowStats; s.iPreset = sRead.iPreset; }
+                        else
+                        {
+                            s.sOutFile = sRead.sOutFile;
+                            s.bUseWindowSize = sRead.bUseWindowSize;
+                            s.bShowStats = sRead.bShowStats;
+                            s.iPreset = sRead.iPreset;
+                            s.iEncoder = sRead.iEncoder;
+                        }
                         config.SetExportSettings( s );
                         EndDialog( hWnd, IDCANCEL );
                         return TRUE;
@@ -652,8 +696,11 @@ VOID RenderVideoUnattended( const std::wstring &sOutFile )
     wchar_t sFull[MAX_PATH * 4];
     DWORD dwLen = GetFullPathNameW( sOutFile.c_str(), MAX_PATH * 4, sFull, nullptr );
     g_bUnattended = true;
+    // PFAVIZ_ENCODER=n: ExportSettings::Encoders[n] instead of the saved encoder
+    ExportSettings s = Config::GetConfig().GetExportSettings();
+    if ( const char *sEnc = getenv( "PFAVIZ_ENCODER" ) ) s.iEncoder = std::clamp( atoi( sEnc ), 0, ExportSettings::EncoderCount - 1 );
     if ( !sFfmpeg.empty() && dwLen > 0 && dwLen < MAX_PATH * 4 )
-        RunJob( g_hWnd, MakeJob( Config::GetConfig().GetExportSettings(), sFfmpeg, sFull ) );
+        RunJob( g_hWnd, MakeJob( s, sFfmpeg, sFull ) );
     PostMessageW( g_hWnd, WM_CLOSE, 0, 0 );
 }
 

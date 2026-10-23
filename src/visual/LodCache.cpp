@@ -36,26 +36,7 @@ const LodCache::Segment *LodCache::View::At( long long t ) const
 size_t LodCache::Segment::LowerBound( int k, uint64_t llPos ) const
 {
     const std::vector< Entry > &v = av[k];
-    return (size_t)( std::lower_bound( v.begin(), v.end(), llPos, []( const Entry &e, uint64_t p ) {
-        return ( e.llPos & ~Entry::WeirdBit ) < p;
-    } ) - v.begin() );
-}
-
-int64_t LodCache::Segment::RightmostDur( int k, size_t lo, size_t hi, long long llDur ) const
-{
-    const std::vector< Entry > &v = av[k];
-    const std::vector< long long > &m = avMaxDur[k];
-    size_t i = hi;
-    while ( i > lo )
-    {
-        size_t b = ( i - 1 ) >> BlockShift, b0 = b << BlockShift;
-        if ( b0 >= lo && i == b0 + ( size_t( 1 ) << BlockShift ) && m[b] < llDur ) { i = b0; continue; }   // a whole block too short
-        size_t iEnd = std::max( lo, b0 );
-        for ( size_t j = i; j-- > iEnd; )
-            if ( v[j].llEnd - v[j].llStart >= llDur ) return (int64_t)j;
-        i = iEnd;
-    }
-    return -1;
+    return (size_t)( std::lower_bound( v.begin(), v.end(), llPos, []( const Entry &e, uint64_t p ) { return e.Pos() < p; } ) - v.begin() );
 }
 
 LodCache::LodCache()
@@ -74,11 +55,13 @@ LodCache::~LodCache()
     if ( m_Thread.joinable() ) m_Thread.join();
 }
 
-void LodCache::Configure( const Setting &s, std::shared_ptr< const VisualStore > pStore, unsigned uStoreGen, const PackedMonotone *pTimes )
+void LodCache::Configure( const Setting &s, const std::vector< long long > &vTheta, std::shared_ptr< const VisualStore > pStore, unsigned uStoreGen,
+                          const PackedMonotone *pTimes )
 {
     std::lock_guard< std::mutex > lock( m_mx );
     if ( m_S.Same( s ) && m_pStore.get() == pStore.get() && m_uStoreGen == uStoreGen ) return;
     m_S = s;
+    m_S.vTheta = vTheta;
     m_pStore = std::move( pStore );
     m_uStoreGen = uStoreGen;
     m_pTimes = pTimes;
@@ -89,7 +72,7 @@ void LodCache::Configure( const Setting &s, std::shared_ptr< const VisualStore >
     m_vWanted.clear();
     m_iBytes = 0;
     m_vRes.clear();
-    for ( long long t : s.vTheta )
+    for ( long long t : m_S.vTheta )
     {
         long long r = t % s.llUsPP;
         if ( r < 0 ) r += s.llUsPP;
@@ -99,10 +82,11 @@ void LodCache::Configure( const Setting &s, std::shared_ptr< const VisualStore >
     m_vRes.erase( std::unique( m_vRes.begin(), m_vRes.end() ), m_vRes.end() );
 }
 
-LodCache::View LodCache::Get( long long t0, long long t1, long long llPrefetchEnd, bool bSync, int iThreads )
+void LodCache::Get( View &v, long long t0, long long t1, long long llPrefetchEnd, bool bSync, int iThreads )
 {
+    v.v.clear();
     std::unique_lock< std::mutex > lock( m_mx );
-    if ( !m_pStore ) return View();
+    if ( !m_pStore ) return;
     const long long U = m_S.SegmentUs();
     long long a = FloorDiv( t0, U ), b = FloorDiv( std::max( t0, t1 - 1 ), U );
     long long c = std::max( b, FloorDiv( llPrefetchEnd, U ) );
@@ -139,7 +123,7 @@ LodCache::View LodCache::Get( long long t0, long long t1, long long llPrefetchEn
             lock.unlock();
             std::shared_ptr< Segment > p = Build( i, iThreads, &m_uGen, uGen );
             lock.lock();
-            if ( !p || m_uGen != uGen ) return View();
+            if ( !p || m_uGen != uGen ) return;
             long long j = i - m_llFirst;
             if ( j >= 0 && j < (long long)m_vSeg.size() && !m_vSeg[(size_t)j] ) { m_vSeg[(size_t)j] = p; m_iBytes += p->iBytes; }
         }
@@ -150,15 +134,13 @@ LodCache::View LodCache::Get( long long t0, long long t1, long long llPrefetchEn
     for ( long long i = a; i <= c; i++ ) if ( !Ready( i ) ) m_vWanted.push_back( i );
     if ( !m_vWanted.empty() ) m_cv.notify_one();
 
-    View v;
     v.llFirst = a;
     v.llSegUs = U;
     for ( long long i = a; i <= b; i++ )
         v.v.push_back( Ready( i ) ? m_vSeg[(size_t)( i - m_llFirst )] : nullptr );
-    return v;
 }
 
-void LodCache::Retire( View &&v )
+void LodCache::Retire( View &v )
 {
     std::lock_guard< std::mutex > lock( m_mx );
     for ( auto &p : v.v ) if ( p ) m_vRetired.push_back( std::move( p ) );
@@ -237,15 +219,16 @@ std::shared_ptr< LodCache::Segment > LodCache::Build( long long llIndex, int iTh
 
     auto pSeg = std::make_shared< Segment >();
     pSeg->llIndex = llIndex;
+    pSeg->llStartUs = t0;
     std::atomic< bool > bCancelled{ false };
     Parallel::For( iThreads, 128, [&]( size_t k, int ) {
         const KeyStore &ks = pStore->aKeys[k];
         if ( !ks.Size() ) return;
         size_t i0 = ks.LowerBoundStart( LowerBoundTime( t0 ) ), i1 = ks.LowerBoundStart( LowerBoundTime( t1 ) );
         std::vector< Entry > &vOut = pSeg->av[k];
-        struct Note { Entry e; int h; };
-        std::vector< Note > vCell;
-        std::vector< Entry > vKeep;
+        std::vector< std::pair< uint32_t, long long > > &vLong = pSeg->avLong[k];
+        struct Note { uint64_t llPos; bool bWeird; long long llStart, llEnd; uint32_t uSlot; int h; };
+        std::vector< Note > vCell, vKeep;
         // Suffix maximum of kept ends over heights (Fenwick tree on reversed heights)
         std::vector< long long > vTree( iCap + 2, LLONG_MIN );
         std::vector< int > vTouched;
@@ -266,41 +249,53 @@ std::shared_ptr< LodCache::Segment > LodCache::Build( long long llIndex, int iTh
             for ( size_t q = vCell.size(); q-- > 0; )
             {
                 const Note &n = vCell[q];
-                if ( n.e.llPos & Entry::WeirdBit ) { vKeep.push_back( n.e ); continue; }
-                if ( MaxFrom( n.h ) >= n.e.llEnd ) continue;    // a later note covers it in every frame
-                vKeep.push_back( n.e );
-                Update( n.h, n.e.llEnd );
+                if ( n.bWeird ) { vKeep.push_back( n ); continue; }
+                if ( MaxFrom( n.h ) >= n.llEnd ) continue;    // a later note covers it in every frame
+                vKeep.push_back( n );
+                Update( n.h, n.llEnd );
             }
             for ( int x : vTouched ) vTree[x] = LLONG_MIN;
             vTouched.clear();
-            vOut.insert( vOut.end(), vKeep.rbegin(), vKeep.rend() );
+            for ( size_t q = vKeep.size(); q-- > 0; )
+            {
+                const Note &n = vKeep[q];
+                long long llDur = n.llEnd - n.llStart;
+                Entry e;
+                e.uPosStart = n.llPos | ( (uint64_t)n.bWeird << Entry::WeirdShift ) | ( (uint64_t)( n.llStart - t0 ) << Entry::StartShift );
+                e.uSlot = n.uSlot;
+                e.uDur = llDur < (long long)Entry::LongDur ? (uint32_t)llDur : Entry::LongDur;
+                if ( e.uDur == Entry::LongDur ) vLong.push_back( { (uint32_t)vOut.size(), llDur } );
+                vOut.push_back( e );
+            }
             vCell.clear();
         };
         long long llCell = LLONG_MIN;
-        NoteView n;
-        for ( size_t i = i0; i < i1; i++ )
+        // In spans read in one pass (KeyStore::GetRange: an LZ store's group cache is left to the frames)
+        const size_t SpanNotes = 1024;
+        std::unique_ptr< NoteView[] > pSpan( new NoteView[SpanNotes] );
+        for ( size_t i1Span, iSpan = i0; iSpan < i1; iSpan = i1Span )
         {
-            if ( ( i & 16383 ) == 16383 && pCancelGen->load( std::memory_order_relaxed ) != uGen ) { bCancelled = true; return; }
-            ks.Get( i, n );
-            if ( n.bUnpaired ) continue;
-            long long s = (long long)pTimes->Get( n.llStartU ), e = (long long)pTimes->Get( n.llEndU );
-            int h = Height( e - s );
-            if ( h <= 0 ) continue;                 // the bucket sweep never selects a note of height 0
-            long long c = Cell( s );
-            if ( c != llCell ) { FlushCell(); llCell = c; }
-            vCell.push_back( { { (uint64_t)i | ( n.bWeird ? Entry::WeirdBit : 0 ), s, e, n.uSlot }, h } );
+            if ( pCancelGen->load( std::memory_order_relaxed ) != uGen ) { bCancelled = true; return; }
+            i1Span = std::min( i1, iSpan + SpanNotes );
+            ks.GetRange( iSpan, i1Span - iSpan, pSpan.get() );
+            for ( size_t i = iSpan; i < i1Span; i++ )
+            {
+                const NoteView &n = pSpan[i - iSpan];
+                if ( n.bUnpaired ) continue;
+                long long s = (long long)pTimes->Get( n.llStartU ), e = (long long)pTimes->Get( n.llEndU );
+                int h = Height( e - s );
+                if ( h <= 0 ) continue;                 // the bucket sweep never selects a note of height 0
+                long long c = Cell( s );
+                if ( c != llCell ) { FlushCell(); llCell = c; }
+                vCell.push_back( { (uint64_t)i, n.bWeird, s, e, n.uSlot, h } );
+            }
         }
         FlushCell();
         vOut.shrink_to_fit();
+        vLong.shrink_to_fit();
     } );
     if ( bCancelled ) return nullptr;
     for ( int k = 0; k < 128; k++ )
-    {
-        const std::vector< Entry > &v = pSeg->av[k];
-        std::vector< long long > &m = pSeg->avMaxDur[k];
-        m.assign( ( v.size() + ( size_t( 1 ) << Segment::BlockShift ) - 1 ) >> Segment::BlockShift, LLONG_MIN );
-        for ( size_t i = 0; i < v.size(); i++ ) m[i >> Segment::BlockShift] = std::max( m[i >> Segment::BlockShift], v[i].llEnd - v[i].llStart );
-        pSeg->iBytes += v.capacity() * sizeof( Entry ) + m.capacity() * sizeof( long long );
-    }
+        pSeg->iBytes += pSeg->av[k].capacity() * sizeof( Entry ) + pSeg->avLong[k].capacity() * sizeof( pSeg->avLong[k][0] );
     return pSeg;
 }

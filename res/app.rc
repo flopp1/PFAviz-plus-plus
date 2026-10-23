@@ -167,11 +167,13 @@ BEGIN
     LTEXT           "&Frame rate:",IDC_STATIC,13,77,64,8
     EDITTEXT        IDC_VID_FPS,80,75,32,14,ES_AUTOHSCROLL | ES_NUMBER
     LTEXT           "fps (1-240)",IDC_STATIC,117,77,80,8
-    LTEXT           "H.264 &quality (CRF):",IDC_STATIC,13,96,66,8
+    LTEXT           "&Quality:",IDC_STATIC,13,96,66,8
     EDITTEXT        IDC_VID_CRF,80,94,32,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "0-51; lower is better",IDC_STATIC,117,96,100,8
+    LTEXT           "0-51, lower is better (CRF, CQ or QP)",IDC_STATIC,117,96,170,8
     LTEXT           "Encoder &preset:",IDC_STATIC,13,115,64,8
     COMBOBOX        IDC_VID_PRESET,80,113,72,120,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "E&ncoder:",IDC_STATIC,160,115,30,8
+    COMBOBOX        IDC_VID_ENCODER,192,113,94,120,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     CONTROL         "Show the &stats area (top-right corner)",IDC_VID_STATS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,132,200,10
     LTEXT           "The whole song is rendered off-screen at the selected resolution (keyboard and notes, with the current view and note speed; no sound) and encoded by ffmpeg, from the PATH or the current folder.",IDC_STATIC,13,146,274,26
     DEFPUSHBUTTON   "&Start rendering",IDOK,7,185,80,14
@@ -188,24 +190,6 @@ BEGIN
     CONTROL         "",IDC_VIDP_BAR,"msctls_progress32",WS_BORDER,7,172,286,10
     LTEXT           "Starting...",IDC_VIDP_STATUS,7,186,286,26,SS_NOPREFIX
     PUSHBUTTON      "Cancel",IDCANCEL,243,215,50,14
-END
-
-IDD_TRACKSETTINGS DIALOGEX 0, 0, 301, 183
-STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
-CAPTION "Track Settings"
-FONT 8, "MS Shell Dlg", 400, 0, 0x1
-BEGIN
-    LTEXT           "File:",IDC_STATIC,7,7,14,8
-    EDITTEXT        IDC_FILE,50,7,244,8,ES_AUTOHSCROLL | ES_READONLY | NOT WS_BORDER | NOT WS_TABSTOP
-    LTEXT           "Folder:",IDC_STATIC,7,17,24,8
-    EDITTEXT        IDC_FOLDER,50,17,244,8,ES_AUTOHSCROLL | ES_READONLY | NOT WS_BORDER | NOT WS_TABSTOP
-    LTEXT           "Notes:",IDC_STATIC,7,27,22,8
-    EDITTEXT        IDC_NOTES,50,27,244,8,ES_AUTOHSCROLL | ES_READONLY | NOT WS_BORDER | NOT WS_TABSTOP
-    LTEXT           "Length:",IDC_STATIC,7,37,26,8
-    EDITTEXT        IDC_LENGTH,50,37,244,8,ES_AUTOHSCROLL | ES_READONLY | NOT WS_BORDER | NOT WS_TABSTOP
-    CONTROL         "",IDC_TRACKS,"SysListView32",LVS_REPORT | LVS_SINGLESEL | LVS_ALIGNLEFT | LVS_OWNERDATA | WS_BORDER | WS_TABSTOP,7,50,287,108
-    DEFPUSHBUTTON   "OK",IDOK,189,162,50,14
-    PUSHBUTTON      "Cancel",IDCANCEL,244,162,50,14
 END
 
 IDD_LOADING DIALOGEX 0, 0, 324, 251
@@ -247,8 +231,7 @@ IDM_MAINMENU MENU
 BEGIN
     POPUP "&File"
     BEGIN
-        MENUITEM "&Practice Song...\tCtrl+O",   ID_FILE_PRACTICESONG
-        MENUITEM "P&ractice Using Custom Settings...", ID_FILE_PRACTICESONGCUSTOM
+        MENUITEM "&Play Song...\tCtrl+O",       ID_FILE_PLAYSONG
         MENUITEM "&Close File\tCtrl+W",         ID_FILE_CLOSEFILE
     END
     POPUP "&Play"
@@ -296,8 +279,7 @@ BEGIN
     BEGIN
         POPUP "&File"
         BEGIN
-            MENUITEM "&Practice Song...\tCtrl+O",   ID_FILE_PRACTICESONG
-            MENUITEM "P&ractice Using Custom Settings...", ID_FILE_PRACTICESONGCUSTOM
+            MENUITEM "&Play Song...\tCtrl+O",       ID_FILE_PLAYSONG
             MENUITEM "&Close File\tCtrl+W",         ID_FILE_CLOSEFILE
         END
         POPUP "&View"
@@ -337,7 +319,7 @@ END
 IDA_MAINMENU ACCELERATORS
 BEGIN
     "W",            ID_FILE_CLOSEFILE,      VIRTKEY, CONTROL, NOINVERT
-    "O",            ID_FILE_PRACTICESONG,   VIRTKEY, CONTROL, NOINVERT
+    "O",            ID_FILE_PLAYSONG,   VIRTKEY, CONTROL, NOINVERT
     "P",            ID_OPTIONS_PREFERENCES, VIRTKEY, CONTROL, NOINVERT
     VK_DOWN,        ID_PLAY_INCREASERATE,   VIRTKEY, CONTROL, NOINVERT
     "M",            ID_PLAY_MUTE,           VIRTKEY, CONTROL, NOINVERT

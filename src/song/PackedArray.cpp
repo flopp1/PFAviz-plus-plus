@@ -60,6 +60,46 @@ size_t PackedMonotone::LowerBound( uint64_t v ) const
     return lo;
 }
 
+size_t PackedMonotone::LowerBoundFrom( uint64_t v, size_t iHint ) const
+{
+    // The answer is in (lo, hi]: grow a step outwards from the hint until it brackets it
+    if ( !m_n ) return 0;
+    size_t lo, hi;
+    if ( iHint >= m_n || Get( iHint ) >= v )
+    {
+        hi = std::min( iHint, m_n );
+        size_t step = 1;
+        for ( ;; )
+        {
+            if ( hi < step ) { lo = 0; if ( Get( 0 ) >= v ) return 0; break; }
+            lo = hi - step;
+            if ( Get( lo ) < v ) break;
+            hi = lo;
+            step *= 2;
+        }
+    }
+    else
+    {
+        lo = iHint;
+        size_t step = 1;
+        for ( ;; )
+        {
+            hi = lo + step;
+            if ( hi >= m_n ) { hi = m_n; break; }
+            if ( Get( hi ) >= v ) break;
+            lo = hi;
+            step *= 2;
+        }
+    }
+    // Get( lo ) < v, and hi == m_n or Get( hi ) >= v
+    for ( lo++; lo < hi; )
+    {
+        size_t mid = lo + ( hi - lo ) / 2;
+        if ( Get( mid ) < v ) lo = mid + 1; else hi = mid;
+    }
+    return lo;
+}
+
 size_t PackedMonotone::UpperBound( uint64_t v ) const
 {
     size_t lo = 0, hi = m_n;

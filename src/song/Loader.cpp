@@ -309,8 +309,6 @@ namespace
                         memcpy( m.aData, pMeta, (size_t)llLen );
                         pScan->vMeta.push_back( m );
                     }
-                    else if ( cType == 0x03 )
-                        pScan->info.sSequenceName.assign( reinterpret_cast< const char * >( pMeta ), (size_t)llLen );
                 }
             }
             else
@@ -475,10 +473,10 @@ namespace
         prog.aTotal[LoadProgress::Merging] = 4;
         EventStream &es = song->stream;
         es.llEvents = llEvents;
-        // Transient (global order): every group's track and run bytes, and each tick's first group
+        // Transient (global order): every group's track << 32 | run bytes (then, once its header is
+        // written, the offset of its runs in the raw stream), and each tick's first group
         std::vector< uint64_t > vTickGroupStart;
-        struct GroupEntry { uint32_t uTrack, uSize; };
-        std::vector< GroupEntry > vGroups;
+        std::vector< uint64_t > vGroups;
         stats.llEvents = llEvents;
         stats.llGroups = G;
 
@@ -523,6 +521,21 @@ namespace
             }
             return (uint64_t)( std::lower_bound( vUnique.begin(), vUnique.end(), t ) - vUnique.begin() );
         };
+        // The same for a tick at or after the one ranked uHint (a track's ticks only increase): without
+        // the bitmap, a search forwards from uHint, a few steps when the track's groups are close
+        auto RankFrom = [&]( int64_t t, uint64_t uHint ) -> uint64_t {
+            if ( bBitmap ) return Rank( t );
+            uint64_t lo = uHint, step = 1, hi;
+            for ( ;; )
+            {
+                hi = lo + step;
+                if ( hi >= vUnique.size() ) { hi = vUnique.size(); break; }
+                if ( vUnique[hi] >= t ) break;
+                lo = hi;
+                step *= 2;
+            }
+            return (uint64_t)( std::lower_bound( vUnique.begin() + lo, vUnique.begin() + hi, t ) - vUnique.begin() );
+        };
         stats.llUniqueTicks = U;
         prog.aDone[LoadProgress::Merging] = 1;
         llStep = llPhase;
@@ -531,8 +544,12 @@ namespace
         // Groups per unique tick, then each group's slot in global (tick, track) order
         std::vector< uint32_t > vCount( U, 0 );
         Parallel::For( iThreads, vScans.size(), [&]( size_t t, int ) {
+            uint64_t u = 0;
             for ( const GroupRec &g : vScans[t]->vGroups )
-                __atomic_fetch_add( &vCount[Rank( g.llTick )], 1u, __ATOMIC_RELAXED );
+            {
+                u = RankFrom( g.llTick, u );
+                __atomic_fetch_add( &vCount[u], 1u, __ATOMIC_RELAXED );
+            }
         } );
         vTickGroupStart.resize( U + 1 );
         uint64_t acc = 0;
@@ -556,11 +573,12 @@ namespace
             {
                 std::vector< GroupRec > &vg = vScans[t]->vGroups;
                 auto it = std::lower_bound( vg.begin(), vg.end(), t0, []( const GroupRec &g, int64_t v ) { return g.llTick < v; } );
+                uint64_t u = u0;
                 for ( ; it != vg.end() && it->llTick < t1; ++it )
                 {
-                    uint64_t u = Rank( it->llTick );
+                    u = RankFrom( it->llTick, u );
                     uint64_t slot = vTickGroupStart[u] + vCount[u]++;
-                    vGroups[slot] = { (uint32_t)t, it->uSize };
+                    vGroups[slot] = ( (uint64_t)t << 32 ) | it->uSize;
                     // The size now lives in the global entry; keep the slot in the size/event fields.
                     // llTick must stay intact: other threads binary-search this track by tick.
                     it->uSize = (uint32_t)slot;
@@ -575,42 +593,44 @@ namespace
         Step( L"group order" );
 
         // Raw offsets: prefix sum in global order over group header + runs, with a seek point for the
-        // first tick that starts in each chunk; then the group headers are written and each track's
-        // groups get the offset of their runs
-        auto Header = [&]( uint64_t g, uint64_t u ) {
-            uint64_t llGap = g == vTickGroupStart[u] ? vGroups[g].uTrack : vGroups[g].uTrack - vGroups[g - 1].uTrack - 1;
+        // first tick that starts in each chunk, kept only where each tick range starts; then each range
+        // writes its group headers, and each group's entry becomes the offset of its runs, which the
+        // track's group records take (no per-group offset table: 8 bytes a group at the load's peak)
+        auto Track = [&]( uint64_t g ) { return (uint32_t)( vGroups[g] >> 32 ); };
+        auto Header = [&]( uint64_t g, uint64_t u, uint32_t uPrevTrack ) {
+            uint64_t llGap = g == vTickGroupStart[u] ? Track( g ) : Track( g ) - uPrevTrack - 1;
             return ( llGap << 1 ) | ( g + 1 == vTickGroupStart[u + 1] ? 1 : 0 );
         };
-        std::vector< uint64_t > vOffset( G );
+        std::vector< uint64_t > vRangeOff( iRanges + 1 );
         uint64_t llOff = 0;
-        for ( uint64_t u = 0, g = 0; u < U; u++ )
+        for ( uint64_t u = 0, g = 0, r = 0; u < U; u++ )
         {
+            while ( r < iRanges && U * r / iRanges == u ) vRangeOff[r++] = llOff;
             if ( es.vSeek.empty() || ( es.vSeek.back().llRaw >> EventStream::ChunkShift ) != ( llOff >> EventStream::ChunkShift ) )
                 es.vSeek.push_back( { u, llOff } );
             for ( ; g < vTickGroupStart[u + 1]; g++ )
-            {
-                vOffset[g] = llOff;
-                llOff += EventStream::VarSize( Header( g, u ) ) + vGroups[g].uSize;
-            }
+                llOff += EventStream::VarSize( Header( g, u, g ? Track( g - 1 ) : 0 ) ) + (uint32_t)vGroups[g];
         }
         es.llRawBytes = llOff;
         std::unique_ptr< uint8_t[] > pRaw( new ( std::nothrow ) uint8_t[llOff + 16] );
         if ( !pRaw ) { sError = L"Out of memory for the event stream."; return nullptr; }
         Parallel::For( iThreads, iRanges, [&]( size_t r, int ) {
             uint64_t u0 = U * r / iRanges, u1 = U * ( r + 1 ) / iRanges;
+            uint64_t llAt = vRangeOff[r];
+            uint32_t uPrevTrack = 0;
             for ( uint64_t u = u0; u < u1; u++ )
                 for ( uint64_t g = vTickGroupStart[u]; g < vTickGroupStart[u + 1]; g++ )
-                    EventStream::WriteVar( pRaw.get() + vOffset[g], Header( g, u ) );
+                {
+                    uint32_t uTrack = Track( g ), uSize = (uint32_t)vGroups[g];
+                    uint8_t *p = EventStream::WriteVar( pRaw.get() + llAt, Header( g, u, uPrevTrack ) );
+                    vGroups[g] = (uint64_t)( p - pRaw.get() );
+                    llAt = vGroups[g] + uSize;
+                    uPrevTrack = uTrack;
+                }
         } );
         Parallel::For( iThreads, vScans.size(), [&]( size_t t, int ) {
-            for ( GroupRec &g : vScans[t]->vGroups )
-            {
-                uint64_t slot = g.uSize | ( (uint64_t)g.uEvents << 32 );
-                uint64_t u = (uint64_t)( std::upper_bound( vTickGroupStart.begin(), vTickGroupStart.end(), slot ) - vTickGroupStart.begin() ) - 1;
-                g.llTick = (int64_t)( vOffset[slot] + EventStream::VarSize( Header( slot, u ) ) );
-            }
+            for ( GroupRec &g : vScans[t]->vGroups ) g.llTick = (int64_t)vGroups[g.uSize | ( (uint64_t)g.uEvents << 32 )];
         } );
-        vOffset.clear(); vOffset.shrink_to_fit();
         vGroups.clear(); vGroups.shrink_to_fit();
         vTickGroupStart.clear(); vTickGroupStart.shrink_to_fit();
         Step( L"offsets and headers" );

@@ -29,6 +29,8 @@ public:
     }
     // First index with value >= v (n if none)
     size_t LowerBound( uint64_t v ) const;
+    // The same, searching outwards from iHint (cheap when the answer is near it: a few steps)
+    size_t LowerBoundFrom( uint64_t v, size_t iHint ) const;
     // First index with value > v (n if none)
     size_t UpperBound( uint64_t v ) const;
     size_t MemoryBytes() const;

@@ -241,6 +241,9 @@ void ControlsSettings::Save( IniFile &ini ) const
 const wchar_t *const ExportSettings::Presets[] = { L"ultrafast", L"superfast", L"veryfast", L"faster", L"fast",
                                                    L"medium", L"slow", L"slower", L"veryslow" };
 const int ExportSettings::PresetCount = sizeof( Presets ) / sizeof( Presets[0] );
+const wchar_t *const ExportSettings::Encoders[] = { L"x264 (CPU)", L"NVIDIA NVENC H.264", L"NVIDIA NVENC HEVC", L"AMD AMF H.264",
+                                                    L"AMD AMF HEVC", L"Intel QSV H.264", L"Intel QSV HEVC" };
+const int ExportSettings::EncoderCount = sizeof( Encoders ) / sizeof( Encoders[0] );
 
 void ExportSettings::LoadDefaultValues()
 {
@@ -251,6 +254,7 @@ void ExportSettings::LoadDefaultValues()
     iFPS = 60;
     iCRF = 20;
     iPreset = 2;    // veryfast
+    iEncoder = X264;
     bShowStats = true;
 }
 
@@ -263,6 +267,7 @@ void ExportSettings::Load( const IniFile &ini )
     iFPS = std::clamp( ini.GetInt( "Export", "FPS", iFPS ), 1, 240 );
     iCRF = std::clamp( ini.GetInt( "Export", "CRF", iCRF ), 0, 51 );
     iPreset = std::clamp( ini.GetInt( "Export", "Preset", iPreset ), 0, PresetCount - 1 );
+    iEncoder = std::clamp( ini.GetInt( "Export", "Encoder", iEncoder ), 0, EncoderCount - 1 );
     bShowStats = ini.GetBool( "Export", "ShowStats", bShowStats );
 }
 
@@ -275,6 +280,7 @@ void ExportSettings::Save( IniFile &ini ) const
     ini.SetInt( "Export", "FPS", iFPS );
     ini.SetInt( "Export", "CRF", iCRF );
     ini.SetInt( "Export", "Preset", iPreset );
+    ini.SetInt( "Export", "Encoder", iEncoder );
     ini.SetInt( "Export", "ShowStats", bShowStats );
 }
 

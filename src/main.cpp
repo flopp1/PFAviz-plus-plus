@@ -161,13 +161,10 @@ int WINAPI wWinMain( HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow )
     SetFocus( g_hWndGfx );
     cPlayback.SetPaused( false, false );
 
-    // A file passed on the command line (or by a file association) is opened right away;
-    // "--custom file" opens it like Practice Using Custom Settings...
+    // A file passed on the command line (or by a file association) is opened right away
     int iArgs = 0;
     LPWSTR *pArgs = CommandLineToArgvW( GetCommandLineW(), &iArgs );
-    if ( pArgs && iArgs >= 3 && wcscmp( pArgs[1], L"--custom" ) == 0 )
-        PlayFile( pArgs[2], true );
-    else if ( pArgs && iArgs >= 2 )
+    if ( pArgs && iArgs >= 2 )
         PlayFile( pArgs[1] );
     LocalFree( pArgs );
 

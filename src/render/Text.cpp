@@ -5,6 +5,7 @@
 #include <list>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 const TextRenderer::FontDesc TextRenderer::Fonts[5] =
 {
@@ -74,7 +75,9 @@ namespace
 
     //-------------------------------------------------------------------------
     // GDI fallback: text is laid out and rasterised by GDI DrawText into a DIB,
-    // converted to an alpha texture and drawn as a quad. Strings are cached.
+    // converted to an alpha texture and drawn as a quad. Strings are cached, and the textures of
+    // strings that leave the cache are reused (the stats lines change every frame: creating a
+    // texture for each would cost a driver allocation per line per frame).
     //-------------------------------------------------------------------------
 
     class GdiText : public TextRenderer
@@ -125,8 +128,9 @@ namespace
             struct V { float x, y, z, h; D3DCOLOR c; float u, v; };
             float x = (float)( rcPos->left + pEntry->iOffX ) - 0.5f, y = (float)( rcPos->top + pEntry->iOffY ) - 0.5f;
             float w = (float)pEntry->iW, h = (float)pEntry->iH;
-            V v[4] = { { x, y, 0.5f, 1.0f, dwColor, 0, 0 }, { x + w, y, 0.5f, 1.0f, dwColor, 1, 0 },
-                       { x, y + h, 0.5f, 1.0f, dwColor, 0, 1 }, { x + w, y + h, 0.5f, 1.0f, dwColor, 1, 1 } };
+            float u1 = w / pEntry->iTexW, v1 = h / pEntry->iTexH;   // the string is the texture's top-left part
+            V v[4] = { { x, y, 0.5f, 1.0f, dwColor, 0, 0 }, { x + w, y, 0.5f, 1.0f, dwColor, u1, 0 },
+                       { x, y + h, 0.5f, 1.0f, dwColor, 0, v1 }, { x + w, y + h, 0.5f, 1.0f, dwColor, u1, v1 } };
 
             m_pDevice->SetFVF( D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1 );
             m_pDevice->SetTexture( 0, pEntry->pTex );
@@ -147,9 +151,37 @@ namespace
         struct Entry
         {
             IDirect3DTexture9 *pTex = nullptr;
+            int iTexW = 0, iTexH = 0;       // the texture's size (iW x iH rounded up to TexStep)
             int iOffX = 0, iOffY = 0, iW = 0, iH = 0;
             std::list< std::wstring >::iterator itLru;
         };
+        struct FreeTex { IDirect3DTexture9 *pTex; int iW, iH; };
+        static const int TexStep = 32;
+        static const size_t MaxFree = 64;
+
+        // A texture of at least iW x iH: a free one of that size class, or a new one
+        IDirect3DTexture9 *TakeTexture( int iW, int iH, int &iTexW, int &iTexH )
+        {
+            iTexW = ( iW + TexStep - 1 ) / TexStep * TexStep;
+            iTexH = ( iH + TexStep - 1 ) / TexStep * TexStep;
+            for ( size_t i = 0; i < m_vFree.size(); i++ )
+                if ( m_vFree[i].iW == iTexW && m_vFree[i].iH == iTexH )
+                {
+                    IDirect3DTexture9 *p = m_vFree[i].pTex;
+                    m_vFree[i] = m_vFree.back();
+                    m_vFree.pop_back();
+                    return p;
+                }
+            IDirect3DTexture9 *p = nullptr;
+            if ( FAILED( m_pDevice->CreateTexture( iTexW, iTexH, 1, D3DUSAGE_DYNAMIC, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &p, nullptr ) ) ) return nullptr;
+            return p;
+        }
+        void GiveTexture( IDirect3DTexture9 *p, int iW, int iH )
+        {
+            if ( !p ) return;
+            if ( m_vFree.size() >= MaxFree ) { m_vFree.front().pTex->Release(); m_vFree.erase( m_vFree.begin() ); }
+            m_vFree.push_back( { p, iW, iH } );
+        }
 
         Entry *Lookup( const std::wstring &sKey )
         {
@@ -186,7 +218,7 @@ namespace
             if ( m_mCache.size() >= 256 )
             {
                 auto it = m_mCache.find( m_lLru.back() );
-                if ( it->second.pTex ) it->second.pTex->Release();
+                GiveTexture( it->second.pTex, it->second.iTexW, it->second.iTexH );
                 m_mCache.erase( it );
                 m_lLru.pop_back();
             }
@@ -197,8 +229,7 @@ namespace
 
             e.iOffX = x0 - iMargin; e.iOffY = y0 - iMargin;
             e.iW = x1 - x0 + 1; e.iH = y1 - y0 + 1;
-            if ( FAILED( m_pDevice->CreateTexture( e.iW, e.iH, 1, D3DUSAGE_DYNAMIC, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &e.pTex, nullptr ) ) )
-                return &e;
+            if ( !( e.pTex = TakeTexture( e.iW, e.iH, e.iTexW, e.iTexH ) ) ) return &e;
             D3DLOCKED_RECT lr;
             if ( SUCCEEDED( e.pTex->LockRect( 0, &lr, nullptr, D3DLOCK_DISCARD ) ) )
             {
@@ -240,6 +271,8 @@ namespace
             for ( auto &kv : m_mCache ) if ( kv.second.pTex ) kv.second.pTex->Release();
             m_mCache.clear();
             m_lLru.clear();
+            for ( FreeTex &f : m_vFree ) f.pTex->Release();
+            m_vFree.clear();
         }
 
         IDirect3DDevice9 *m_pDevice = nullptr;
@@ -250,14 +283,19 @@ namespace
         HFONT m_hFonts[5] = {};
         std::unordered_map< std::wstring, Entry > m_mCache;
         std::list< std::wstring > m_lLru;
+        std::vector< FreeTex > m_vFree;     // textures of strings that left the cache
     };
 }
 
 TextRenderer *TextRenderer::Create( IDirect3DDevice9 *pDevice )
 {
-    D3DXText *pD3DX = new D3DXText();
-    if ( pD3DX->Init( pDevice ) ) return pD3DX;
-    delete pD3DX;
+    // PFAVIZ_GDITEXT=1 (developer switch): the GDI fallback even where D3DX is installed
+    if ( !getenv( "PFAVIZ_GDITEXT" ) )
+    {
+        D3DXText *pD3DX = new D3DXText();
+        if ( pD3DX->Init( pDevice ) ) return pD3DX;
+        delete pD3DX;
+    }
     GdiText *pGdi = new GdiText();
     pGdi->Init( pDevice );
     return pGdi;

@@ -116,26 +116,8 @@ KeyStore::LzNote KeyStore::LzGet( size_t i ) const
             e = 0;
             for ( size_t k = 1; k < c.v.size(); k++ ) if ( c.v[k].llUse < c.v[e].llUse ) e = k;
             LzCache::Entry &en = c.v[e];
-            const LzGroup &lg = m_vLzGroups[g];
-            if ( c.vRaw.size() < lg.uRaw + Lz4::Slack ) c.vRaw.resize( lg.uRaw + Lz4::Slack );
-            if ( lg.uSize == lg.uRaw ) memcpy( c.vRaw.data(), m_vLzData.data() + lg.llOffset, lg.uRaw );
-            else Lz4::Decompress( m_vLzData.data() + lg.llOffset, lg.uSize, c.vRaw.data(), lg.uRaw );
             if ( !en.p ) en.p.reset( new LzNote[size_t( 1 ) << GroupShift] );
-            size_t n = std::min< size_t >( size_t( 1 ) << GroupShift, m_n - ( g << GroupShift ) );
-            const uint8_t *q = c.vRaw.data();
-            uint64_t llStart = lg.llStartBase;
-            int64_t llSlot = 0;
-            for ( size_t j = 0; j < n; j++ )
-            {
-                LzNote &v = en.p[j];
-                llStart += ReadVarint( q );
-                uint64_t z = ReadVarint( q );
-                llSlot += (int64_t)( z >> 1 ) ^ -(int64_t)( z & 1 );
-                v.llStartU = llStart;
-                v.uSlot = (uint32_t)llSlot;
-                v.uRank = (uint32_t)ReadVarint( q );
-                v.llEndU = llStart + ReadVarint( q );
-            }
+            LzDecode( g, en.p.get(), c.vRaw );
             en.llGroup = g;
         }
         c.iLast = e;
@@ -144,6 +126,63 @@ KeyStore::LzNote KeyStore::LzGet( size_t i ) const
     LzNote v = c.v[e].p[i & ( ( size_t( 1 ) << GroupShift ) - 1 )];
     c.lock.clear( std::memory_order_release );
     return v;
+}
+
+void KeyStore::LzDecode( uint64_t g, LzNote *pOut, std::vector< uint8_t > &vRaw ) const
+{
+    const LzGroup &lg = m_vLzGroups[g];
+    if ( vRaw.size() < lg.uRaw + Lz4::Slack ) vRaw.resize( lg.uRaw + Lz4::Slack );
+    if ( lg.uSize == lg.uRaw ) memcpy( vRaw.data(), m_vLzData.data() + lg.llOffset, lg.uRaw );
+    else Lz4::Decompress( m_vLzData.data() + lg.llOffset, lg.uSize, vRaw.data(), lg.uRaw );
+    size_t n = std::min< size_t >( size_t( 1 ) << GroupShift, m_n - ( g << GroupShift ) );
+    const uint8_t *q = vRaw.data();
+    uint64_t llStart = lg.llStartBase;
+    int64_t llSlot = 0;
+    for ( size_t j = 0; j < n; j++ )
+    {
+        LzNote &v = pOut[j];
+        llStart += ReadVarint( q );
+        uint64_t z = ReadVarint( q );
+        llSlot += (int64_t)( z >> 1 ) ^ -(int64_t)( z & 1 );
+        v.llStartU = llStart;
+        v.uSlot = (uint32_t)llSlot;
+        v.uRank = (uint32_t)ReadVarint( q );
+        v.llEndU = llStart + ReadVarint( q );
+    }
+}
+
+void KeyStore::GetRange( size_t i, size_t n, NoteView *pOut ) const
+{
+    if ( !m_bLz )
+    {
+        for ( size_t j = 0; j < n; j++ ) Get( i + j, pOut[j] );
+        return;
+    }
+    // A group decoded per thread, apart from the key's cache
+    thread_local std::unique_ptr< LzNote[] > tGroup;
+    thread_local std::vector< uint8_t > tRaw;
+    thread_local uint64_t tStoreId = 0, tGroupIdx = UINT64_MAX;
+    if ( !tGroup ) tGroup.reset( new LzNote[size_t( 1 ) << GroupShift] );
+    for ( size_t j = 0; j < n; j++ )
+    {
+        size_t p = i + j;
+        uint64_t g = p >> GroupShift;
+        if ( tStoreId != m_llLzId || tGroupIdx != g )
+        {
+            LzDecode( g, tGroup.get(), tRaw );
+            tStoreId = m_llLzId;
+            tGroupIdx = g;
+        }
+        const LzNote &v = tGroup[p & ( ( size_t( 1 ) << GroupShift ) - 1 )];
+        NoteView &o = pOut[j];
+        o.llStartU = v.llStartU;
+        o.llEndU = v.llEndU;
+        o.uSlot = v.uSlot;
+        o.uRank = v.uRank;
+        o.uEndRank = 0;
+        o.bUnpaired = false;
+        o.bWeird = !m_vWeird.empty() && IsWeird( p );
+    }
 }
 
 void KeyStore::ToLz()
@@ -1353,6 +1392,7 @@ namespace
         std::vector< Run > m_v;
     };
 }
+
 
 namespace
 {

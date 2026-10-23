@@ -2,6 +2,7 @@
 // plus the Performance tab. Stored as UTF-8 INI in %APPDATA%\PFAviz++\config.ini.
 #pragma once
 
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -14,7 +15,7 @@ class IniFile;
 #define MINWIDTH 640
 #define MINHEIGHT 469
 
-namespace PlayMode { enum State { Intro = 0, Splash = 1, Practice = 160 }; }
+namespace PlayMode { enum State { Intro = 0, Splash = 1, Play = 160 }; }
 
 struct VisualSettings
 {
@@ -78,11 +79,15 @@ struct ExportSettings
     bool bUseWindowSize;        // the graphics window's size instead of iWidth x iHeight
     int iWidth, iHeight;
     int iFPS;                   // 1-240
-    int iCRF;                   // x264 quality, 0-51
-    int iPreset;                // index into Presets
+    int iCRF;                   // quality, 0-51: x264's CRF, NVENC's CQ, AMF's QP, QSV's global quality
+    int iPreset;                // index into Presets (mapped onto the hardware encoders' own speed levels)
+    int iEncoder;               // index into Encoders
     bool bShowStats;            // the top-right stats area
     static const wchar_t *const Presets[];
     static const int PresetCount;
+    enum Encoder { X264, NvencH264, NvencHevc, AmfH264, AmfHevc, QsvH264, QsvHevc };
+    static const wchar_t *const Encoders[];
+    static const int EncoderCount;
 };
 
 struct PerformanceSettings
@@ -198,7 +203,10 @@ public:
     void LoadDefaultValues();
     void LoadConfigValues();
     bool SaveConfigValues();
-    void LoadMIDIDevices() { m_AudioSettings.LoadMIDIDevices(); }
+    void LoadMIDIDevices() { std::lock_guard< std::mutex > lock( m_mxAudio ); m_AudioSettings.LoadMIDIDevices(); }
+    // The audio settings change on the UI thread and are read by the game and playback threads
+    // (MidiOutputs): those readers hold this, and so do the two writers above and below
+    std::mutex &AudioMutex() { return m_mxAudio; }
 
     const VisualSettings &GetVisualSettings() const { return m_VisualSettings; }
     const AudioSettings &GetAudioSettings() const { return m_AudioSettings; }
@@ -210,7 +218,7 @@ public:
     ViewSettings &GetViewSettings() { return m_ViewSettings; }
 
     void SetVisualSettings( const VisualSettings &s ) { m_VisualSettings = s; }
-    void SetAudioSettings( const AudioSettings &s ) { m_AudioSettings = s; }
+    void SetAudioSettings( const AudioSettings &s ) { std::lock_guard< std::mutex > lock( m_mxAudio ); m_AudioSettings = s; }
     void SetVideoSettings( const VideoSettings &s ) { m_VideoSettings = s; }
     void SetControlsSettings( const ControlsSettings &s ) { m_ControlsSettings = s; }
     void SetPerformanceSettings( const PerformanceSettings &s ) { m_PerformanceSettings = s; }
@@ -222,6 +230,7 @@ private:
     Config &operator=( const Config & ) = delete;
 
     VisualSettings m_VisualSettings;
+    std::mutex m_mxAudio;
     AudioSettings m_AudioSettings;
     VideoSettings m_VideoSettings;
     ControlsSettings m_ControlsSettings;

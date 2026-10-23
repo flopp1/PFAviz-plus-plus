@@ -1,4 +1,4 @@
-// MainScreen: port of the original practice-mode screen. Notes and key lighting come from
+// MainScreen: port of the original practice-mode screen (now just playback). Notes and key lighting come from
 // FastEngine and Scene, which the test harness checks against the original's logic every frame.
 // Audio comes from PlaybackEngine on its own threads; this screen only drives the clock.
 #include "game/GameState.h"
@@ -143,24 +143,16 @@ ChannelSettings *MainScreen::GetChannelSettings( int iTrack, int *piTrack, int *
     return nullptr;
 }
 
-void MainScreen::SetChannelSettings( const std::vector< bool > &vMuted, const std::vector< bool > &vHidden, const std::vector< unsigned > &vColor )
+void MainScreen::SetChannelColors( const unsigned aColor[16] )
 {
     const std::vector< RefTrackInfo > &vTracks = m_pSong->vTracks;
-    bool bMuted = vMuted.size() > 0;
-    bool bHidden = vHidden.size() > 0;
-    bool bColor = vColor.size() > 0;
-
     size_t iPos = 0;
     for ( size_t i = 0; i < vTracks.size(); i++ )
         for ( int j = 0; j < 16; j++ )
             if ( vTracks[i].aNoteCount[j] > 0 )
             {
-                MuteChannel( (int)i, j, bMuted ? vMuted[min( iPos, vMuted.size() - 1 )] : false );
-                HideChannel( (int)i, j, bHidden ? vHidden[min( iPos, vHidden.size() - 1 )] : false );
-                if ( bColor && iPos < vColor.size() )
-                    ColorChannel( (int)i, j, vColor[iPos] );
-                else
-                    ColorChannel( (int)i, j, 0, true );
+                if ( iPos < 16 ) ColorChannel( (int)i, j, aColor[iPos] );
+                else ColorChannel( (int)i, j, 0, true );
                 iPos++;
             }
 }

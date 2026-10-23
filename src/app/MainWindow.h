@@ -36,5 +36,5 @@ VOID SetMetronome( INT iMetronome );
 VOID SetPlayable( BOOL bPlayable );
 VOID SetPlayMode( INT ePlayMode );
 VOID SetPlayPauseStop( BOOL bPlay, BOOL bPause, BOOL bStop );
-BOOL PlayFile( const std::wstring &sFile, bool bCustomSettings = false );
+BOOL PlayFile( const std::wstring &sFile );
 VOID CheckActivity( BOOL bIsActive, POINT *ptNew = nullptr, BOOL bToggleEnable = false );

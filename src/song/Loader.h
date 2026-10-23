@@ -33,8 +33,8 @@ struct LoadProgress
     bool bSkipPairing = false;          // tools only: stop after the event stream (no visual store)
     bool bFullVisual = false;           // tools only: keep the visual store in the Full layout
     bool bLzVisual = false;             // the Performance tab's "Compact visual store" (LZ groups)
-    bool bNoteStats = true;
-    bool bFirstPairingOnly = false;     // the Performance tab's "Ignore weird notes" (Song::bFirstPairingOnly)             // the Performance tab's "extra statistics" (Song::noteStats)
+    bool bNoteStats = true;             // the extra statistics (Song::noteStats)
+    bool bFirstPairingOnly = false;     // the Performance tab's "Ignore weird notes" (Song::bFirstPairingOnly)
     int iFusedRead = -1;                // tools only: 1 forces the fused single read (DESIGN.md 4.2a), 0 the two-pass read
 };
 

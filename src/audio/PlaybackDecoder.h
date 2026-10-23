@@ -115,7 +115,7 @@ private:
     int m_iLastMetronomeNote = 76;
     int m_iMetronome = MetOff;
 
-    // Velocity skipping: per channel and key, the note-offs still to drop for skipped note-ons
+    // Per channel and key, the note-offs still to drop for note-ons not sent (skipped or muted)
     uint32_t m_aPendingSkip[2048] = {};
     int m_iSkipVelocity = 0;
 

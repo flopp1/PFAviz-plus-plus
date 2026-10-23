@@ -78,6 +78,8 @@ private:
     // A note that owns at least one pixel row, with what drawing it needs. Its rects are drawn only
     // over rows [iRowA, iRowB), the span of the rows it owns (iRowA == INT_MIN: drawn whole)
     struct Owner { uint64_t llPos; long long llStart, llEnd; uint32_t uSlot; int iRowA, iRowB; };
+    struct KeyCols { int iKey; int iLo, iHi; bool bDegenerate; };          // a key's pixel columns this frame
+    struct MergeItem { uint64_t llU, llOrder; int iKey; uint64_t llIdx; };   // an owner of keys that may share a column
     struct Bounds
     {
         size_t iJ, iB, iE;              // first note at/after the jump; end of the sounding part; end of the upcoming part
@@ -147,6 +149,7 @@ private:
     std::unique_ptr< LodCache > m_pLod;
     bool m_bLod = false, m_bLodSync = false, m_bLodFrame = false;
     LodCache::View m_LodView;                       // this frame's ready segments
+    LodCache::Setting m_LodSetting;
     bool m_bSkipHidden = false;                     // this frame skips hidden notes (Full store, view pending)
 
     Frame m_F;
@@ -160,4 +163,13 @@ private:
     std::vector< uint32_t > m_aVertStart[128];              // first vertex of each owner (+ end)
     FrameStats m_Stats;
     bool m_bPixelStats = false;
+
+    // DrawNotes' working vectors, kept between frames so a frame allocates nothing
+    std::vector< KeyCols > m_aClass[2];
+    std::vector< int > m_vActive;
+    std::vector< size_t > m_vQueries;
+    std::vector< long long > m_vSweepUs, m_vVertUs;
+    std::vector< double > m_vPixels;
+    std::vector< std::vector< uint64_t > > m_vScratch;
+    std::vector< MergeItem > m_vMerge;
 };

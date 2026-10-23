@@ -141,7 +141,8 @@ public:
     void HideChannel( int iTrack, int iChannel, bool bHidden );
     void ColorChannel( int iTrack, int iChannel, unsigned int iColor, bool bRandom = false );
     ChannelSettings *GetChannelSettings( int iChannel, int *piTrack = nullptr, int *piChannel = nullptr );
-    void SetChannelSettings( const std::vector< bool > &vMuted, const std::vector< bool > &vHidden, const std::vector< unsigned > &vColor );
+    // The first 16 colour slots (track, channel with notes) take the configured colours, the rest random ones
+    void SetChannelColors( const unsigned aColor[16] );
 
 private:
     void InitState();

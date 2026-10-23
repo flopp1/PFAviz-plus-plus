@@ -151,6 +151,7 @@ std::wstring MidiOutputs::ConfiguredName()
 {
     Config &config = Config::GetConfig();
     if ( config.GetPerformanceSettings().bPreferKDMAPI && KdmapiAvailable() ) return KdmapiName();
+    std::lock_guard< std::mutex > lock( config.AudioMutex() );
     const AudioSettings &cAudio = config.GetAudioSettings();
     if ( cAudio.iOutDevice >= 0 && cAudio.iOutDevice < (int)cAudio.vMIDIOutDevices.size() ) return cAudio.vMIDIOutDevices[cAudio.iOutDevice];
     return std::wstring();
@@ -161,5 +162,10 @@ std::unique_ptr< MidiOutput > MidiOutputs::OpenConfigured()
     Config &config = Config::GetConfig();
     if ( config.GetPerformanceSettings().bPreferKDMAPI )
         if ( auto p = OpenKdmapi() ) return p;
-    return OpenWinMM( config.GetAudioSettings().iOutDevice );
+    int iDevice;
+    {
+        std::lock_guard< std::mutex > lock( config.AudioMutex() );
+        iDevice = config.GetAudioSettings().iOutDevice;
+    }
+    return OpenWinMM( iDevice );
 }

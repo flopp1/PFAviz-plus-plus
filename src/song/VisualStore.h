@@ -31,7 +31,8 @@
 //           of a Compact store in groups of 1024 as byte varints, LZ4-compressed. The per-block
 //           summaries and trees stay as they are; each key keeps the groups it decoded last in a
 //           small LRU of its own (SetLzCacheBytes), so the frame-to-frame working set stays decoded.
-//           A key is drawn by one thread at a time, so its cache's spinlock is never contended.
+//           A key is drawn by one thread at a time, and the LOD builder reads with GetRange, which
+//           decodes apart from the cache, so its spinlock is rarely contended.
 #pragma once
 
 #include <atomic>
@@ -68,6 +69,9 @@ public:
 
     size_t Size() const { return m_n; }
     void Get( size_t i, NoteView &n ) const;
+    // Notes [i, i + n) in one pass. A Compact + LZ store decodes their groups here, without its cache:
+    // for long sweeps (the LOD builder), which would otherwise push out the groups frames are using
+    void GetRange( size_t i, size_t n, NoteView *pOut ) const;
     // Every note of block b (64 except the last block); returns the count
     unsigned GetBlock( size_t b, NoteView *pOut ) const;
     size_t BlockCount() const { return Blocks(); }
@@ -153,6 +157,8 @@ private:
     static const unsigned GroupShift = 11;
     struct LzGroup { uint64_t llOffset; uint32_t uSize, uRaw; uint64_t llStartBase; };
     LzNote LzGet( size_t i ) const;
+    // Decodes group g into pOut (its notes, up to 1 << GroupShift), with vRaw as scratch
+    void LzDecode( uint64_t g, LzNote *pOut, std::vector< uint8_t > &vRaw ) const;
     size_t LzCacheBytes() const;                            // decoded groups held now
     size_t DupBytes() const;
     struct LzCache;
