@@ -37,6 +37,7 @@ public:
         double dSweepCpuMs = 0.0, dVertCpuMs = 0.0;  // CPU time summed over threads: finding owners, making their vertices
         double dLodBuildMs = 0.0;       // LOD segments built for this frame (synchronous mode), not in the times above
         double dPixels = 0.0;           // screen pixels the note rects cover (with overdraw)
+        size_t iRects = 0, iMerged = 0; // rects (instances) drawn; rects merged into the one before
     };
 
     explicit FastEngine( const Song &song, int iThreads = 0 );
@@ -59,6 +60,8 @@ public:
     void SetLod( bool bOn, bool bSync = false );
     // FrameStats::dPixels is computed only when asked for (it costs about a third of building the vertices)
     void SetPixelStats( bool bOn ) { m_bPixelStats = bOn; }
+    // Consecutive one-colour rects of a key that meet edge to edge are drawn as one (exact; on by default)
+    void SetMergeRows( bool bOn ) { m_bMergeRows = bOn; }
     size_t LodBytes() const { return m_pLod ? m_pLod->MemoryBytes() : 0; }
     bool LodOn() const { return m_bLod; }
     bool DrawsPreviousMask() const { return m_vDrawMask != m_vMask; }   // the last frame waited for the view
@@ -164,6 +167,7 @@ private:
     std::vector< uint32_t > m_aVertStart[128];              // first vertex (instance) of each owner (+ end)
     FrameStats m_Stats;
     bool m_bPixelStats = false;
+    bool m_bMergeRows = true;
 
     // DrawNotes' working vectors, kept between frames so a frame allocates nothing
     std::vector< KeyCols > m_aClass[2];
@@ -173,4 +177,5 @@ private:
     std::vector< double > m_vPixels;
     std::vector< std::vector< uint64_t > > m_vScratch;
     std::vector< MergeItem > m_vMerge;
+    std::vector< size_t > m_vMergedCount;
 };

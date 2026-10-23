@@ -28,7 +28,10 @@ void MainScreen::InitSong()
 {
     if ( !m_pSong ) return;
 
-    m_pEngine = new FastEngine( *m_pSong, Config::GetConfig().GetPerformanceSettings().iWorkerThreads );
+    // Developer switches: PFAVIZ_DRAWTHREADS=n draws with n threads, PFAVIZ_NOMERGE=1 turns off merging rects
+    int iDrawThreads = getenv( "PFAVIZ_DRAWTHREADS" ) ? atoi( getenv( "PFAVIZ_DRAWTHREADS" ) ) : Config::GetConfig().GetPerformanceSettings().iWorkerThreads;
+    m_pEngine = new FastEngine( *m_pSong, iDrawThreads );
+    m_pEngine->SetMergeRows( !getenv( "PFAVIZ_NOMERGE" ) );
     m_pEngine->SetLod( Config::GetConfig().GetPerformanceSettings().bLodCache );
     m_pMeter = new MeterTracker( m_pSong->vMeta, m_pSong->info );
     m_vTrackSettings.resize( m_pSong->info.iNumTracks );

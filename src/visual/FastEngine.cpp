@@ -571,6 +571,24 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
     std::vector< std::vector< uint64_t > > &vScratch = m_vScratch;
     if ( vScratch.size() < (size_t)m_iThreads + 1 ) vScratch.resize( m_iThreads + 1 );
     const bool bInst = pRenderer->InstancingOn();
+    // Keys that may share a pixel column with another are drawn interleaved with it, owner by owner
+    // (below), so only the others merge rects across owners
+    bool abMerge[128] = {};
+    for ( int c = 0; c < 2 && m_bMergeRows; c++ )
+    {
+        std::vector< KeyCols > &v = aClass[c];
+        std::sort( v.begin(), v.end(), []( const KeyCols &a, const KeyCols &b ) { return a.iLo < b.iLo; } );
+        for ( size_t i = 0; i < v.size(); )
+        {
+            size_t j = i + 1;
+            int iMaxHi = v[i].iHi;
+            while ( j < v.size() && v[j].iLo < iMaxHi ) { iMaxHi = std::max( iMaxHi, v[j].iHi ); j++; }
+            if ( j == i + 1 ) abMerge[v[i].iKey] = true;
+            i = j;
+        }
+    }
+    std::vector< size_t > &vMerged = m_vMergedCount;
+    vMerged.assign( vActive.size(), 0 );
     Parallel::For( m_iThreads, vActive.size(), [&]( size_t i, int t ) {
         int k = vActive[i];
         long long tK0 = Timer::NowMicroSecs();
@@ -591,6 +609,11 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
         size_t iOut = 0;
         Renderer::SCREEN_VERTEX aNote[12];
         const Scene::NoteKey nk = Scene::GetNoteKey( g, k );
+        // Merging: the last rect out is a one-colour outer rect with positive extents, which a next
+        // such rect of the same colour and columns, directly above or below it, can extend. They do
+        // not overlap and nothing is drawn between them, so the pixels are the same
+        bool bPrevFlat = false;
+        size_t iMerged = 0;
         for ( size_t o = 0; o < m_aOwners[k].size(); o++ )
         {
             vStart[o] = (uint32_t)iOut;
@@ -626,6 +649,17 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
                         if ( x1 > x0 && y1 > y0 ) vPixels[i] += (double)( x1 - x0 ) * ( y1 - y0 );
                     }
                     if ( bInst ) { abDraw[r / 6] = true; continue; }
+                    const bool bFlat = r == 0 && dx > 0.0f && dy > 0.0f && abMerge[k];
+                    if ( bFlat && bPrevFlat )
+                    {
+                        Renderer::SCREEN_VERTEX *q = &vVerts[iOut - 4];
+                        if ( q[0].color == aNote[0].color && q[0].x == aNote[0].x && q[1].x == aNote[1].x )
+                        {
+                            if ( q[0].y == aNote[2].y ) { q[0].y = q[1].y = aNote[0].y; iMerged++; continue; }
+                            if ( q[2].y == aNote[0].y ) { q[2].y = q[3].y = aNote[2].y; iMerged++; continue; }
+                        }
+                    }
+                    bPrevFlat = bFlat;
                     // As a quad: vertices 3 and 4 of the rect repeat 0 and 2 (Renderer::DrawQuads)
                     Renderer::SCREEN_VERTEX *p = &vVerts[iOut];
                     p[0] = aNote[r];
@@ -637,6 +671,18 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
             }
             if ( bInst && ( abDraw[0] || abDraw[1] ) )
             {
+                // An outer rect alone (the inner one empty) merges like a quad
+                const bool bFlat = abDraw[0] && !abDraw[1] && aNote[1].x > aNote[0].x && aNote[2].y > aNote[0].y && abMerge[k];
+                if ( bFlat && bPrevFlat )
+                {
+                    Renderer::NoteInstance &q = vInst[iOut - 1];
+                    if ( q.cOuter == aNote[0].color )
+                    {
+                        if ( q.y[0] == aNote[2].y ) { q.y[0] = aNote[0].y; iMerged++; continue; }
+                        if ( q.y[1] == aNote[0].y ) { q.y[1] = aNote[2].y; iMerged++; continue; }
+                    }
+                }
+                bPrevFlat = bFlat;
                 Renderer::NoteInstance &in = vInst[iOut++];
                 in.y[0] = aNote[0].y;
                 in.y[1] = abDraw[0] ? aNote[2].y : aNote[0].y;
@@ -650,10 +696,16 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
         }
         vStart[m_aOwners[k].size()] = (uint32_t)iOut;
         m_aVertCount[k] = iOut;
+        vMerged[i] = iMerged;
         vSweepUs[i] = tK1 - tK0;
         vVertUs[i] = Timer::NowMicroSecs() - tK1;
     } );
-    for ( size_t i = 0; i < vActive.size(); i++ ) { m_Stats.dSweepCpuMs += vSweepUs[i] / 1000.0; m_Stats.dVertCpuMs += vVertUs[i] / 1000.0; m_Stats.dPixels += vPixels[i]; }
+    for ( size_t i = 0; i < vActive.size(); i++ )
+    {
+        m_Stats.dSweepCpuMs += vSweepUs[i] / 1000.0; m_Stats.dVertCpuMs += vVertUs[i] / 1000.0; m_Stats.dPixels += vPixels[i];
+        m_Stats.iRects += bInst ? m_aVertCount[vActive[i]] : m_aVertCount[vActive[i]] / 4;
+        m_Stats.iMerged += vMerged[i];
+    }
     for ( size_t q : vQueries ) { m_Stats.iQueries += q & ( ( size_t( 1 ) << 40 ) - 1 ); m_Stats.iLodBuckets += q >> 40; }
     m_Stats.dQueryMs = ( Timer::NowMicroSecs() - llStart ) / 1000.0;
     m_Stats.iKeys = vActive.size();

@@ -15,6 +15,7 @@ A performance rewrite of [Piano From Above](https://github.com/brian-pantano/Pia
 
 **Drawing**
 - Each frame finds, per key, only the notes that own a pixel row, so drawing cost depends on the window size, not the note count. There is no note limit.
+- Consecutive one-colour rects of a key that meet edge to edge are drawn as one, with the same pixels. In dense passages, where every pixel row has its own note, this removes almost all of them (the end of *rftmis*: 69,400 rects per frame → 373, frame time 1.55 → 0.87 ms).
 - An optional **LOD cache** (on by default) keeps, for the current window size and note speed, only the notes that can show, built in the background around the playhead. Dense songs draw several times faster with the same pixels.
 - Optional **GPU instancing for notes** (Performance tab, off by default): each note goes to the GPU as one 32-byte instance instead of two quads (160 bytes), and a vertex shader builds its rects. It is not pixel-exact: over the test harness's 90,000 frames, 171 differ from the original, each by one colour level (out of 255) along one or two pixel columns of a note's gradient; note edges are never off. With a long note span it saves about a quarter of the frame time (rftmis at 3 s: 0.49 → 0.36 ms median); at short spans it is about even.
 - **Hidden channels** get their own drawing data, built in the background ("Applying hidden channels..." until ready), so hiding most of a black MIDI's tracks makes it faster.
