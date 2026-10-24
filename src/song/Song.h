@@ -202,12 +202,28 @@ bool EventStream::Walk( size_t u0, size_t u1, FE &&onEvent, FG &&onGroupEnd ) co
     return true;
 }
 
-// A controller or program change, for the seek chase (DESIGN.md 7.7), in global order
+// A controller or program change, pitch bend or channel pressure, for the seek chase (DESIGN.md 7.7),
+// in global order
 struct ChaseEvent
 {
     int64_t llTime;
     uint32_t uMsg;
 };
+
+// What the chase keeps one value of per channel: controllers 0-119, then the program, the bend and the
+// pressure (-1: a channel mode message, CC 120-127, which is not chased)
+static const int ChaseItems = 123;
+inline int ChaseItem( uint32_t uMsg )
+{
+    switch ( uMsg & 0xF0 )
+    {
+        case 0xB0: { unsigned cc = ( uMsg >> 8 ) & 0x7F; return cc < 120 ? (int)cc : -1; }
+        case 0xC0: return 120;
+        case 0xE0: return 121;
+        case 0xD0: return 122;
+    }
+    return -1;
+}
 
 // Notes passed, NPS and polyphony over song time (DESIGN.md 5.6), counted as fMCG counts them, per
 // bin of llBinUs of song time (1 ms; wider for songs over about 70 minutes, at most MaxBins bins):
@@ -281,7 +297,9 @@ struct Song
     // track's end. Freed after it.
     std::vector< uint64_t > vKnownId, vKnownEnd;
     EventStream stream;
-    std::vector< ChaseEvent > vChase;       // every CC and program change (BuildSendCounts)
+    std::vector< ChaseEvent > vChase;       // every CC, program change, pitch bend and channel pressure (BuildSendCounts)
+    uint8_t aChaseUsed[16][ChaseItems] = {};    // the items vChase sets, per channel
+    uint32_t uChaseItems = 0;               // how many
     VisualStore visual;                     // notes per key, paired (built by BuildVisualStore)
     NoteStats noteStats;                    // for the overlay's extra statistics (built with visual, when asked for)
     VelocityBins aSendOns[2];               // [0] every note-on, [1] as collapsed (BuildSendCounts)

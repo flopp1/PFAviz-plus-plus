@@ -39,7 +39,7 @@ void PlaybackDecoder::Reset( long long llStartTime )
     m_iSkipVelocity = 0;
 }
 
-void PlaybackDecoder::Seek( long long llTarget, long long llPrevTime, std::vector< uint32_t > &vOut )
+void PlaybackDecoder::Seek( long long llTarget, long long, std::vector< uint32_t > &vOut )
 {
     // JumpTo starts with AllNotesOff
     for ( uint32_t ch = 0; ch < 16; ch++ ) vOut.push_back( 0xB0 | ch | ( 0x7B << 8 ) );
@@ -49,42 +49,54 @@ void PlaybackDecoder::Seek( long long llTarget, long long llPrevTime, std::vecto
     m_Cursor.Seek( llTarget <= 0 ? 0 : m_Stream.times.LowerBound( (uint64_t)llTarget ) );
     m_uCachedTick = SIZE_MAX;
 
-    // PlaySkippedEvents
-    const std::vector< ChaseEvent > &vChase = m_Song.vChase;
-    auto UpperBound = [&]( long long llTime ) {
-        return (size_t)( std::upper_bound( vChase.begin(), vChase.end(), llTime,
-                                           []( long long t, const ChaseEvent &e ) { return t < e.llTime; } ) - vChase.begin() );
-    };
-    size_t iNew = UpperBound( llTarget ), iOld = UpperBound( llPrevTime );
-    if ( iOld != iNew )
-    {
-        bool aControl[16][128], aProgram[16];
-        memset( aControl, 0, sizeof( aControl ) );
-        memset( aProgram, 0, sizeof( aProgram ) );
-        std::vector< uint32_t > vControl;
-        size_t iEnd = iOld < iNew ? iOld : 0;
-        for ( size_t i = iNew; i-- > iEnd; )
-        {
-            uint32_t uMsg = vChase[i].uMsg, ch = uMsg & 0x0F;
-            if ( ( uMsg & 0xF0 ) == 0xB0 )
-            {
-                uint32_t cc = ( uMsg >> 8 ) & 0x7F;
-                if ( !aControl[ch][cc] ) { aControl[ch][cc] = true; vControl.push_back( uMsg ); }
-            }
-            else if ( !aProgram[ch] )
-            {
-                aProgram[ch] = true;
-                vOut.push_back( uMsg );
-            }
-        }
-        for ( auto it = vControl.rbegin(); it != vControl.rend(); ++it ) vOut.push_back( *it );
-    }
+    Chase( llTarget, vOut );
 
     // AdvanceIterators( llStartTime, true ): the next beat at or after the current tick
     SetBeat( GetBeatTick( CurrentTick( llTarget ) ) );
 
     // Everything sounding was stopped, so the skip balance starts over
     ResetSendState();
+}
+
+// The chase (DESIGN.md 7.7): Reset All Controllers on every channel, then the last value before the
+// target of every item the song sets, in the order those were set (so a bank select stays before its
+// program change), then GM defaults for what has none: volume and pan on every channel, and bank,
+// program, reverb and chorus where the song sets them only later. Found by scanning back from the
+// target until every item the song sets is found, so a seek usually reads a few seconds of the list.
+void PlaybackDecoder::Chase( long long llTarget, std::vector< uint32_t > &vOut )
+{
+    // What CC 121 resets: modulation, expression, the four pedals, the (N)RPN numbers, bend and pressure
+    static const int aReset[] = { 1, 11, 64, 65, 66, 67, 98, 99, 100, 101, 121, 122 };
+    struct Default { int iItem, iValue; bool bAlways; };
+    static const Default aDefault[] = { { 7, 100, true }, { 10, 64, true }, { 0, 0, false }, { 32, 0, false },
+                                        { 120, 0, false }, { 91, 40, false }, { 93, 0, false } };
+    for ( uint32_t ch = 0; ch < 16; ch++ ) vOut.push_back( 0xB0 | ch | ( 121 << 8 ) );
+
+    const std::vector< ChaseEvent > &vChase = m_Song.vChase;
+    size_t iNew = (size_t)( std::upper_bound( vChase.begin(), vChase.end(), llTarget,
+                                              []( long long t, const ChaseEvent &e ) { return t < e.llTime; } ) - vChase.begin() );
+    // Back from the target: an item's first event is its value; a CC 121 settles the items it resets
+    // that have none after it (at their reset values, sent above)
+    uint8_t aFound[16][ChaseItems] = {};
+    std::vector< size_t > vPick;
+    uint32_t uLeft = m_Song.uChaseItems;
+    for ( size_t i = iNew; i-- > 0 && uLeft; )
+    {
+        uint32_t uMsg = vChase[i].uMsg, ch = uMsg & 0x0F;
+        int it = ChaseItem( uMsg );
+        if ( it >= 0 )
+        {
+            if ( !aFound[ch][it] ) { aFound[ch][it] = 1; uLeft--; vPick.push_back( i ); }
+        }
+        else if ( ( uMsg & 0xFFF0 ) == ( 0xB0 | ( 121 << 8 ) ) )
+            for ( int r : aReset )
+                if ( !aFound[ch][r] ) { aFound[ch][r] = 1; uLeft -= m_Song.aChaseUsed[ch][r]; }
+    }
+    for ( auto it = vPick.rbegin(); it != vPick.rend(); ++it ) vOut.push_back( vChase[*it].uMsg );
+    for ( uint32_t ch = 0; ch < 16; ch++ )
+        for ( const Default &d : aDefault )
+            if ( !aFound[ch][d.iItem] && ( d.bAlways || m_Song.aChaseUsed[ch][d.iItem] ) )
+                vOut.push_back( d.iItem == 120 ? 0xC0 | ch | ( d.iValue << 8 ) : 0xB0 | ch | ( d.iItem << 8 ) | ( d.iValue << 16 ) );
 }
 
 //-----------------------------------------------------------------------------

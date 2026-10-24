@@ -32,7 +32,11 @@ A performance rewrite of [Piano From Above](https://github.com/brian-pantano/Pia
   - **Limit sending to N messages/s**: looks 50 ms ahead and skips the quietest note-ons first so the rest fit; within the last velocity it thins evenly, so songs with one velocity still play partly. Note-ons stay within N/2 per second; total messages average N but can briefly reach about 1.5 N as earlier notes end.
 - When one thread cannot decode a dense passage in time, decoding spreads over more threads, up to the Performance tab's thread setting (a change applies at once), and back to one when the passage ends. The visuals stay exact; audio may differ slightly from one thread's: with collapsing on, a tick split between threads can sound a key once per thread, and the send budget is shared between them. Night of Nights' busiest second (224 M events) decodes in 0.18 s on 16 threads with collapsing, the budget and the velocity floor on, against 0.96 s on one.
 - **Start songs paused after loading** (Controls tab, off by default).
-- Mute, volume, pause, stop, seeking (with controller and program chase) and the metronome behave as in the original (clicks inside a parallel stretch are left out).
+- Mute, volume, pause, stop, seeking and the metronome behave as in the original (clicks inside a parallel stretch are left out).
+- Seeking restores the song's state at the new position, wherever you came from:
+  - It resets all controllers, then sends each channel's last value before that point of every controller, program, pitch bend and channel pressure, in the order the song set them, so bank selects still come before their program changes.
+  - Volume and pan go back to the GM defaults (100 and 64) on channels with no value yet. So do bank, program, reverb and chorus on channels that only set them later in the song.
+  - It looks back only until every value it needs is found, which usually takes microseconds.
 
 **Statistics**
 - Each line of the stats box is chosen in Visual > **Statistics...**; with every line off the box is not drawn. The lines:

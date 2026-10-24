@@ -62,6 +62,8 @@ void Song::BuildSendCounts( int iThreads )
     const EventStream &es = stream;
     for ( VelocityBins &vb : aSendOns ) { vb.vOffset.clear(); vb.vData.clear(); }
     vChase.clear();
+    memset( aChaseUsed, 0, sizeof( aChaseUsed ) );
+    uChaseItems = 0;
     size_t U = es.UniqueTicks(), S = es.vSeek.size();
     if ( !U || !S ) return;
     const long long B = VelocityBins::BinUs;
@@ -122,10 +124,11 @@ void Song::BuildSendCounts( int iThreads )
                 unsigned op = h >> 5;
                 if ( op > 2 )
                 {
-                    if ( ( op == 4 || op == 5 ) && bCount )
+                    if ( op >= 4 && bCount )
                     {
-                        uint32_t uMsg = ( op == 4 ? 0xB0u : 0xC0u ) | ( h & 0x0F ) | ( (uint32_t)r.p[0] << 8 );
-                        if ( op == 4 ) uMsg |= (uint32_t)r.p[1] << 16;
+                        // Controller, program, channel pressure, pitch bend: 0xB0, 0xC0, 0xD0, 0xE0
+                        uint32_t uMsg = ( 0x70u + ( op << 4 ) ) | ( h & 0x0F ) | ( (uint32_t)r.p[0] << 8 );
+                        if ( aDataBytes[op] == 2 ) uMsg |= (uint32_t)r.p[1] << 16;
                         part.vChase.push_back( { llTime, uMsg } );
                     }
                     r.p += aDataBytes[op];
@@ -177,6 +180,12 @@ void Song::BuildSendCounts( int iThreads )
     for ( auto &part : vParts ) iChase += part.vChase.size();
     vChase.reserve( iChase );
     for ( auto &part : vParts ) { vChase.insert( vChase.end(), part.vChase.begin(), part.vChase.end() ); std::vector< ChaseEvent >().swap( part.vChase ); }
+    for ( const ChaseEvent &e : vChase )
+    {
+        int i = ChaseItem( e.uMsg );
+        uint8_t &b = aChaseUsed[e.uMsg & 0x0F][i < 0 ? 0 : i];
+        if ( i >= 0 && !b ) { b = 1; uChaseItems++; }
+    }
     for ( int c = 0; c < 2; c++ )
     {
         VelocityBins &vb = aSendOns[c];

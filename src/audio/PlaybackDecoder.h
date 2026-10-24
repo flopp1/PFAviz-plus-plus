@@ -60,8 +60,8 @@ public:
     // MainScreen::InitState: the cursor goes to the first event, nothing is chased
     void Reset( long long llStartTime );
     // MainScreen::JumpTo: the cursor goes to the first event with time >= llTarget. Appends
-    // AllNotesOff and the chased controllers and programs (PlaySkippedEvents) to vOut.
-    // llPrevTime is the playback time before the jump (the old position of the chase iterator).
+    // AllNotesOff and the chase (Chase) to vOut. llPrevTime is the playback time before the jump
+    // (unused: the chase does not depend on where playback was).
     void Seek( long long llTarget, long long llPrevTime, std::vector< uint32_t > &vOut );
 
     // Time of the next message (event, or metronome click when it is on), LLONG_MAX at the end
@@ -121,6 +121,7 @@ private:
 
     long long EventTime();
     void ResetSendState();
+    void Chase( long long llTarget, std::vector< uint32_t > &vOut );
     void BudgetTick( long long tE, const Params &p );
     bool BudgetKeep( uint32_t uVel );
     const Signature &SignatureAt( long long llTick ) const;
