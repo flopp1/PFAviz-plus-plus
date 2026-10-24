@@ -7,6 +7,7 @@
 #include <cassert>
 #include <climits>
 #include <condition_variable>
+#include <deque>
 #include <cstring>
 #include <memory>
 #include <mutex>
@@ -614,38 +615,27 @@ size_t VisualStore::MemoryBytes() const
 // Building: one KeyBuilder per key, owned by one thread
 //-----------------------------------------------------------------------------
 
-class StreamCompactor;
-
 class KeyBuilder
 {
 public:
     // iExpected: the key's NoteOns (from the count pass), so every table is sized once.
     // bEndRanks: keep the ordinals of the offs (only the Full layout of songs with weird notes needs them)
-    // pStream: compact while pairing (DESIGN.md 5.5): each block goes to the compactor as soon as it
-    // and every block before it are complete, and its Full data is freed. Only for passes that can
-    // have no weird note (see PairAll).
     // bKeepRanks: remember each pairing off's ordinal until its block is packed. Needed for the end
     // ordinals and for the offs of a note paired again; a pass that has no weird notes, or that
     // throws itself away on the first, and does not keep end ordinals, does without.
-    KeyBuilder( KeyStore &out, const PackedMonotone &times, uint64_t iExpected, bool bEndRanks, StreamCompactor *pStream = nullptr,
-                bool bKeepRanks = true )
-        : m_Out( out ), m_Times( times ), m_bEndRanks( bEndRanks ), m_bKeepRanks( bEndRanks || bKeepRanks ), m_pStream( pStream )
+    KeyBuilder( KeyStore &out, const PackedMonotone &times, uint64_t iExpected, bool bEndRanks, bool bKeepRanks = true )
+        : m_Out( out ), m_Times( times ), m_bEndRanks( bEndRanks ), m_bKeepRanks( bEndRanks || bKeepRanks )
     {
         size_t nb = (size_t)( iExpected / KeyStore::BlockSize + 1 );
-        if ( !pStream )
-        {
-            // Reserved vectors are committed memory: a streaming builder only holds a window
-            m_Out.m_vBlocks.reserve( nb );
-            m_vResolvedCount.reserve( nb );
-            m_vEnd.reserve( nb );
-            if ( m_bKeepRanks ) m_vRank.reserve( nb );
-            m_vPaired.reserve( nb );
-            m_vEarly.reserve( nb );
-            m_vLive.reserve( nb );
-            m_vResolved.reserve( nb );
-        }
+        m_Out.m_vBlocks.reserve( nb );
+        m_vResolvedCount.reserve( nb );
+        m_vEnd.reserve( nb );
+        if ( m_bKeepRanks ) m_vRank.reserve( nb );
+        m_vPaired.reserve( nb );
+        m_vEarly.reserve( nb );
+        m_vLive.reserve( nb );
+        m_vResolved.reserve( nb );
         m_Out.m_vBits.Reserve( (size_t)iExpected * 4 + 1024 );   // at most about 230 bits per note (address space only)
-        if ( pStream ) m_pRing.reset( new StartRec[RingBlocks * KeyStore::BlockSize] );
     }
 
     // A NoteOn: its start fields are final at once and packed as soon as its block is full, so a
@@ -672,16 +662,10 @@ public:
         return pos;
     }
 
-    // Blocks before m_bBase were compacted and freed: every note there is final, and the pairing pass
-    // only still asks whether one is paired (a tombstone in a track's stack), which it is
     // A note paired early (PrePair) is not paired here until its off comes
-    bool IsPaired( uint64_t pos ) const
-    {
-        if ( ( pos >> 6 ) < m_bBase ) return m_setEarly.empty() || !m_setEarly.count( pos );
-        return ( ( ( m_vPaired[( pos >> 6 ) - m_bBase] & ~m_vEarly[( pos >> 6 ) - m_bBase] ) >> ( pos & 63 ) ) & 1 );
-    }
+    bool IsPaired( uint64_t pos ) const { return ( ( m_vPaired[pos >> 6] & ~m_vEarly[pos >> 6] ) >> ( pos & 63 ) ) & 1; }
     // Paired, or paired early: what the block's records say
-    bool PairedBit( uint64_t pos ) const { return ( m_vPaired[( pos >> 6 ) - m_bBase] >> ( pos & 63 ) ) & 1; }
+    bool PairedBit( uint64_t pos ) const { return ( m_vPaired[pos >> 6] >> ( pos & 63 ) ) & 1; }
 
     // Whether PrePair can be used: not when the offs' ordinals are kept, as the off is not known yet
     bool CanPrePair() const { return !m_bKeepRanks; }
@@ -696,16 +680,15 @@ public:
         EndPending &e = End( b );
         e.aPairs[j] = 1;
         e.SetEndU( j, llEndU );
-        m_vPaired[b - m_bBase] |= uint64_t( 1 ) << j;
-        m_vEarly[b - m_bBase] |= uint64_t( 1 ) << j;
+        m_vPaired[b] |= uint64_t( 1 ) << j;
+        m_vEarly[b] |= uint64_t( 1 ) << j;
         Resolve( pos );
     }
-    bool IsLive( uint64_t pos ) const { return ( pos >> 6 ) >= m_bBase && ( ( m_vLive[( pos >> 6 ) - m_bBase] >> ( pos & 63 ) ) & 1 ); }
-    bool IsResolved( uint64_t pos ) const { return ( pos >> 6 ) < m_bBase || ( ( m_vResolved[( pos >> 6 ) - m_bBase] >> ( pos & 63 ) ) & 1 ); }
+    bool IsLive( uint64_t pos ) const { return ( m_vLive[pos >> 6] >> ( pos & 63 ) ) & 1; }
+    bool IsResolved( uint64_t pos ) const { return ( m_vResolved[pos >> 6] >> ( pos & 63 ) ) & 1; }
     void SetLive( uint64_t pos, bool bLive )
     {
-        if ( ( pos >> 6 ) < m_bBase ) return;
-        uint64_t &w = m_vLive[( pos >> 6 ) - m_bBase];
+        uint64_t &w = m_vLive[pos >> 6];
         if ( bLive ) w |= uint64_t( 1 ) << ( pos & 63 );
         else w &= ~( uint64_t( 1 ) << ( pos & 63 ) );
     }
@@ -715,10 +698,10 @@ public:
 
     void Pair( uint64_t pos, uint64_t llU, uint32_t uOrd, bool bFromSlot )
     {
-        // The off of a note paired early: it is paired now (its block may be compacted and dropped)
-        if ( ( pos >> 6 ) < m_bBase ? !m_setEarly.empty() && m_setEarly.erase( pos ) : ( m_vEarly[( pos >> 6 ) - m_bBase] >> ( pos & 63 ) ) & 1 )
+        // The off of a note paired early: it is paired now
+        if ( ( m_vEarly[pos >> 6] >> ( pos & 63 ) ) & 1 )
         {
-            if ( ( pos >> 6 ) >= m_bBase ) m_vEarly[( pos >> 6 ) - m_bBase] &= ~( uint64_t( 1 ) << ( pos & 63 ) );
+            m_vEarly[pos >> 6] &= ~( uint64_t( 1 ) << ( pos & 63 ) );
             if ( bFromSlot ) SetLive( pos, false );
             return;
         }
@@ -738,7 +721,7 @@ public:
         if ( e.aPairs[j] < 255 ) e.aPairs[j]++;
         e.SetEndU( j, llU );
         SetRank( pos, uOrd );
-        m_vPaired[( pos >> 6 ) - m_bBase] |= uint64_t( 1 ) << j;
+        m_vPaired[pos >> 6] |= uint64_t( 1 ) << j;
         if ( bFromSlot ) SetLive( pos, false );
         if ( !IsLive( pos ) ) Resolve( pos );
     }
@@ -748,8 +731,8 @@ public:
     {
         if ( IsResolved( pos ) ) return;
         size_t b = pos >> 6;
-        m_vResolved[b - m_bBase] |= uint64_t( 1 ) << ( pos & 63 );
-        if ( ++m_vResolvedCount[b - m_bBase] == KeyStore::BlockSize && Blk( b ).bStartPacked ) PackEnd( b );
+        m_vResolved[b] |= uint64_t( 1 ) << ( pos & 63 );
+        if ( ++m_vResolvedCount[b] == KeyStore::BlockSize && Blk( b ).bStartPacked ) PackEnd( b );
     }
 
     // A note that is already final (copied from another store)
@@ -761,7 +744,7 @@ public:
         e.SetEndU( j, n.llEndU );
         SetRank( pos, n.uEndRank );
         e.aPairs[j] = pOffs && uOffs > 1 ? 2 : 1;
-        m_vPaired[( pos >> 6 ) - m_bBase] |= uint64_t( 1 ) << j;
+        m_vPaired[pos >> 6] |= uint64_t( 1 ) << j;
         if ( pOffs && uOffs > 1 )
         {
             for ( uint32_t i = 0; i < uOffs; i++ ) m_vWeirdTmp.push_back( { pos, pOffs[i] } );
@@ -773,21 +756,17 @@ public:
     void Finish()
     {
         size_t nb = m_nBlocks;
-        // (a streaming builder may have fed and dropped every block: a full last block is complete)
-        if ( nb > m_bBase && !Blk( nb - 1 ).bStartPacked ) PackStart( nb - 1, (uint32_t)( m_n - ( ( nb - 1 ) << 6 ) ) );
+        if ( nb && !Blk( nb - 1 ).bStartPacked ) PackStart( nb - 1, (uint32_t)( m_n - ( ( nb - 1 ) << 6 ) ) );
         // Everything is resolved when every track has ended; anything left is final as it is
-        // (a streaming PackEnd can feed and drop the blocks after b too)
-        for ( size_t b = m_bBase; b < nb; b = std::max( b + 1, m_bBase ) )
+        for ( size_t b = 0; b < nb; b++ )
             if ( !Blk( b ).bEndPacked ) PackEnd( b );
         m_vEnd.clear();
         m_vRank.clear(); m_vRank.shrink_to_fit();
         m_vPaired.clear(); m_vPaired.shrink_to_fit();
         m_vEarly.clear(); m_vEarly.shrink_to_fit();
-        std::unordered_set< uint64_t >().swap( m_setEarly );
         m_vLive.clear(); m_vLive.shrink_to_fit();
         m_vResolved.clear(); m_vResolved.shrink_to_fit();
         m_vResolvedCount.clear(); m_vResolvedCount.shrink_to_fit();
-        if ( m_pStream ) { FinishStream(); return; }
         m_Out.m_n = m_n;
         m_Out.m_vBits.Resize( ( m_llBits + 63 ) / 64 + 1 );
         m_Out.m_vBlocks.shrink_to_fit();
@@ -807,18 +786,12 @@ public:
     }
 
     bool Weird() const { return m_bWeird; }
-    void SetWeirdFlag( std::atomic< bool > *p ) { m_pWeirdSeen = p; }   // raised on the first re-pairing
-
-    // What PairAll reads from the Full layout, kept by a streaming builder (its key ends up Compact)
-    uint64_t FullSize() const { return m_n; }
-    uint64_t UnpairedCount() const { return m_llUnpaired; }
-    uint64_t FirstPairedStartU() const { return m_llFirstPairedU; }    // UINT64_MAX: none
 
 private:
     struct StartRec { uint64_t llStartU; uint32_t uSlot, uRank; };
     // End fields of a block, kept only while it has paired notes and is not complete yet: the end
-    // tick in 40 bits (unique tick indices), the pairing count; 384 bytes (a crash keeps hundreds of
-    // thousands of blocks waiting). The offs' ordinals are apart, only when kept (m_vRank).
+    // tick in 40 bits (unique tick indices), the pairing count; 384 bytes. The offs' ordinals are
+    // apart, only when kept (m_vRank).
     struct EndPending
     {
         uint32_t aEndLo[64];
@@ -830,27 +803,23 @@ private:
     uint32_t RankOf( uint64_t pos ) const
     {
         if ( !m_bKeepRanks ) return 0;
-        const std::unique_ptr< uint32_t[] > &p = m_vRank[( pos >> 6 ) - m_bBase];
+        const std::unique_ptr< uint32_t[] > &p = m_vRank[pos >> 6];
         return p ? p[pos & 63] : 0;
     }
     void SetRank( uint64_t pos, uint32_t uOrd )
     {
         if ( !m_bKeepRanks ) return;
-        std::unique_ptr< uint32_t[] > &p = m_vRank[( pos >> 6 ) - m_bBase];
+        std::unique_ptr< uint32_t[] > &p = m_vRank[pos >> 6];
         if ( !p ) p.reset( new uint32_t[64]() );
         p[pos & 63] = uOrd;
     }
     struct WeirdTmp { uint64_t llPos; OffRef off; };
 
-    KeyStore::Block &Blk( size_t b )
-    {
-        assert( b >= m_bBase && b - m_bBase < m_Out.m_vBlocks.size() );    // blocks before m_bBase were dropped
-        return m_Out.m_vBlocks[b - m_bBase];
-    }
+    KeyStore::Block &Blk( size_t b ) { return m_Out.m_vBlocks[b]; }
 
     EndPending &End( size_t b )
     {
-        std::unique_ptr< EndPending > &p = m_vEnd[b - m_bBase];
+        std::unique_ptr< EndPending > &p = m_vEnd[b];
         if ( !p ) p.reset( new EndPending() );
         return *p;
     }
@@ -873,37 +842,11 @@ private:
         if ( s + w > 64 ) p[1] |= v >> ( 64 - s );
     }
 
-    // A full block's starts (n < 64: the last block). A streaming builder keeps them as they are in
-    // its ring while the block is among the newest RingBlocks: a block that completes there is fed
-    // to the compactor from them (Advance), never packed and decoded. A block that leaves the ring
-    // unfed is packed then.
+    // A full block's starts (n < 64: the last block)
     void PackStart( size_t b, uint32_t n )
     {
-        if ( m_pRing )
-        {
-            while ( b - m_bRawFrom >= RingBlocks )
-            {
-                size_t e = m_bRawFrom++;
-                if ( e < m_bFed ) continue;
-                PackStartBits( e, &m_pRing[( e % RingBlocks ) * KeyStore::BlockSize], Blk( e ).uCount );
-                if ( Blk( e ).bEndPacked ) PackEndBits( e );
-            }
-            memcpy( &m_pRing[( b % RingBlocks ) * KeyStore::BlockSize], m_aOpen, n * sizeof( StartRec ) );
-            KeyStore::Block &blk = Blk( b );
-            blk.uCount = (uint8_t)n;
-            blk.bStartPacked = 1;
-            if ( m_vResolvedCount[b - m_bBase] == KeyStore::BlockSize ) PackEnd( b );
-            return;
-        }
-        PackStartBits( b, m_aOpen, n );
-        if ( m_vResolvedCount[b - m_bBase] == KeyStore::BlockSize ) PackEnd( b );
-    }
-
-    bool Raw( size_t b ) const { return m_pRing && b >= m_bRawFrom; }
-
-    void PackStartBits( size_t b, const StartRec *pOpen, uint32_t n )
-    {
         KeyStore::Block &blk = Blk( b );
+        const StartRec *pOpen = m_aOpen;
         uint64_t llBase = pOpen[0].llStartU, llMaxDS = 0;
         uint32_t uSlotMin = UINT32_MAX, uSlotMax = 0, aRank[64];
         for ( uint32_t j = 0; j < n; j++ )
@@ -928,22 +871,15 @@ private:
             Write( llBit, blk.wRank, (uint64_t)( (int64_t)pOpen[j].uRank - blk.llRankBase - (int64_t)j * blk.iRankStride ) ); llBit += blk.wRank;
         }
         blk.bStartPacked = 1;
+        if ( m_vResolvedCount[b] == KeyStore::BlockSize ) PackEnd( b );
     }
 
-    // Every note of block b is final. A block in the ring is only marked so (its end fields stay
-    // pending until it is fed)
+    // Every note of block b is final
     void PackEnd( size_t b )
-    {
-        if ( Raw( b ) ) Blk( b ).bEndPacked = 1;
-        else PackEndBits( b );
-        if ( m_pStream ) Advance();
-    }
-
-    void PackEndBits( size_t b )
     {
         KeyStore::Block &blk = Blk( b );
         uint32_t n = blk.uCount;
-        EndPending *pE = m_vEnd[b - m_bBase].get();
+        EndPending *pE = m_vEnd[b].get();
         uint64_t aEnd[64];
         uint32_t aEndRank[64] = {};
         uint8_t aFlags[64];
@@ -957,7 +893,7 @@ private:
             aEnd[j] = bPaired ? pE->EndU( j ) : llStart;
             aEndRank[j] = bPaired ? RankOf( pos ) : 0;
             aFlags[j] = ( bPaired ? 0 : 1 ) | ( bPaired && pE->aPairs[j] > 1 ? 2 : 0 );
-            if ( !bPaired && !m_pStream ) m_Out.m_vUnpaired.push_back( pos );
+            if ( !bPaired ) m_Out.m_vUnpaired.push_back( pos );
             bUnpaired |= !bPaired;
             bWeird |= ( aFlags[j] & 2 ) != 0;
             llMaxDur = std::max( llMaxDur, aEnd[j] - llStart );
@@ -976,87 +912,25 @@ private:
             Write( llBit, blk.wFlags, aFlags[j] ); llBit += blk.wFlags;
         }
         blk.bEndPacked = 1;
-        m_vEnd[b - m_bBase].reset();
-        if ( m_bKeepRanks ) m_vRank[b - m_bBase].reset();
+        m_vEnd[b].reset();
+        if ( m_bKeepRanks ) m_vRank[b].reset();
     }
-
-    // A ring block's notes, as DecodeBlock would give them had it been packed
-    unsigned RawBlock( size_t b, NoteView *pOut )
-    {
-        const StartRec *pS = &m_pRing[( b % RingBlocks ) * KeyStore::BlockSize];
-        const EndPending *pE = m_vEnd[b - m_bBase].get();
-        unsigned n = Blk( b ).uCount;
-        for ( unsigned j = 0; j < n; j++ )
-        {
-            uint64_t pos = ( (uint64_t)b << 6 ) + j;
-            bool bPaired = PairedBit( pos ) && pE;
-            NoteView &v = pOut[j];
-            v.llStartU = pS[j].llStartU;
-            v.llEndU = bPaired ? pE->EndU( j ) : v.llStartU;
-            v.uSlot = pS[j].uSlot;
-            v.uRank = pS[j].uRank;
-            v.uEndRank = bPaired && m_bEndRanks ? RankOf( pos ) : 0;
-            v.bUnpaired = !bPaired;
-            v.bWeird = bPaired && pE->aPairs[j] > 1;
-        }
-        m_vEnd[b - m_bBase].reset();
-        if ( m_bKeepRanks ) m_vRank[b - m_bBase].reset();
-        return n;
-    }
-
-    // Decodes Full block b, as KeyStore::GetBlock does
-    unsigned DecodeBlock( size_t b, NoteView *pOut )
-    {
-        const KeyStore::Block &k = Blk( b );
-        unsigned n = k.uCount;
-        uint64_t llS = k.llBitStart, llE = k.llBitEnd;
-        for ( unsigned j = 0; j < n; j++ )
-        {
-            NoteView &v = pOut[j];
-            uint64_t dS = m_Out.Read( llS, k.wStart ); llS += k.wStart;
-            uint64_t uSlot = m_Out.Read( llS, k.wSlot ); llS += k.wSlot;
-            uint64_t uRank = m_Out.Read( llS, k.wRank ); llS += k.wRank;
-            uint64_t dD = m_Out.Read( llE, k.wDur ); llE += k.wDur;
-            uint64_t uEndRank = m_Out.Read( llE, k.wEndRank ); llE += k.wEndRank;
-            uint64_t uFlags = m_Out.Read( llE, k.wFlags ); llE += k.wFlags;
-            v.llStartU = k.llStartBase + dS;
-            v.llEndU = v.llStartU + dD;
-            v.uSlot = k.uSlotBase + (uint32_t)uSlot;
-            v.uRank = (uint32_t)( k.llRankBase + (int64_t)j * k.iRankStride + (int64_t)uRank );
-            v.uEndRank = (uint32_t)( k.llEndRankBase + (int64_t)j * k.iEndRankStride + (int64_t)uEndRank );
-            v.bUnpaired = uFlags & 1;
-            v.bWeird = ( uFlags >> 1 ) & 1;
-        }
-        return n;
-    }
-
-    void Advance();         // feeds the complete blocks at the frontier to the compactor, frees them
-    void FinishStream();    // the compactor's output becomes the key
 
     KeyStore &m_Out;
     const PackedMonotone &m_Times;
     uint64_t m_n = 0, m_llBits = 0;
     StartRec m_aOpen[64];
-    static const size_t RingBlocks = 256;
-    std::unique_ptr< StartRec[] > m_pRing;      // streaming: the starts of blocks m_bRawFrom on, by b % RingBlocks
-    size_t m_bRawFrom = 0;
-    // Per block from m_bBase on (a streaming builder drops the blocks it has compacted)
-    size_t m_nBlocks = 0, m_bBase = 0, m_bFed = 0;
+    size_t m_nBlocks = 0;
+    // Per block
     std::vector< uint8_t > m_vResolvedCount;
     std::vector< std::unique_ptr< EndPending > > m_vEnd;    // while needed
     std::vector< std::unique_ptr< uint32_t[] > > m_vRank;   // with m_bKeepRanks, while needed
     std::vector< uint64_t > m_vPaired, m_vLive, m_vResolved; // one word per block
     std::vector< uint64_t > m_vEarly;                       // per block: paired early, its off still to come
-    std::unordered_set< uint64_t > m_setEarly;              // the same before m_bBase
     std::vector< WeirdTmp > m_vWeirdTmp;
     bool m_bWeird = false;
     bool m_bFirstPairingOnly = false;
     bool m_bEndRanks = true, m_bKeepRanks = true;
-    std::atomic< bool > *m_pWeirdSeen = nullptr;
-    StreamCompactor *m_pStream = nullptr;
-    uint64_t m_llUnpaired = 0, m_llFirstPairedU = UINT64_MAX;
-
-    friend class VisualStoreBuilder;
 };
 
 //-----------------------------------------------------------------------------
@@ -1164,14 +1038,15 @@ private:
                 llMaxDurUs = std::max( llMaxDurUs, llEndUs - llStartUs );
             }
         }
-        // The palette: the block's distinct slots, sorted (notes come in runs of one slot: a slot is
-        // looked up once per run)
+        // The palette: the block's distinct slots, sorted (notes come in runs of one slot, and the runs
+        // of a tick in track order: a slot is looked up once per run, and mostly goes at the end)
         unsigned iPal = 0;
         for ( unsigned j = 0, uLast = UINT32_MAX; j < m_k; j++ )
         {
             uint32_t uSlot = m_a[j].uSlot;
             if ( uSlot == uLast ) continue;
             uLast = uSlot;
+            if ( !iPal || uSlot > aSlots[iPal - 1] ) { aSlots[iPal++] = uSlot; continue; }
             uint32_t *pAt = std::lower_bound( aSlots, aSlots + iPal, uSlot );
             if ( pAt < aSlots + iPal && *pAt == uSlot ) continue;
             memmove( pAt + 1, pAt, ( aSlots + iPal - pAt ) * sizeof( uint32_t ) );
@@ -1194,7 +1069,12 @@ private:
         for ( unsigned j = 0; j < m_k; j++ )
         {
             const Rec &r = m_a[j];
-            if ( r.uSlot != uPalSlot ) { uPalSlot = r.uSlot; uPal = (uint32_t)( std::lower_bound( aSlots, aSlots + iPal, r.uSlot ) - aSlots ); }
+            if ( r.uSlot != uPalSlot )
+            {
+                uPalSlot = r.uSlot;
+                if ( uPal + 1 < iPal && aSlots[uPal + 1] == uPalSlot ) uPal++;    // (the next run's slot, usually)
+                else uPal = (uint32_t)( std::lower_bound( aSlots, aSlots + iPal, uPalSlot ) - aSlots );
+            }
             Write( llBit, c.wStart, r.llStartU - c.llStartBase ); llBit += c.wStart;
             Write( llBit, c.wPal, uPal ); llBit += c.wPal;
             Write( llBit, c.wRank, r.uRank ); llBit += c.wRank;
@@ -1252,19 +1132,19 @@ public:
     StreamCompactor( KeyStore &out, const PackedMonotone &times, size_t iMaxNotes, const std::vector< uint8_t > *pHidden )
         : m_cb( out, times, iMaxNotes, false ), m_pHidden( pHidden ) {}
 
-    void Feed( const NoteView &v, uint64_t pos )
+    // A paired note (unpaired ones are not fed)
+    void Feed( uint64_t llStartU, uint64_t llEndU, uint32_t uSlot, uint32_t uRank, uint64_t pos )
     {
-        if ( v.llStartU != m_llGroupStart )
+        if ( llStartU != m_llGroupStart )
         {
             Flush();
-            m_llGroupStart = v.llStartU;
+            m_llGroupStart = llStartU;
         }
-        if ( m_pHidden && v.uSlot < m_pHidden->size() && ( *m_pHidden )[v.uSlot] ) return;
-        if ( v.bUnpaired ) return;
-        End &e = Find( v.llEndU );
+        if ( m_pHidden && uSlot < m_pHidden->size() && ( *m_pHidden )[uSlot] ) return;
+        End &e = Find( llEndU );
         e.llLast = pos;
-        e.uSlot = v.uSlot;
-        e.uRank = v.uRank;
+        e.uSlot = uSlot;
+        e.uRank = uRank;
     }
 
     void Finish() { Flush(); m_cb.Finish(); }
@@ -1297,7 +1177,7 @@ private:
 
     void Flush()
     {
-        std::sort( m_vEnds.begin(), m_vEnds.end(), []( const End &a, const End &b ) { return a.llLast < b.llLast; } );
+        if ( m_vEnds.size() > 1 ) std::sort( m_vEnds.begin(), m_vEnds.end(), []( const End &a, const End &b ) { return a.llLast < b.llLast; } );
         for ( const End &e : m_vEnds ) m_cb.Add( m_llGroupStart, e.llEnd, e.uSlot, e.uRank );
         m_vEnds.clear();
         if ( !m_mapEnds.empty() ) m_mapEnds.clear();    // (clear() zeroes every bucket, even of an empty map)
@@ -1312,64 +1192,284 @@ private:
     size_t m_iLast = 0;
 };
 
-void KeyBuilder::Advance()
+// The key builder of a pass that compacts while pairing (no weird notes, no end ordinals), for songs
+// whose unique ticks fit 32 bits. A note is a plain record until it is final, and each block of 64 goes
+// to the compactor as soon as it and every block before it are final. The newest blocks are records in
+// a ring, grown to at most RingCap blocks; a block that leaves the ring before it is fed has its start
+// fields packed and its ends kept apart (a note held a while can keep tens of millions of later notes
+// of its key waiting). The pairing rules' bookkeeping is KeyBuilder's, one record per block.
+class StreamKey
 {
-    NoteView a[KeyStore::BlockSize];
-    size_t bFed0 = m_bFed;
-    while ( m_bFed < m_nBlocks && Blk( m_bFed ).bEndPacked )
+public:
+    StreamKey( StreamCompactor &sc, uint64_t iExpected ) : m_Stream( sc )
     {
-        unsigned n = Raw( m_bFed ) ? RawBlock( m_bFed, a ) : DecodeBlock( m_bFed, a );
+        m_vBits.Reserve( (size_t)iExpected * 3 / 2 + 1024 );    // at most 96 bits per note (address space only)
+    }
+
+    bool CanPrePair() const { return true; }
+    void SetFirstPairingOnly( bool b ) { m_bFirstPairingOnly = b; }
+
+    uint64_t Append( uint64_t llU, uint32_t uSlot, uint32_t uRank )
+    {
+        uint64_t pos = m_n++;
+        if ( !( pos & 63 ) ) NewBlock();
+        m_pOpen[pos & 63] = { (uint32_t)llU, (uint32_t)llU, uSlot, uRank };
+        return pos;
+    }
+
+    // Blocks before m_bBase were fed and dropped: every note there is final, and paired unless it was
+    // paired early and its off is still to come
+    bool IsPaired( uint64_t pos ) const
+    {
+        size_t b = pos >> 6;
+        if ( b < m_bBase ) return m_setEarly.empty() || !m_setEarly.count( pos );
+        const Meta &m = m_vMeta[b - m_bBase];
+        return ( ( m.paired & ~m.early ) >> ( pos & 63 ) ) & 1;
+    }
+    void PrePair( uint64_t pos, uint64_t llEndU )
+    {
+        Meta &m = m_vMeta[( pos >> 6 ) - m_bBase];
+        SetEnd( pos, llEndU );
+        m.paired |= Bit( pos );
+        m.early |= Bit( pos );
+        Resolve( pos );
+    }
+    void SetLive( uint64_t pos, bool bLive )
+    {
+        size_t b = pos >> 6;
+        if ( b < m_bBase ) return;
+        uint64_t &w = m_vMeta[b - m_bBase].live;
+        w = bLive ? w | Bit( pos ) : w & ~Bit( pos );
+    }
+    // As KeyBuilder::Pair. A note before m_bBase is final, so out of every slot: only the off of a
+    // note paired early comes for it
+    void Pair( uint64_t pos, uint64_t llU, uint32_t, bool bFromSlot )
+    {
+        size_t b = pos >> 6;
+        if ( b < m_bBase ) { if ( !m_setEarly.empty() ) m_setEarly.erase( pos ); return; }
+        Meta &m = m_vMeta[b - m_bBase];
+        uint64_t bit = Bit( pos );
+        if ( bFromSlot ) m.live &= ~bit;
+        if ( m.early & bit ) { m.early &= ~bit; return; }
+        if ( !m_bFirstPairingOnly || !( m.paired & bit ) )
+        {
+            SetEnd( pos, llU );
+            m.paired |= bit;
+        }
+        if ( !( m.live & bit ) ) Resolve( pos );
+    }
+    void Resolve( uint64_t pos )
+    {
+        size_t b = pos >> 6;
+        if ( b < m_bBase ) return;
+        Meta &m = m_vMeta[b - m_bBase];
+        if ( m.resolved & Bit( pos ) ) return;
+        m.resolved |= Bit( pos );
+        if ( m.resolved == ~uint64_t( 0 ) && b == m_bFed ) Advance();
+    }
+
+    // Every track has ended: what is left is final as it is
+    void Finish()
+    {
+        for ( ; m_bFed < m_nBlocks; m_bFed++ ) FeedBlock( m_bFed, (unsigned)std::min< uint64_t >( 64, m_n - ( (uint64_t)m_bFed << 6 ) ) );
+        m_Stream.Finish();
+        std::vector< Meta >().swap( m_vMeta );
+        std::deque< Packed >().swap( m_dqPacked );
+        m_pRing.reset();
+        std::unordered_set< uint64_t >().swap( m_setEarly );
+        m_vBits = WordArena();
+    }
+
+    uint64_t FullSize() const { return m_n; }
+    uint64_t UnpairedCount() const { return m_llUnpaired; }
+    uint64_t FirstPairedStartU() const { return m_llFirstPairedU; }    // UINT64_MAX: none
+
+private:
+    struct Rec { uint32_t uStart, uEnd, uSlot, uRank; };      // the end is the start until paired
+    struct Meta { uint64_t paired, early, live, resolved; };  // per note of the block, as KeyBuilder's
+    // A block that left the ring unfed: starts, slots and ordinals packed from llBit (as KeyStore::Block);
+    // the ends in pEnd, or, when every note was final as it left (a block waiting behind the frontier
+    // usually is), as durations of wDur bits from llEndBit
+    struct Packed
+    {
+        uint64_t llBit = 0, llEndBit = 0;
+        uint32_t uStartBase = 0, uSlotBase = 0;
+        int64_t llRankBase = 0;
+        int32_t iRankStride = 0;
+        uint8_t wStart = 0, wSlot = 0, wRank = 0, wDur = 0;
+        std::unique_ptr< uint32_t[] > pEnd;
+    };
+    static const size_t RingCap = 256;
+    static uint64_t Bit( uint64_t pos ) { return uint64_t( 1 ) << ( pos & 63 ); }
+    Rec *Page( size_t b ) const { return &m_pRing[( b & ( m_iRing - 1 ) ) << 6]; }
+
+    void SetEnd( uint64_t pos, uint64_t llU )
+    {
+        size_t b = pos >> 6;
+        if ( b >= m_bRawFrom ) Page( b )[pos & 63].uEnd = (uint32_t)llU;
+        else m_dqPacked[b - m_bPackedFrom].pEnd[pos & 63] = (uint32_t)llU;
+    }
+
+    // The ring holds blocks m_bRawFrom on (none of them fed); the oldest packed block is m_bPackedFrom,
+    // and the packed ones are the blocks between it and m_bRawFrom
+    void NewBlock()
+    {
+        size_t b = m_nBlocks++;
+        m_vMeta.push_back( {} );
+        if ( b - m_bRawFrom >= m_iRing )
+        {
+            if ( m_iRing < RingCap ) GrowRing();
+            else Evict();
+        }
+        m_pOpen = Page( b );
+    }
+    void GrowRing()
+    {
+        size_t iRing = m_iRing ? m_iRing * 2 : 4;
+        std::unique_ptr< Rec[] > p( new Rec[iRing << 6] );
+        for ( size_t x = m_bRawFrom; x + 1 < m_nBlocks; x++ ) memcpy( &p[( x & ( iRing - 1 ) ) << 6], Page( x ), 64 * sizeof( Rec ) );
+        m_pRing = std::move( p );
+        m_iRing = iRing;
+    }
+    void Evict()
+    {
+        size_t b = m_bRawFrom++;
+        if ( m_dqPacked.empty() ) m_bPackedFrom = b;
+        m_dqPacked.emplace_back();
+        Packed &k = m_dqPacked.back();
+        const Rec *p = Page( b );
+        uint32_t uSlotMin = UINT32_MAX, uSlotMax = 0, aRank[64];
+        for ( unsigned j = 0; j < 64; j++ )
+        {
+            uSlotMin = std::min( uSlotMin, p[j].uSlot );
+            uSlotMax = std::max( uSlotMax, p[j].uSlot );
+            aRank[j] = p[j].uRank;
+        }
+        k.uStartBase = p[0].uStart;
+        k.uSlotBase = uSlotMin;
+        k.wStart = (uint8_t)Bits( p[63].uStart - p[0].uStart );     // (a key's starts only grow)
+        k.wSlot = (uint8_t)Bits( uSlotMax - uSlotMin );
+        k.wRank = (uint8_t)Progression( aRank, 64, k.llRankBase, k.iRankStride );
+        unsigned w = k.wStart + k.wSlot + k.wRank;
+        uint64_t llBit = k.llBit = Alloc( 64 * w );
+        for ( unsigned j = 0; j < 64; j++ )
+        {
+            Write( llBit, k.wStart, p[j].uStart - k.uStartBase ); llBit += k.wStart;
+            Write( llBit, k.wSlot, p[j].uSlot - uSlotMin ); llBit += k.wSlot;
+            Write( llBit, k.wRank, (uint64_t)( (int64_t)p[j].uRank - k.llRankBase - (int64_t)j * k.iRankStride ) ); llBit += k.wRank;
+        }
+        uint32_t aStart[64], aEnd[64];
+        for ( unsigned j = 0; j < 64; j++ ) { aStart[j] = p[j].uStart; aEnd[j] = p[j].uEnd; }
+        if ( m_vMeta[b - m_bBase].resolved == ~uint64_t( 0 ) ) PackEnds( k, aStart, aEnd );
+        else
+        {
+            k.pEnd.reset( new uint32_t[64] );
+            memcpy( k.pEnd.get(), aEnd, sizeof( aEnd ) );
+        }
+    }
+
+    uint64_t Alloc( uint64_t llBits )
+    {
+        uint64_t llAt = m_llBits;
+        m_llBits += llBits;
+        uint64_t llNeed = ( m_llBits + 63 ) / 64 + 1;
+        if ( m_vBits.size() < llNeed ) m_vBits.Resize( (size_t)llNeed, true );
+        return llAt;
+    }
+    void PackEnds( Packed &k, const uint32_t *pStart, const uint32_t *pEnd )
+    {
+        uint32_t uMaxDur = 0;
+        for ( unsigned j = 0; j < 64; j++ ) uMaxDur = std::max( uMaxDur, pEnd[j] - pStart[j] );
+        k.wDur = (uint8_t)Bits( uMaxDur );
+        uint64_t llBit = k.llEndBit = Alloc( 64 * k.wDur );
+        for ( unsigned j = 0; j < 64; j++, llBit += k.wDur ) Write( llBit, k.wDur, pEnd[j] - pStart[j] );
+    }
+
+    void Write( uint64_t llBit, unsigned w, uint64_t v )
+    {
+        if ( !w ) return;
+        uint64_t *p = &m_vBits[llBit >> 6];
+        unsigned s = llBit & 63;
+        p[0] |= v << s;
+        if ( s + w > 64 ) p[1] |= v >> ( 64 - s );
+    }
+    uint64_t Read( uint64_t llBit, unsigned w ) const
+    {
+        if ( !w ) return 0;
+        const uint64_t *p = &m_vBits[llBit >> 6];
+        unsigned s = llBit & 63;
+        uint64_t v = p[0] >> s;
+        if ( s + w > 64 ) v |= p[1] << ( 64 - s );
+        return w == 64 ? v : v & ( ( uint64_t( 1 ) << w ) - 1 );
+    }
+
+    void FeedBlock( size_t b, unsigned n )
+    {
+        uint64_t llPaired = m_vMeta[b - m_bBase].paired, pos = (uint64_t)b << 6;
+        if ( b >= m_bRawFrom )
+        {
+            const Rec *p = Page( b );
+            for ( unsigned j = 0; j < n; j++ )
+                if ( ( llPaired >> j ) & 1 ) Feed( p[j].uStart, p[j].uEnd, p[j].uSlot, p[j].uRank, pos + j );
+                else m_llUnpaired++;
+            return;
+        }
+        Packed &k = m_dqPacked.front();
+        uint64_t llBit = k.llBit, llEndBit = k.llEndBit;
         for ( unsigned j = 0; j < n; j++ )
         {
-            if ( a[j].bUnpaired ) m_llUnpaired++;
-            else if ( m_llFirstPairedU == UINT64_MAX ) m_llFirstPairedU = a[j].llStartU;
-            m_pStream->Feed( a[j], ( (uint64_t)m_bFed << KeyStore::BlockShift ) + j );
+            uint64_t llStart = k.uStartBase + Read( llBit, k.wStart ); llBit += k.wStart;
+            uint32_t uSlot = k.uSlotBase + (uint32_t)Read( llBit, k.wSlot ); llBit += k.wSlot;
+            uint32_t uRank = (uint32_t)( k.llRankBase + (int64_t)j * k.iRankStride + (int64_t)Read( llBit, k.wRank ) ); llBit += k.wRank;
+            uint64_t llEnd = k.pEnd ? k.pEnd[j] : llStart + Read( llEndBit, k.wDur );
+            llEndBit += k.wDur;
+            if ( ( llPaired >> j ) & 1 ) Feed( llStart, llEnd, uSlot, uRank, pos + j );
+            else m_llUnpaired++;
         }
-        m_bFed++;
+        m_dqPacked.pop_front();
+        m_bPackedFrom++;
     }
-    if ( m_bFed == bFed0 ) return;
-    // Every bit of the blocks from the frontier on lies at or after the frontier block's start
-    // records (start records are packed in block order, end records after their block's start)
-    // (ring blocks have no bits: from a ring block on, none is live)
-    uint64_t llLive = m_bFed < m_nBlocks && !Raw( m_bFed ) && Blk( m_bFed ).bStartPacked ? Blk( m_bFed ).llBitStart : m_llBits;
-    m_Out.m_vBits.DecommitBefore( (size_t)( llLive >> 6 ) );
-    // Drop the per-block entries before the frontier, when they are at least as many as the rest
-    size_t iDead = m_bFed - m_bBase, iLive = m_nBlocks - m_bFed;
-    if ( iDead >= 4096 && iDead >= iLive )
+    void Feed( uint64_t llStartU, uint64_t llEndU, uint32_t uSlot, uint32_t uRank, uint64_t pos )
     {
-        m_vResolvedCount.erase( m_vResolvedCount.begin(), m_vResolvedCount.begin() + iDead );
-        m_vEnd.erase( m_vEnd.begin(), m_vEnd.begin() + iDead );
-        if ( m_bKeepRanks ) m_vRank.erase( m_vRank.begin(), m_vRank.begin() + iDead );
-        for ( size_t i = 0; i < iDead; i++ )
-            for ( uint64_t w = m_vEarly[i]; w; w &= w - 1 ) m_setEarly.insert( ( ( m_bBase + i ) << 6 ) + __builtin_ctzll( w ) );
-        m_vEarly.erase( m_vEarly.begin(), m_vEarly.begin() + iDead );
-        m_vPaired.erase( m_vPaired.begin(), m_vPaired.begin() + iDead );
-        m_vLive.erase( m_vLive.begin(), m_vLive.begin() + iDead );
-        m_vResolved.erase( m_vResolved.begin(), m_vResolved.begin() + iDead );
-        m_Out.m_vBlocks.erase( m_Out.m_vBlocks.begin(), m_Out.m_vBlocks.begin() + iDead );
-        m_bBase = m_bFed;
-        // After a long wait (a held note) the vectors have grown to the queue; give that back
-        if ( m_Out.m_vBlocks.capacity() > 4 * m_Out.m_vBlocks.size() + 4096 )
+        if ( m_llFirstPairedU == UINT64_MAX ) m_llFirstPairedU = llStartU;
+        m_Stream.Feed( llStartU, llEndU, uSlot, uRank, pos );
+    }
+
+    // Feeds the final blocks at the frontier and drops them
+    void Advance()
+    {
+        size_t bFed0 = m_bFed;
+        while ( m_bFed < m_nBlocks && m_vMeta[m_bFed - m_bBase].resolved == ~uint64_t( 0 ) ) FeedBlock( m_bFed++, 64 );
+        if ( m_bFed == bFed0 ) return;
+        m_bRawFrom = std::max( m_bRawFrom, m_bFed );
+        // Blocks are packed in order: the bits from the oldest packed block's on are live
+        m_vBits.DecommitBefore( (size_t)( ( m_dqPacked.empty() ? m_llBits : m_dqPacked.front().llBit ) >> 6 ) );
+        // Drop the records before the frontier, when they are at least as many as the rest
+        size_t iDead = m_bFed - m_bBase, iLive = m_nBlocks - m_bFed;
+        if ( iDead >= 4096 && iDead >= iLive )
         {
-            m_vResolvedCount.shrink_to_fit();
-            m_vEnd.shrink_to_fit();
-            m_vRank.shrink_to_fit();
-            m_vEarly.shrink_to_fit();
-            m_vPaired.shrink_to_fit();
-            m_vLive.shrink_to_fit();
-            m_vResolved.shrink_to_fit();
-            m_Out.m_vBlocks.shrink_to_fit();
+            for ( size_t i = 0; i < iDead; i++ )
+                for ( uint64_t w = m_vMeta[i].early; w; w &= w - 1 ) m_setEarly.insert( ( ( m_bBase + i ) << 6 ) + __builtin_ctzll( w ) );
+            m_vMeta.erase( m_vMeta.begin(), m_vMeta.begin() + iDead );
+            m_bBase = m_bFed;
+            // After a long wait (a held note) the records have grown to the queue; give that back
+            if ( m_vMeta.capacity() > 4 * m_vMeta.size() + 4096 ) m_vMeta.shrink_to_fit();
         }
     }
-}
 
-void KeyBuilder::FinishStream()
-{
-    Advance();
-    m_pStream->Finish();
-    m_vWeirdTmp.clear();
-    m_vWeirdTmp.shrink_to_fit();
-}
+    StreamCompactor &m_Stream;
+    uint64_t m_n = 0, m_llBits = 0;
+    Rec *m_pOpen = nullptr;                 // the newest block's records
+    std::unique_ptr< Rec[] > m_pRing;       // blocks m_bRawFrom on, by b % m_iRing
+    size_t m_iRing = 0;
+    size_t m_nBlocks = 0, m_bBase = 0, m_bFed = 0, m_bRawFrom = 0, m_bPackedFrom = 0;
+    std::vector< Meta > m_vMeta;            // blocks m_bBase on
+    std::deque< Packed > m_dqPacked;        // blocks m_bPackedFrom to m_bRawFrom
+    WordArena m_vBits;
+    std::unordered_set< uint64_t > m_setEarly;  // paired early before m_bBase, the off still to come
+    bool m_bFirstPairingOnly = false;
+    uint64_t m_llUnpaired = 0, m_llFirstPairedU = UINT64_MAX;
+};
 
 namespace
 {
@@ -1873,17 +1973,18 @@ namespace
     };
 }
 
-class VisualStoreBuilder
+// KB: KeyBuilder (the Full layout) or StreamKey (compacting while pairing)
+template < class KB > class VisualStoreBuilder
 {
 public:
-    VisualStoreBuilder( const Song &song, std::vector< std::unique_ptr< KeyBuilder > > &vBuilders,
+    VisualStoreBuilder( const Song &song, std::vector< std::unique_ptr< KB > > &vBuilders,
                         const std::vector< std::pair< uint64_t, uint32_t > > &vTrackEnds, const std::vector< int > &vKeys )
         : m_Song( song ), m_vBuilders( vBuilders ), m_vTrackEnds( vTrackEnds ), m_vKeys( vKeys )
     {
         memset( m_aMine, -1, sizeof( m_aMine ) );
         for ( size_t i = 0; i < vKeys.size(); i++ ) m_aMine[vKeys[i]] = (int)i;
         m_iTracks = song.vTracks.size();
-        m_vStateIdx.assign( m_iTracks * vKeys.size(), 0 );
+        m_vLight.resize( m_iTracks * vKeys.size() );
     }
 
     // Worker w: MIDI::ConnectNotes for this thread's keys, from the lanes' records in stream order.
@@ -1922,9 +2023,24 @@ public:
     }
 
 private:
-    // A song can have a million (track, key) states at once, nearly all on one channel, and a NoteOn
-    // or NoteOff touches one at random among its thread's: one cache line, and the next for a state
-    // with a stack. The first channel used is here, the others in an extra record.
+    // A song can have a million (track, key) states at once, and a NoteOn or NoteOff touches one at
+    // random among its thread's. Nearly every state holds at most one note at a time, on one channel:
+    // that is a Light record of 16 bytes in a table by track and key, so an event touches one cache
+    // line (a track's chord mostly the same one). A state that comes to hold more, or uses a second
+    // channel, moves to a KeyState until its track ends.
+    struct Light
+    {
+        uint32_t uOns;          // NoteOns so far
+        uint32_t uSlot;         // the held note's position (cCount 1); with Heavy, its KeyState in m_vPool
+        uint32_t uKnownLo;      // its next note in Song::vKnownId, in 40 bits (NoKnown: none left)
+        uint8_t cKnownHi;
+        int8_t cCh;             // the channel of its first NoteOn (-1: none yet)
+        uint8_t cCount;         // NoteOns minus NoteOffs on cCh: 0 or 1
+        uint8_t cFlags;
+    };
+    static_assert( sizeof( Light ) == 16, "four to a cache line" );
+    static const uint8_t Seen = 1, Heavy = 2;
+    // A KeyState has the first channel used in it, the others in an extra record.
     // The stack: from a channel's first overflow, every NoteOn (paired ones are tombstones), the
     // unpaired slots' first; the overflow pairs the latest unpaired NoteOn of the key in the track
     struct KeyExtra
@@ -1936,24 +2052,21 @@ private:
     {
         uint32_t aSlots0[10];
         uint32_t uCount0;                   // NoteOns minus NoteOffs on cCh0
-        uint32_t uOns;                      // NoteOns so far
         uint32_t uExtra;                    // m_vExtra index + 1 (0: none)
-        uint32_t uKnownLo;                  // its next note in Song::vKnownId, in 40 bits (NoKnown: none left)
-        uint8_t cKnownHi;
-        int8_t cCh0;                        // the channel of aSlots0 (-1: none yet)
+        int8_t cCh0;                        // the channel of aSlots0
         bool bStacked;                      // since a channel first overflowed
         alignas( 64 ) RunStack stack;
     };
     static_assert( sizeof( KeyState ) == 128, "two cache lines" );
-    static const uint64_t NoKnown = ( uint64_t( 1 ) << 40 ) - 1;
+    static constexpr uint64_t NoKnown = ( uint64_t( 1 ) << 40 ) - 1;
 
     // Index i of Song::vKnownId if it is a note of the state with this id prefix, else NoKnown
-    void SetKnown( KeyState &s, uint64_t i, uint64_t llPrefix ) const
+    void SetKnown( Light &l, uint64_t i, uint64_t llPrefix ) const
     {
         const std::vector< uint64_t > &v = m_Song.vKnownId;
         if ( i >= v.size() || ( v[i] >> 40 ) != ( llPrefix >> 40 ) ) i = NoKnown;
-        s.uKnownLo = (uint32_t)i;
-        s.cKnownHi = (uint8_t)( i >> 32 );
+        l.uKnownLo = (uint32_t)i;
+        l.cKnownHi = (uint8_t)( i >> 32 );
     }
 
     KeyExtra &Extra( KeyState &s )
@@ -1975,44 +2088,64 @@ private:
     uint32_t &CountRef( KeyState &s, unsigned ch ) { return s.cCh0 == (int)ch ? s.uCount0 : Extra( s ).aCount[ch]; }
     uint32_t *Slots( KeyState &s, unsigned ch ) { return s.cCh0 == (int)ch ? s.aSlots0 : &Extra( s ).aSlots[ch * 10]; }
 
-    KeyState &State( uint32_t uTrack, unsigned key )
+    Light &LightOf( uint32_t uTrack, unsigned key ) { return m_vLight[uTrack * m_vKeys.size() + m_aMine[key]]; }
+
+    // The light state's note (if any) and channel move to a KeyState
+    KeyState &ToHeavy( Light &l )
     {
-        uint32_t &idx = m_vStateIdx[uTrack * m_vKeys.size() + m_aMine[key]];
-        if ( !idx )
-        {
-            if ( !m_vFree.empty() ) { idx = m_vFree.back(); m_vFree.pop_back(); }
-            else { m_vPool.emplace_back(); idx = (uint32_t)m_vPool.size(); }
-            KeyState &s = m_vPool[idx - 1];
-            s.uCount0 = 0;
-            s.uOns = 0;
-            s.uExtra = 0;
-            s.bStacked = false;
-            s.stack.Clear();
-            s.cCh0 = -1;
-            const std::vector< uint64_t > &v = m_Song.vKnownId;
-            uint64_t llPrefix = ( (uint64_t)uTrack << 48 ) | ( (uint64_t)key << 40 );
-            SetKnown( s, (uint64_t)( std::lower_bound( v.begin(), v.end(), llPrefix ) - v.begin() ), llPrefix );
-        }
-        return m_vPool[idx - 1];
+        uint32_t idx;
+        if ( !m_vFree.empty() ) { idx = m_vFree.back(); m_vFree.pop_back(); }
+        else { idx = (uint32_t)m_vPool.size(); m_vPool.emplace_back(); }
+        KeyState &s = m_vPool[idx];
+        s.aSlots0[0] = l.uSlot;
+        s.uCount0 = l.cCount;
+        s.uExtra = 0;
+        s.cCh0 = l.cCh;
+        s.bStacked = false;
+        s.stack.Clear();
+        l.uSlot = idx;
+        l.cFlags |= Heavy;
+        return s;
     }
 
     void On( uint32_t uTrack, unsigned ch, unsigned key, uint64_t u, uint32_t uOrd )
     {
         if ( m_pStats ) m_pStats->On( u );
-        KeyBuilder &kb = *m_vBuilders[key];
+        KB &kb = *m_vBuilders[key];
         uint64_t pos = kb.Append( u, uTrack * 16 + ch, uOrd );
-        KeyState &s = State( uTrack, key );
-        if ( s.cCh0 < 0 ) s.cCh0 = (int8_t)ch;
+        Light &l = LightOf( uTrack, key );
+        uint64_t llPrefix = ( (uint64_t)uTrack << 48 ) | ( (uint64_t)key << 40 );
+        if ( !( l.cFlags & Seen ) )
+        {
+            l.cFlags = Seen;
+            l.cCh = -1;
+            const std::vector< uint64_t > &v = m_Song.vKnownId;
+            SetKnown( l, (uint64_t)( std::lower_bound( v.begin(), v.end(), llPrefix ) - v.begin() ), llPrefix );
+        }
         // A note whose pairing the count pass found is final now: one no off will pair would otherwise be
         // live in its slot until its track ends, a long one until its off, and every later note of the
         // key would wait for it
-        uint64_t llKnown = s.uKnownLo | ( (uint64_t)s.cKnownHi << 32 );
-        uint64_t llPrefix = ( (uint64_t)uTrack << 48 ) | ( (uint64_t)key << 40 );
-        bool bMatch = llKnown != NoKnown && m_Song.vKnownId[llKnown] == ( llPrefix | s.uOns ), bKnown = bMatch;
+        uint64_t llKnown = l.uKnownLo | ( (uint64_t)l.cKnownHi << 32 );
+        bool bMatch = llKnown != NoKnown && m_Song.vKnownId[llKnown] == ( llPrefix | l.uOns ), bKnown = bMatch;
         uint64_t llKnownEnd = bKnown ? m_Song.vKnownEnd[llKnown] : UINT64_MAX;
         if ( bKnown && llKnownEnd != UINT64_MAX && !kb.CanPrePair() ) bKnown = false;
-        if ( bMatch ) SetKnown( s, llKnown + 1, llPrefix );
-        s.uOns++;
+        if ( bMatch ) SetKnown( l, llKnown + 1, llPrefix );
+        l.uOns++;
+        if ( !( l.cFlags & Heavy ) )
+        {
+            if ( l.cCh < 0 ) l.cCh = (int8_t)ch;
+            if ( l.cCh == (int)ch && !l.cCount )
+            {
+                l.uSlot = (uint32_t)pos;
+                l.cCount = 1;
+                if ( !bKnown ) kb.SetLive( pos, true );
+                else if ( llKnownEnd == UINT64_MAX ) kb.Resolve( pos );
+                else kb.PrePair( pos, llKnownEnd );
+                return;
+            }
+            ToHeavy( l );
+        }
+        KeyState &s = m_vPool[l.uSlot];
         uint32_t &uCount = CountRef( s, ch );
         if ( uCount < 10 )
         {
@@ -2049,13 +2182,20 @@ private:
 
     void Off( uint32_t uTrack, unsigned ch, unsigned key, uint64_t u, uint32_t uOrd )
     {
-        uint32_t idx = m_vStateIdx[uTrack * m_vKeys.size() + m_aMine[key]];
-        if ( !idx ) return;
-        KeyState &s = m_vPool[idx - 1];
+        Light &l = LightOf( uTrack, key );
+        if ( !( l.cFlags & Heavy ) )
+        {
+            if ( !l.cCount || l.cCh != (int)ch ) return;
+            if ( m_pStats ) m_pStats->Off( u );    // releases a held note (NoteStats)
+            m_vBuilders[key]->Pair( l.uSlot, u, uOrd, true );
+            l.cCount = 0;
+            return;
+        }
+        KeyState &s = m_vPool[l.uSlot];
         uint32_t uCount = Count( s, ch );
         if ( !uCount ) return;
-        if ( m_pStats ) m_pStats->Off( u );    // releases a held note (NoteStats)
-        KeyBuilder &kb = *m_vBuilders[key];
+        if ( m_pStats ) m_pStats->Off( u );
+        KB &kb = *m_vBuilders[key];
         if ( uCount <= 10 )
             kb.Pair( Slots( s, ch )[uCount - 1], u, uOrd, true );
         else
@@ -2074,10 +2214,20 @@ private:
     {
         for ( size_t m = 0; m < m_vKeys.size(); m++ )
         {
-            uint32_t &idx = m_vStateIdx[uTrack * m_vKeys.size() + m];
-            if ( !idx ) continue;
-            KeyState &s = m_vPool[idx - 1];
-            KeyBuilder &kb = *m_vBuilders[m_vKeys[m]];
+            Light &l = m_vLight[uTrack * m_vKeys.size() + m];
+            if ( !( l.cFlags & Seen ) ) continue;
+            KB &kb = *m_vBuilders[m_vKeys[m]];
+            if ( !( l.cFlags & Heavy ) )
+            {
+                if ( l.cCount )
+                {
+                    kb.SetLive( l.uSlot, false );
+                    kb.Resolve( l.uSlot );
+                }
+                l = Light();
+                continue;
+            }
+            KeyState &s = m_vPool[l.uSlot];
             for ( unsigned ch = 0; ch < 16; ch++ )
             {
                 uint32_t k = Count( s, ch );
@@ -2092,18 +2242,18 @@ private:
             s.stack.ForEach( [&]( uint32_t pos ) { if ( !kb.IsPaired( pos ) ) kb.Resolve( pos ); } );
             s.stack.Clear();
             if ( s.uExtra ) m_vExtraFree.push_back( s.uExtra );
-            m_vFree.push_back( idx );
-            idx = 0;
+            m_vFree.push_back( l.uSlot );
+            l = Light();
         }
     }
 
     const Song &m_Song;
-    std::vector< std::unique_ptr< KeyBuilder > > &m_vBuilders;
+    std::vector< std::unique_ptr< KB > > &m_vBuilders;
     const std::vector< std::pair< uint64_t, uint32_t > > &m_vTrackEnds;
     const std::vector< int > &m_vKeys;
     int m_aMine[128];
     size_t m_iTracks = 0;
-    std::vector< uint32_t > m_vStateIdx;
+    std::vector< Light > m_vLight;          // by track, then this thread's key
     std::vector< KeyState > m_vPool;
     std::vector< uint32_t > m_vFree;
     std::vector< KeyExtra > m_vExtra;
@@ -2209,9 +2359,9 @@ uint64_t PrivateBytes() { return Util::ProcessMemory(); }
 // bStopOnWeird: return as soon as a weird note shows up, with only bWeird set (the song is then
 // paired again with bEndRanks).
 // bStream: compact while pairing, culling with pHidden (DESIGN.md 5.5); vs is then Compact
-// (vs.bCompact) and the Full layout never exists whole. Only for passes with no weird note: with
-// bStopOnWeird a weird note discards the pass anyway, and otherwise (a draw view of a song known to
-// have none) a weird note would make this pair again without streaming.
+// (vs.bCompact) and the Full layout never exists whole. Only for passes with no weird note (the pass
+// pairs none twice, see KeyBuilder::Pair), and only for songs whose unique ticks fit 32 bits (else vs
+// is Full, for the caller to compact).
 // pStats: also count the NoteStats, from the events the workers get anyway (DESIGN.md 5.6)
 bool PairAll( const Song &song, VisualStore &vs, int iThreads, std::atomic< uint64_t > *pDone, const std::atomic< bool > *pCancel, bool bEndRanks,
               bool bStopOnWeird, double *pSteps = nullptr, bool bStream = false, const std::vector< uint8_t > *pHidden = nullptr,
@@ -2224,6 +2374,7 @@ bool PairAll( const Song &song, VisualStore &vs, int iThreads, std::atomic< uint
     vs = VisualStore();
     const EventStream &es = song.stream;
     size_t U = es.UniqueTicks();
+    if ( U > UINT32_MAX ) bStream = false;     // (StreamKey keeps ticks in 32 bits)
 
     // The last unique tick of every track, in tick order
     std::vector< std::pair< uint64_t, uint32_t > > vTrackEnds;
@@ -2246,17 +2397,23 @@ bool PairAll( const Song &song, VisualStore &vs, int iThreads, std::atomic< uint
         vLoad[t] += song.aKeyNoteCounts[k] + 1;
     }
 
-    std::vector< std::unique_ptr< KeyBuilder > > vBuilders( 128 );
+    std::vector< std::unique_ptr< KeyBuilder > > vBuilders( bStream ? 0 : 128 );
+    std::vector< std::unique_ptr< StreamKey > > vStreamKeys( bStream ? 128 : 0 );
     std::vector< KeyStore > vCompact( bStream ? 128 : 0 );
     std::vector< std::unique_ptr< StreamCompactor > > vStream( bStream ? 128 : 0 );
-    std::atomic< bool > bWeirdSeen{ false };
     for ( int k = 0; k < 128; k++ )
     {
-        if ( bStream ) vStream[k].reset( new StreamCompactor( vCompact[k], es.times, (size_t)song.aKeyNoteCounts[k], pHidden ) );
-        vBuilders[k].reset( new KeyBuilder( vs.aKeys[k], es.times, song.aKeyNoteCounts[k], bEndRanks, bStream ? vStream[k].get() : nullptr,
-                                            !bStream && !bStopOnWeird ) );
-        if ( bStopOnWeird ) vBuilders[k]->SetWeirdFlag( &bWeirdSeen );
-        vBuilders[k]->SetFirstPairingOnly( song.bFirstPairingOnly );
+        if ( bStream )
+        {
+            vStream[k].reset( new StreamCompactor( vCompact[k], es.times, (size_t)song.aKeyNoteCounts[k], pHidden ) );
+            vStreamKeys[k].reset( new StreamKey( *vStream[k], song.aKeyNoteCounts[k] ) );
+            vStreamKeys[k]->SetFirstPairingOnly( song.bFirstPairingOnly );
+        }
+        else
+        {
+            vBuilders[k].reset( new KeyBuilder( vs.aKeys[k], es.times, song.aKeyNoteCounts[k], bEndRanks, !bStopOnWeird ) );
+            vBuilders[k]->SetFirstPairingOnly( song.bFirstPairingOnly );
+        }
     }
 
     // NoteStats bins: 1 ms, wider when the song would need more than MaxBins
@@ -2274,17 +2431,18 @@ bool PairAll( const Song &song, VisualStore &vs, int iThreads, std::atomic< uint
         for ( int t = 0; t < iWorkers; t++ ) for ( int k : vSets[t] ) aOwner[k] = t;
         DecodeLanes dl( es, aOwner, iWorkers, std::max( 1, std::min( 4, Parallel::ThreadCount( iThreads ) / 4 ) ) );
         int iLanes = dl.Lanes();
-        const std::atomic< bool > *pStop = bStopOnWeird ? &bWeirdSeen : nullptr;
         // Every item needs its own thread (workers wait on the lanes): as many threads as items
         Parallel::For( iWorkers + iLanes, (size_t)( iWorkers + iLanes ), [&]( size_t i, int ) {
-            if ( (int)i < iLanes ) { dl.Produce( (int)i, pCancel, pStop ); return; }
+            if ( (int)i < iLanes ) { dl.Produce( (int)i, pCancel, nullptr ); return; }
             int t = (int)i - iLanes;
-            VisualStoreBuilder b( song, vBuilders, vTrackEnds, vSets[t] );
-            if ( !b.RunShared( dl, t, t == 0 ? pDone : nullptr, pCancel, pStop, pStats ? &vRec[t] : nullptr ) ) bOk = false;
+            StatsRecorder *pRec = pStats ? &vRec[t] : nullptr;
+            bool bDone;
+            if ( bStream ) bDone = VisualStoreBuilder< StreamKey >( song, vStreamKeys, vTrackEnds, vSets[t] ).RunShared( dl, t, t == 0 ? pDone : nullptr, pCancel, nullptr, pRec );
+            else bDone = VisualStoreBuilder< KeyBuilder >( song, vBuilders, vTrackEnds, vSets[t] ).RunShared( dl, t, t == 0 ? pDone : nullptr, pCancel, nullptr, pRec );
+            if ( !bDone ) bOk = false;
         } );
     }
     Mark( VisualStore::StepPair );
-    if ( bWeirdSeen ) { vBuilders.clear(); vs = VisualStore(); vs.bWeird = true; return true; }   // pair again with bEndRanks
     if ( !bOk ) return false;
 
     if ( pStats )
@@ -2316,24 +2474,16 @@ bool PairAll( const Song &song, VisualStore &vs, int iThreads, std::atomic< uint
     }
 
     Parallel::For( iThreads, 128, [&]( size_t k, int ) {
-        vBuilders[k]->Finish();
-        if ( bStream ) { vs.aKeys[k] = std::move( vCompact[k] ); vStream[k].reset(); }
+        if ( bStream ) { vStreamKeys[k]->Finish(); vs.aKeys[k] = std::move( vCompact[k] ); vStream[k].reset(); }
+        else vBuilders[k]->Finish();
     } );
     Mark( VisualStore::StepFinish );
 
-    for ( int k = 0; k < 128; k++ ) vs.bWeird |= vBuilders[k]->Weird();
-    if ( vs.bWeird && bStopOnWeird ) return true;
-    if ( bStream && vs.bWeird )
-    {
-        // Not expected (see above), and the streamed cull has no weird notes: pair again as before
-        vBuilders.clear();
-        return PairAll( song, vs, iThreads, pDone, pCancel, bEndRanks, bStopOnWeird, pSteps, false, nullptr, pStats );
-    }
     if ( bStream )
     {
         for ( int k = 0; k < 128; k++ )
         {
-            const KeyBuilder &kb = *vBuilders[k];
+            const StreamKey &kb = *vStreamKeys[k];
             vs.llUnpaired += kb.UnpairedCount();
             vs.llNotes += kb.FullSize() - kb.UnpairedCount();
             if ( kb.FirstPairedStartU() != UINT64_MAX )
@@ -2347,6 +2497,8 @@ bool PairAll( const Song &song, VisualStore &vs, int iThreads, std::atomic< uint
         for ( const KeyStore &ks : vs.aKeys ) vs.llStored += ks.Size();
         return true;
     }
+    for ( int k = 0; k < 128; k++ ) vs.bWeird |= vBuilders[k]->Weird();
+    if ( vs.bWeird && bStopOnWeird ) return true;
     for ( int k = 0; k < 128; k++ )
     {
         const KeyStore &ks = vs.aKeys[k];

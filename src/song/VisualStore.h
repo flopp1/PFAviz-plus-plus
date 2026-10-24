@@ -123,7 +123,6 @@ public:
 
 private:
     friend class KeyBuilder;
-    friend class VisualStoreBuilder;
     friend class CompactBuilder;
 
     // A block's start fields (start, slot, rank) are packed as soon as it has 64 notes; its end
