@@ -36,6 +36,8 @@ public:
         // Stack collapsing: of the note-ons of one channel and key at one tick, only one is sent (the
         // loudest of those in the same batch); the others are held silently. Offs are dropped while
         // more notes are held than voices were sent, so each voice ends with the last note it stands for.
+        // When an off of that tick ends the key's last voice (a zero-length note), the next note-on of
+        // the tick is sent too and sounds the key again.
         bool bCollapse = false;
         // Send budget: at most this many messages per second of real time (0: no limit). Note-ons
         // are skipped quietest first to fit (each counts with its off); see BudgetThreshold.

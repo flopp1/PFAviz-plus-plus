@@ -251,7 +251,9 @@ struct NoteStats
 // Note-ons (velocity > 0) per velocity in each bin of llBinUs of song time, for the send budget's
 // look-ahead (DESIGN.md 7.5), so playback does not read the stream twice. Sparse: per bin, the
 // velocities present and their counts. Two sets: every note-on, and only each channel and key's
-// first note-on of a tick (what stack collapsing sends).
+// first note-on of a tick (what stack collapsing sends, but for the rare note-on that sounds a key
+// again after a zero-length note ended its last voice in the same tick, which depends on the notes
+// held from earlier ticks).
 struct VelocityBins
 {
     static const long long BinUs = 10000;
