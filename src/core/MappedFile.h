@@ -19,8 +19,9 @@ public:
     bool SeekPenalty() const { return m_bSeekPenalty; }       // the volume is a spinning disk
     const std::wstring &Path() const { return m_sPath; }
 
-    // Asks the OS to read the whole view in (SSD path)
-    void PrefetchAll() const;
+    // Asks the OS to read the whole view in (SSD path), on a thread of its own: the call takes a while
+    // even when the file is cached, and the parse need not wait for it
+    void PrefetchAll();
 
     // HDD path: reads the file front to back in large sequential chunks, filling the system cache,
     // and publishes how far it got. Workers wait on Resident() instead of faulting pages out of order.
@@ -32,6 +33,7 @@ public:
 
 private:
     static DWORD WINAPI ReaderThread( LPVOID p );
+    static DWORD WINAPI PrefetchThread( LPVOID p );
     static bool DetectSeekPenalty( const std::wstring &sPath );
 
     std::wstring m_sPath;
@@ -41,7 +43,7 @@ private:
     uint64_t m_llSize = 0;
     bool m_bSeekPenalty = false;
 
-    HANDLE m_hReader = nullptr;
+    HANDLE m_hReader = nullptr, m_hPrefetch = nullptr;
     std::atomic< uint64_t > m_llResident{ 0 };
     std::atomic< bool > m_bStopReader{ false };
     std::atomic< bool > *m_pCancel = nullptr;

@@ -90,11 +90,6 @@ public:
     template < class FE, class FG >
     bool Walk( size_t u0, size_t u1, FE &&onEvent, FG &&onGroupEnd ) const;
 
-    // Calls fn( u, event ) for every event that is not a note (NoteOn/NoteOff runs are skipped by
-    // scanning for their last key byte, eight bytes at a time)
-    template < class F >
-    void ForEachNonNote( size_t u0, size_t u1, F &&fn ) const;
-
     // Calls fn( uniqueTickIndex, event ) for every event of the song in global order
     template < class F >
     void ForEach( F &&fn ) const
@@ -207,64 +202,6 @@ bool EventStream::Walk( size_t u0, size_t u1, FE &&onEvent, FG &&onGroupEnd ) co
     return true;
 }
 
-template < class F >
-void EventStream::ForEachNonNote( size_t u0, size_t u1, F &&fn ) const
-{
-    static const uint8_t aStatus[8] = { 0x90, 0x80, 0x90, 0xA0, 0xB0, 0xC0, 0xD0, 0xE0 };
-    u1 = std::min( u1, UniqueTicks() );
-    if ( u0 >= u1 ) return;
-    const SeekPoint &sp = SeekPointFor( u0 );
-    StreamBytes r;
-    r.Start( *this, sp.llRaw );
-    size_t u = (size_t)sp.llU;
-    int64_t llPrev = -1;
-    StreamEvent e;
-    while ( u < u1 )
-    {
-        r.Need();
-        uint64_t hdr = ReadVar( r.p );
-        e.uTrack = (uint32_t)( llPrev + 1 + (int64_t)( hdr >> 1 ) );
-        unsigned h;
-        do
-        {
-            r.Need();
-            h = *r.p++;
-            unsigned op = h >> 5;
-            if ( op <= 2 )
-            {
-                if ( op != 2 ) r.p++;
-                // Skip to the key byte with bit 7 set
-                for ( ;; )
-                {
-                    const uint8_t *q = r.p, *qEnd = r.end;
-                    while ( q + 8 <= qEnd )
-                    {
-                        uint64_t w;
-                        memcpy( &w, q, 8 );
-                        uint64_t m = w & 0x8080808080808080ull;
-                        if ( m ) { q += __builtin_ctzll( m ) >> 3; break; }
-                        q += 8;
-                    }
-                    while ( q < qEnd && !( *q & 0x80 ) ) q++;
-                    if ( q < qEnd ) { r.p = q + 1; break; }
-                    r.p = qEnd;
-                    r.Refill();
-                    if ( r.p >= r.end ) return;
-                }
-            }
-            else
-            {
-                e.cStatus = (uint8_t)( aStatus[op] | ( h & 0x0F ) );
-                e.cData1 = *r.p++;
-                e.cData2 = ( op == 5 || op == 6 ) ? 0 : *r.p++;
-                if ( u >= u0 ) fn( u, e );
-            }
-        } while ( !( h & 0x10 ) );
-        if ( hdr & 1 ) { u++; llPrev = -1; }
-        else llPrev = e.uTrack;
-    }
-}
-
 // A controller or program change, for the seek chase (DESIGN.md 7.7), in global order
 struct ChaseEvent
 {
@@ -344,7 +281,7 @@ struct Song
     // track's end. Freed after it.
     std::vector< uint64_t > vKnownId, vKnownEnd;
     EventStream stream;
-    std::vector< ChaseEvent > vChase;       // every CC and program change
+    std::vector< ChaseEvent > vChase;       // every CC and program change (BuildSendCounts)
     VisualStore visual;                     // notes per key, paired (built by BuildVisualStore)
     NoteStats noteStats;                    // for the overlay's extra statistics (built with visual, when asked for)
     VelocityBins aSendOns[2];               // [0] every note-on, [1] as collapsed (BuildSendCounts)
@@ -352,6 +289,5 @@ struct Song
     // (DESIGN.md 6.3); by default it ends at the later off instead
     bool bFirstPairingOnly = false;
     size_t MemoryBytes() const;
-    void BuildChaseIndex( int iThreads );
-    void BuildSendCounts( int iThreads );
+    void BuildSendCounts( int iThreads );   // aSendOns and vChase, in one pass over the stream
 };

@@ -24,6 +24,7 @@ bool MappedFile::Open( const std::wstring &sPath, std::wstring &sError )
 void MappedFile::Close()
 {
     StopSequentialRead();
+    if ( m_hPrefetch ) { WaitForSingleObject( m_hPrefetch, INFINITE ); CloseHandle( m_hPrefetch ); m_hPrefetch = nullptr; }
     if ( m_pData ) UnmapViewOfFile( m_pData );
     if ( m_hMap ) CloseHandle( m_hMap );
     if ( m_hFile != INVALID_HANDLE_VALUE ) CloseHandle( m_hFile );
@@ -33,12 +34,19 @@ void MappedFile::Close()
     m_llSize = 0;
 }
 
-void MappedFile::PrefetchAll() const
+void MappedFile::PrefetchAll()
 {
+    if ( !m_hPrefetch ) m_hPrefetch = CreateThread( nullptr, 0, PrefetchThread, this, 0, nullptr );
+}
+
+DWORD WINAPI MappedFile::PrefetchThread( LPVOID p )
+{
+    const MappedFile *pThis = static_cast< const MappedFile * >( p );
     WIN32_MEMORY_RANGE_ENTRY e;
-    e.VirtualAddress = ( PVOID )m_pData;
-    e.NumberOfBytes = (SIZE_T)m_llSize;
+    e.VirtualAddress = ( PVOID )pThis->m_pData;
+    e.NumberOfBytes = (SIZE_T)pThis->m_llSize;
     PrefetchVirtualMemory( GetCurrentProcess(), 1, &e, 0 );
+    return 0;
 }
 
 bool MappedFile::DetectSeekPenalty( const std::wstring &sPath )

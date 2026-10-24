@@ -61,13 +61,15 @@ void Song::BuildSendCounts( int iThreads )
 {
     const EventStream &es = stream;
     for ( VelocityBins &vb : aSendOns ) { vb.vOffset.clear(); vb.vData.clear(); }
+    vChase.clear();
     size_t U = es.UniqueTicks(), S = es.vSeek.size();
     if ( !U || !S ) return;
     const long long B = VelocityBins::BinUs;
     size_t iBins = (size_t)( es.times.Get( U - 1 ) / B ) + 1;
     size_t iParts = std::min< size_t >( S, (size_t)Parallel::ThreadCount( iThreads ) * 8 );
     // A part's bins: from bFirst on, each with its entries in vData from vOffset
-    struct Part { size_t bFirst = 0; std::vector< uint64_t > vOffset[2]; std::vector< uint8_t > vData[2]; };
+    // and its controller and program changes
+    struct Part { size_t bFirst = 0; std::vector< uint64_t > vOffset[2]; std::vector< uint8_t > vData[2]; std::vector< ChaseEvent > vChase; };
     std::vector< Part > vParts( iParts );
     auto Encode = []( std::vector< uint8_t > &v, uint64_t a[128] ) {
         for ( int vel = 1; vel < 128; vel++ )
@@ -99,12 +101,14 @@ void Song::BuildSendCounts( int iThreads )
         const EventStream::SeekPoint &sp = es.SeekPointFor( u0 );
         r.Start( es, sp.llRaw );
         size_t u = (size_t)sp.llU, uTimed = SIZE_MAX;
+        int64_t llTime = 0;
         while ( u < u1 )
         {
             if ( u >= u0 && u != uTimed )
             {
                 uTimed = u;
-                size_t bu = (size_t)( es.times.Get( u ) / B );
+                llTime = (int64_t)es.times.Get( u );
+                size_t bu = (size_t)( llTime / B );
                 while ( b < bu ) { Flush(); b++; }
             }
             r.Need();
@@ -116,7 +120,17 @@ void Song::BuildSendCounts( int iThreads )
                 r.Need();
                 h = *r.p++;
                 unsigned op = h >> 5;
-                if ( op > 2 ) { r.p += aDataBytes[op]; continue; }
+                if ( op > 2 )
+                {
+                    if ( ( op == 4 || op == 5 ) && bCount )
+                    {
+                        uint32_t uMsg = ( op == 4 ? 0xB0u : 0xC0u ) | ( h & 0x0F ) | ( (uint32_t)r.p[0] << 8 );
+                        if ( op == 4 ) uMsg |= (uint32_t)r.p[1] << 16;
+                        part.vChase.push_back( { llTime, uMsg } );
+                    }
+                    r.p += aDataBytes[op];
+                    continue;
+                }
                 unsigned v = op == 2 ? 0 : *r.p++;
                 if ( op == 0 && v && bCount )
                 {
@@ -159,6 +173,10 @@ void Song::BuildSendCounts( int iThreads )
         }
         Flush();
     } );
+    size_t iChase = 0;
+    for ( auto &part : vParts ) iChase += part.vChase.size();
+    vChase.reserve( iChase );
+    for ( auto &part : vParts ) { vChase.insert( vChase.end(), part.vChase.begin(), part.vChase.end() ); std::vector< ChaseEvent >().swap( part.vChase ); }
     for ( int c = 0; c < 2; c++ )
     {
         VelocityBins &vb = aSendOns[c];
@@ -223,29 +241,3 @@ uint64_t NoteStats::Polyphony( long long llTime ) const
     return vPoly[std::min< size_t >( (size_t)( llTime / llBinUs ), vPoly.size() - 1 )];
 }
 
-void Song::BuildChaseIndex( int iThreads )
-{
-    const EventStream &es = stream;
-    size_t U = es.UniqueTicks();
-    size_t iParts = U ? std::min< size_t >( U, (size_t)Parallel::ThreadCount( iThreads ) * 8 ) : 0;
-    std::vector< std::vector< ChaseEvent > > vParts( iParts );
-    Parallel::For( iThreads, iParts, [&]( size_t k, int ) {
-        size_t u0 = U * k / iParts, u1 = U * ( k + 1 ) / iParts;
-        std::vector< ChaseEvent > &v = vParts[k];
-        size_t uTime = SIZE_MAX;
-        int64_t llTime = 0;
-        es.ForEachNonNote( u0, u1, [&]( size_t u, const StreamEvent &e ) {
-            unsigned t = e.cStatus >> 4;
-            if ( t != 0xB && t != 0xC ) return;
-            if ( u != uTime ) { uTime = u; llTime = (int64_t)es.times.Get( u ); }
-            uint32_t uMsg = e.cStatus | ( (uint32_t)e.cData1 << 8 );
-            if ( t == 0xB ) uMsg |= (uint32_t)e.cData2 << 16;
-            v.push_back( { llTime, uMsg } );
-        } );
-    } );
-    size_t n = 0;
-    for ( auto &v : vParts ) n += v.size();
-    vChase.clear();
-    vChase.reserve( n );
-    for ( auto &v : vParts ) vChase.insert( vChase.end(), v.begin(), v.end() );
-}

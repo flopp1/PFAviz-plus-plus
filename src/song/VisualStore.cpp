@@ -1299,7 +1299,7 @@ private:
         uint8_t wStart = 0, wSlot = 0, wRank = 0, wDur = 0;
         std::unique_ptr< uint32_t[] > pEnd;
     };
-    static const size_t RingCap = 256;
+    static const size_t RingCap = 512;
     static uint64_t Bit( uint64_t pos ) { return uint64_t( 1 ) << ( pos & 63 ); }
     Rec *Page( size_t b ) const { return &m_pRing[( b & ( m_iRing - 1 ) ) << 6]; }
 
@@ -2027,7 +2027,7 @@ private:
     // random among its thread's. Nearly every state holds at most one note at a time, on one channel:
     // that is a Light record of 16 bytes in a table by track and key, so an event touches one cache
     // line (a track's chord mostly the same one). A state that comes to hold more, or uses a second
-    // channel, moves to a KeyState until its track ends.
+    // channel, moves to a KeyState until it holds nothing again or its track ends.
     struct Light
     {
         uint32_t uOns;          // NoteOns so far
@@ -2207,6 +2207,19 @@ private:
             if ( !st.Empty() ) kb.Pair( st.Back(), u, uOrd, false );
         }
         CountRef( s, ch )--;
+        // Holding nothing again (one channel, every NoteOn paired): the same as a new state, so light again
+        if ( !s.uCount0 && !s.uExtra )
+        {
+            RunStack &st = s.stack;
+            while ( !st.Empty() && kb.IsPaired( st.Back() ) ) st.PopBack();
+            if ( st.Empty() )
+            {
+                st.Clear();
+                m_vFree.push_back( l.uSlot );
+                l.cCount = 0;
+                l.cFlags &= ~Heavy;
+            }
+        }
     }
 
     // Nothing in the track can change any more: provisional pairings are final, unpaired ons are dropped

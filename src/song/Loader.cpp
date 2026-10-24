@@ -67,7 +67,21 @@ namespace
             uint32_t id = k.n++;
             if ( !( id & 63 ) ) { k.vPaired.push_back( 0 ); k.vTwice.push_back( 0 ); }
             if ( k.aCount[ch] < 10 ) { k.aSlots[ch][k.aCount[ch]] = id; k.aSlotTick[ch][k.aCount[ch]] = llTick; }
+            else if ( !k.bStacked )
+            {
+                // The first overflow: from here on the stack holds every NoteOn, from the unpaired slots'
+                // (as the pairing pass keeps it: only an overflow reads the stack)
+                struct At { uint32_t id; int64_t llTick; } a[160];
+                unsigned n = 0;
+                for ( unsigned c = 0; c < 16; c++ )
+                    for ( uint32_t j = 0; j < std::min< uint32_t >( k.aCount[c], 10 ); j++ )
+                        if ( !Paired( k, k.aSlots[c][j] ) ) a[n++] = { k.aSlots[c][j], k.aSlotTick[c][j] };
+                std::sort( a, a + n, []( const At &x, const At &y ) { return x.id < y.id; } );
+                for ( unsigned j = 0; j < n; j++ ) Push( k, a[j].id, a[j].llTick );
+                k.bStacked = true;
+            }
             k.aCount[ch]++;
+            if ( !k.bStacked ) return;
             while ( !k.vStack.empty() && Paired( k, Back( k ) ) ) PopBack( k );
             Push( k, id, llTick );
         }
@@ -131,6 +145,7 @@ namespace
             uint32_t aSlots[16][10];
             int64_t aSlotTick[16][10];
             uint32_t n = 0;
+            bool bStacked = false;                                  // since a channel first overflowed
             std::vector< uint64_t > vPaired, vTwice;                // bits per NoteOn
             std::vector< Run > vStack;
             std::vector< Long > vLong;
@@ -821,8 +836,11 @@ namespace
         prog.aDone[LoadProgress::Merging] = 2;
 
         // Tick ranges are owned by one thread each, and tracks are visited in order, so the groups of a
-        // tick land in ascending track order with no atomics
+        // tick land in ascending track order with no atomics. Each tick's run bytes are added up on the
+        // way (the headers then need nothing from the tracks).
         size_t iRanges = std::max< size_t >( 1, std::min< uint64_t >( U, (uint64_t)iThreads * 8 ) );
+        std::vector< uint32_t > vTickRaw( U, 0 );
+        std::atomic< bool > bTickTooBig{ false };
         Parallel::For( iThreads, iRanges, [&]( size_t r, int ) {
             uint64_t u0 = U * r / iRanges, u1 = U * ( r + 1 ) / iRanges;
             if ( u0 >= u1 ) return;
@@ -835,10 +853,12 @@ namespace
                 {
                     u = RankFrom( c.Next(), u );
                     vGroupTrack[vTickGroupStart[u] + vCount[u]++] = (uint32_t)t;
+                    if ( __builtin_add_overflow( vTickRaw[u], vScans[t]->vGroups[c.g - 1].uSize, &vTickRaw[u] ) ) bTickTooBig = true;
                 }
             }
         } );
         vCount.clear(); vCount.shrink_to_fit();
+        if ( bTickTooBig ) { sError = L"A tick holds too many events."; return nullptr; }
         vBits.clear(); vBits.shrink_to_fit();
         vWordRank.clear(); vWordRank.shrink_to_fit();
         prog.aDone[LoadProgress::Merging] = 3;
@@ -846,39 +866,75 @@ namespace
 
         // Group headers in global order, as the stream will hold them (about a byte a group; the order
         // itself is then dropped: a header gives its group's track), raw offsets with a seek point for
-        // the first tick that starts in each chunk, and slices of about SliceBytes cut at ticks, which
-        // the build fills in parallel
+        // the first tick that starts in each chunk, and slices cut at the first tick that starts in each
+        // SliceBytes of the stream, which the build fills in parallel. Per tick range (as above): its
+        // header and raw bytes, then from their sums its headers, seek points and slices.
         std::vector< uint8_t > vHdr;
-        vHdr.reserve( (size_t)( G + G / 4 + 16 ) );
         struct Slice { uint64_t llHdr, llRaw; };
         std::vector< Slice > vSlices;
         {
-            std::vector< uint64_t > vCur( vScans.size(), 0 );
-            uint64_t llOff = 0, llSliceAt = 0;
             uint64_t llEst = G;
-            for ( auto &sc : vScans ) for ( const GroupRec &g : sc->vGroups ) llEst += g.uSize;
+            for ( uint32_t n : vTickRaw ) llEst += n;
             const uint64_t SliceBytes = std::max< uint64_t >( 4 << 20, llEst / 512 );
-            uint8_t aVar[16];
-            for ( uint64_t u = 0, g = 0; u < U; u++ )
-            {
-                if ( vSlices.empty() || llOff - llSliceAt >= SliceBytes ) { vSlices.push_back( { vHdr.size(), llOff } ); llSliceAt = llOff; }
-                if ( es.vSeek.empty() || ( es.vSeek.back().llRaw >> EventStream::ChunkShift ) != ( llOff >> EventStream::ChunkShift ) )
-                    es.vSeek.push_back( { u, llOff } );
-                for ( uint32_t uPrev = 0; g < vTickGroupStart[u + 1]; g++ )
+            struct Range { uint64_t llHdr = 0, llRaw = 0, llLastStart = 0; std::vector< EventStream::SeekPoint > vSeek; std::vector< Slice > vSlices; };
+            std::vector< Range > vRanges( iRanges );
+            // Calls fn( u, header ) for the range's groups in order, after onTick( u ) at each tick's start
+            auto Walk = [&]( size_t r, auto &&onTick, auto &&fn ) {
+                uint64_t u0 = U * r / iRanges, u1 = U * ( r + 1 ) / iRanges;
+                for ( uint64_t u = u0, g = vTickGroupStart[u0]; u < u1; u++ )
                 {
-                    uint32_t t = vGroupTrack[g];
-                    uint64_t llGap = g == vTickGroupStart[u] ? t : t - uPrev - 1;
-                    uint64_t llHeader = ( llGap << 1 ) | ( g + 1 == vTickGroupStart[u + 1] ? 1 : 0 );
-                    unsigned n = (unsigned)( EventStream::WriteVar( aVar, llHeader ) - aVar );
-                    vHdr.insert( vHdr.end(), aVar, aVar + n );
-                    llOff += n + vScans[t]->vGroups[vCur[t]++].uSize;
-                    uPrev = t;
+                    onTick( u );
+                    for ( uint32_t uPrev = 0; g < vTickGroupStart[u + 1]; g++ )
+                    {
+                        uint32_t t = vGroupTrack[g];
+                        uint64_t llGap = g == vTickGroupStart[u] ? t : t - uPrev - 1;
+                        fn( ( llGap << 1 ) | ( g + 1 == vTickGroupStart[u + 1] ? 1 : 0 ) );
+                        uPrev = t;
+                    }
                 }
+            };
+            Parallel::For( iThreads, iRanges, [&]( size_t r, int ) {
+                Range &rg = vRanges[r];
+                Walk( r, [&]( uint64_t u ) { rg.llLastStart = rg.llRaw; rg.llRaw += vTickRaw[u]; },
+                      [&]( uint64_t llHeader ) {
+                          unsigned n = EventStream::VarSize( llHeader );
+                          rg.llHdr += n;
+                          rg.llRaw += n;
+                      } );
+            } );
+            std::vector< uint64_t > vHdrAt( iRanges + 1, 0 ), vRawAt( iRanges + 1, 0 );
+            for ( size_t r = 0; r < iRanges; r++ ) { vHdrAt[r + 1] = vHdrAt[r] + vRanges[r].llHdr; vRawAt[r + 1] = vRawAt[r] + vRanges[r].llRaw; }
+            vHdr.resize( (size_t)vHdrAt[iRanges] );
+            Parallel::For( iThreads, iRanges, [&]( size_t r, int ) {
+                Range &rg = vRanges[r];
+                uint8_t *pHdr = vHdr.data() + vHdrAt[r];
+                // The start of the tick before (the range before's last; none before the first); the runs
+                // of the tick being walked, added at the next tick's start
+                uint64_t llOff = vRawAt[r], llPrevStart = r ? vRawAt[r - 1] + vRanges[r - 1].llLastStart : UINT64_MAX, llTickRaw = 0;
+                Walk( r,
+                      [&]( uint64_t u ) {
+                          llOff += llTickRaw;
+                          llTickRaw = vTickRaw[u];
+                          bool bFirst = llPrevStart == UINT64_MAX;
+                          if ( bFirst || ( llPrevStart / SliceBytes ) != ( llOff / SliceBytes ) ) rg.vSlices.push_back( { (uint64_t)( pHdr - vHdr.data() ), llOff } );
+                          if ( bFirst || ( llPrevStart >> EventStream::ChunkShift ) != ( llOff >> EventStream::ChunkShift ) ) rg.vSeek.push_back( { u, llOff } );
+                          llPrevStart = llOff;
+                      },
+                      [&]( uint64_t llHeader ) {
+                          uint8_t *q = EventStream::WriteVar( pHdr, llHeader );
+                          llOff += (uint64_t)( q - pHdr );
+                          pHdr = q;
+                      } );
+            } );
+            for ( Range &rg : vRanges )
+            {
+                es.vSeek.insert( es.vSeek.end(), rg.vSeek.begin(), rg.vSeek.end() );
+                vSlices.insert( vSlices.end(), rg.vSlices.begin(), rg.vSlices.end() );
             }
-            vSlices.push_back( { vHdr.size(), llOff } );
-            es.llRawBytes = llOff;
+            vSlices.push_back( { vHdr.size(), vRawAt[iRanges] } );
+            es.llRawBytes = vRawAt[iRanges];
         }
-        vHdr.shrink_to_fit();
+        vTickRaw.clear(); vTickRaw.shrink_to_fit();
         vGroupTrack.clear(); vGroupTrack.shrink_to_fit();
         vTickGroupStart.clear(); vTickGroupStart.shrink_to_fit();
         Step( L"group headers" );
@@ -928,7 +984,7 @@ namespace
         std::vector< uint64_t > vCur( T, 0 );          // each track's next group
         std::vector< uint32_t > vCounts;                // per slice of the window, per track
         std::unique_ptr< uint8_t[] > pRaw, pPrev;
-        uint64_t llPrevBase = 0;
+        uint64_t llPrevBase = 0, llRawCap = 0, llPrevCap = 0;
         size_t iNextChunk = 0;
         std::vector< std::vector< uint8_t > > vUnpack( bFused ? iThreads : 0 );
         // Two-pass: a scratch group per thread for the groups re-read before a window's first
@@ -951,10 +1007,23 @@ namespace
             // comes along
             uint64_t llBase = ( llWin0 >> EventStream::ChunkShift ) << EventStream::ChunkShift;
             if ( llWin1 - llBase >= UINT32_MAX ) { sError = L"A tick holds too many events."; return nullptr; }   // GroupRec::uA
-            pRaw.reset( new ( std::nothrow ) uint8_t[llWin1 - llBase + 16] );
-            if ( !pRaw ) { sError = L"Out of memory for the event stream."; return nullptr; }
-            if ( llBase < llWin0 ) memcpy( pRaw.get(), pPrev.get() + ( llBase - llPrevBase ), (size_t)( llWin0 - llBase ) );
-            pPrev.reset();
+            // The last window's buffer is this one's when it is large enough (its pages are in already: a
+            // fresh one faults in every page), its tail moved to the front
+            uint64_t llNeed = llWin1 - llBase + 16;
+            if ( pPrev && llPrevCap >= llNeed )
+            {
+                if ( llBase < llWin0 ) memmove( pPrev.get(), pPrev.get() + ( llBase - llPrevBase ), (size_t)( llWin0 - llBase ) );
+                pRaw = std::move( pPrev );
+                llRawCap = llPrevCap;
+            }
+            else
+            {
+                llRawCap = llNeed + llNeed / 8;     // (room for a somewhat larger window after)
+                pRaw.reset( new ( std::nothrow ) uint8_t[llRawCap] );
+                if ( !pRaw ) { sError = L"Out of memory for the event stream."; return nullptr; }
+                if ( llBase < llWin0 ) memcpy( pRaw.get(), pPrev.get() + ( llBase - llPrevBase ), (size_t)( llWin0 - llBase ) );
+                pPrev.reset();
+            }
             long long llT0 = Timer::NowMicroSecs();
 
             // Groups per track per slice, then each slice's first group of each track
@@ -1103,6 +1172,7 @@ namespace
             dPack += ( Timer::NowMicroSecs() - llT1 ) / 1e6;
             pPrev = std::move( pRaw );
             llPrevBase = llBase;
+            llPrevCap = llRawCap;
             prog.aDone[LoadProgress::Building] = w + 1;
         }
         pPrev.reset();
@@ -1149,7 +1219,6 @@ namespace
         // Finalising
         llPhase = Timer::NowMicroSecs();
         prog.iStage = LoadProgress::Finalising;
-        song->BuildChaseIndex( iThreads );
         song->BuildSendCounts( iThreads );
         stats.llPayloadBytes = es.llRawBytes;
         stats.aMem[0] = (size_t)es.llDataBytes;
