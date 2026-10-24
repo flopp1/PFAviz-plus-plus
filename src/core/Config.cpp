@@ -296,7 +296,7 @@ void PerformanceSettings::LoadDefaultValues()
     bIgnoreWeird = false;
     bSendLimit = false;
     iMaxSendsPerSec = 2000000;
-    bCompactVisual = false;
+    bCompactVisual = true;
     iBlockCacheMB = 64;
     bLodCache = true;
     bGpuInstancing = false;
