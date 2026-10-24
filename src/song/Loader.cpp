@@ -61,10 +61,11 @@ namespace
         explicit PairSim( int64_t llLongTicks ) : m_llLongTicks( llLongTicks ) {}
         void On( unsigned ch, unsigned key, int64_t llTick )
         {
-            if ( !m_a[key] ) m_a[key].reset( new Key() );
-            Key &k = *m_a[key];
+            Key *pk = m_a[key].get();
+            if ( !pk ) { m_a[key].reset( new Key() ); pk = m_a[key].get(); }
+            Key &k = *pk;
             uint32_t id = k.n++;
-            if ( ( id >> 6 ) >= k.vPaired.size() ) { k.vPaired.push_back( 0 ); k.vTwice.push_back( 0 ); }
+            if ( !( id & 63 ) ) { k.vPaired.push_back( 0 ); k.vTwice.push_back( 0 ); }
             if ( k.aCount[ch] < 10 ) { k.aSlots[ch][k.aCount[ch]] = id; k.aSlotTick[ch][k.aCount[ch]] = llTick; }
             k.aCount[ch]++;
             while ( !k.vStack.empty() && Paired( k, Back( k ) ) ) PopBack( k );
@@ -314,9 +315,20 @@ namespace
 
         auto CloseRun = [&]() { if ( WRITE && pLastKey ) { *pLastKey |= 0x80; pLastKey = nullptr; } uRunKey = UINT32_MAX; };
         auto CloseGroup = [&]() { CloseRun(); if ( WRITE && pRunHeader ) { *pRunHeader |= 0x10; pRunHeader = nullptr; } };
+        // The track info, in locals while the track is read (stores through pDst could alias pScan's)
+        uint64_t llEventCount = 0, llChannelEvents = 0, llOutOfRange = 0, llNotes = 0, llVolumeSum = 0;
+        long long llTotalTicks = 0;
+        int iMinNote = 0, iMaxNote = 0, iMaxVolume = 0;
+        uint32_t aKeyCounts[128] = {};
         auto AddInfo = [&]( long long llAt ) {
-            if ( COUNT ) { pScan->info.llEventCount++; pScan->info.llTotalTicks = std::max( pScan->info.llTotalTicks, llAt ); }
+            if ( COUNT ) { llEventCount++; llTotalTicks = std::max( llTotalTicks, llAt ); }
         };
+        if ( COUNT )
+        {
+            const RefTrackInfo &in = pScan->info;
+            llEventCount = in.llEventCount; llTotalTicks = in.llTotalTicks; llNotes = in.llNoteCount; llVolumeSum = in.llVolumeSum;
+            iMinNote = in.iMinNote; iMaxNote = in.iMaxNote; iMaxVolume = in.iMaxVolume;
+        }
 
         while ( p < pEnd )
         {
@@ -326,7 +338,8 @@ namespace
 
             int iStatus;
             long long llDelta;
-            if ( !ReadVarLen( p, pEnd, llDelta ) ) { if ( COUNT ) pScan->info.bMalformed = true; break; }
+            if ( *p < 0x80 ) llDelta = *p++;    // (nearly every delta is one byte; p < pEnd here)
+            else if ( !ReadVarLen( p, pEnd, llDelta ) ) { if ( COUNT ) pScan->info.bMalformed = true; break; }
             llTick += llDelta;
             if ( p >= pEnd ) { if ( COUNT ) pScan->info.bMalformed = true; break; }
             if ( *p >= 0x80 ) iStatus = *p++;
@@ -346,7 +359,7 @@ namespace
                 p += iDataBytes;
                 if ( aData[0] >= 0x80 )
                 {
-                    if ( COUNT ) { pScan->llOutOfRange++; pScan->info.llTotalTicks = std::max( pScan->info.llTotalTicks, llTick ); }
+                    if ( COUNT ) { llOutOfRange++; llTotalTicks = std::max( llTotalTicks, llTick ); }
                     continue;
                 }
 
@@ -412,28 +425,28 @@ namespace
                     if ( iType == 0x9 && aData[1] > 0 ) sim.On( iChannel, aData[0], llTick );
                     else if ( iType == 0x8 || iType == 0x9 ) sim.Off( iChannel, aData[0], llTick );
                     uEvents++;
-                    pScan->llChannelEvents++;
+                    llChannelEvents++;
                     AddInfo( llTick );
                     RefTrackInfo &info = pScan->info;
                     // MIDITrackInfo::AddEventInfo
                     if ( iType == 0x9 && aData[1] > 0 )
                     {
-                        if ( !info.llNoteCount )
+                        if ( !llNotes )
                         {
-                            info.iMinNote = info.iMaxNote = aData[0];
-                            info.iMaxVolume = aData[1];
+                            iMinNote = iMaxNote = aData[0];
+                            iMaxVolume = aData[1];
                         }
                         else
                         {
-                            info.iMinNote = std::min< int >( aData[0], info.iMinNote );
-                            info.iMaxNote = std::max< int >( aData[0], info.iMaxNote );
-                            info.iMaxVolume = std::max< int >( aData[1], info.iMaxVolume );
+                            iMinNote = std::min< int >( aData[0], iMinNote );
+                            iMaxNote = std::max< int >( aData[0], iMaxNote );
+                            iMaxVolume = std::max< int >( aData[1], iMaxVolume );
                         }
-                        info.llNoteCount++;
-                        info.llVolumeSum += aData[1];
+                        llNotes++;
+                        llVolumeSum += aData[1];
                         if ( !info.aNoteCount[iChannel] ) info.iNumChannels++;
                         info.aNoteCount[iChannel]++;
-                        pScan->aKeyCounts[aData[0]]++;
+                        aKeyCounts[aData[0]]++;
                     }
                     else if ( iType == 0xC && info.aProgram[iChannel] != aData[0] )
                         info.aProgram[iChannel] = info.aNoteCount[iChannel] > 0 ? 128 : aData[0];
@@ -480,6 +493,15 @@ namespace
         }
 
         CloseGroup();
+        if ( COUNT )
+        {
+            RefTrackInfo &out = pScan->info;
+            out.llEventCount = llEventCount; out.llTotalTicks = llTotalTicks; out.llNoteCount = llNotes; out.llVolumeSum = llVolumeSum;
+            out.iMinNote = iMinNote; out.iMaxNote = iMaxNote; out.iMaxVolume = iMaxVolume;
+            pScan->llChannelEvents += llChannelEvents;
+            pScan->llOutOfRange += llOutOfRange;
+            for ( int k = 0; k < 128; k++ ) pScan->aKeyCounts[k] += aKeyCounts[k];
+        }
         if ( COUNT && llGroup >= 0 ) pScan->AddGroup( llGroupTick, uSize );
         if ( COUNT ) sim.Finish( (uint64_t)iTrack, pScan->vKnownId, pScan->vKnownEnd, pScan->vKnownDur );
         Flush( (uint64_t)( llGroup + 1 ) );
@@ -546,13 +568,48 @@ namespace
         std::vector< std::unique_ptr< TrackScan > > vScans;
         std::atomic< uint64_t > llBytesCounted{ 0 };
         // A note held this long (4 beats) has its end found by the count pass (PairSim)
-        const int64_t llLongTicks = (int64_t)info.iDivision * 4;
+        const int64_t llLongTicks = (int64_t)( info.iDivision * ( getenv( "PFAVIZ_LONGBEATS" ) ? atof( getenv( "PFAVIZ_LONGBEATS" ) ) : 4.0 ) );   // TEMP
         std::vector< int64_t > vKnownEndTick;   // Song::vKnownEnd in ticks, until the unique ticks are known
+        auto NewScan = [&]( uint64_t llBegin, uint64_t llEnd ) {
+            vScans.push_back( std::make_unique< TrackScan >() );
+            TrackScan *p = vScans.back().get();
+            p->llBegin = llBegin;
+            p->llEnd = llEnd;
+            p->llLongTicks = llLongTicks;
+            return p;
+        };
+        // Not following a sequential reader, the file is all there: every chunk first, and the largest
+        // tracks parsed first, so a big track late in the file does not run on after the others
+        std::vector< uint32_t > vOrder;
+        std::atomic< size_t > iNextScan{ 0 };
+        if ( !bSequential )
+        {
+            for ( uint64_t q = llNextChunk; q + 8 <= llSize; )
+            {
+                uint64_t llBegin = q + 8, llEnd = std::min< uint64_t >( llBegin + BE( pData + q + 4, 4 ), llSize );
+                if ( memcmp( pData + q, "MTrk", 4 ) == 0 ) NewScan( llBegin, llEnd );    // unknown chunks: skipped
+                q = llEnd;
+            }
+            llNextChunk = llSize;
+            vOrder.resize( vScans.size() );
+            for ( size_t t = 0; t < vOrder.size(); t++ ) vOrder[t] = (uint32_t)t;
+            std::stable_sort( vOrder.begin(), vOrder.end(), [&]( uint32_t a, uint32_t b ) {
+                return vScans[a]->llEnd - vScans[a]->llBegin > vScans[b]->llEnd - vScans[b]->llBegin; } );
+            prog.llTracksFound = vScans.size();
+        }
         Parallel::For( iThreads, (size_t)iThreads, [&]( size_t, int ) {
             for ( ;; )
             {
                 TrackScan *pScan = nullptr;
                 int iTrack = -1;
+                if ( !bSequential )
+                {
+                    size_t i = iNextScan++;
+                    if ( i >= vOrder.size() || Cancelled() ) return;
+                    iTrack = (int)vOrder[i];
+                    pScan = vScans[iTrack].get();
+                }
+                else
                 {
                     std::lock_guard< std::mutex > lock( mtx );
                     while ( !pScan && !Cancelled() && llNextChunk + 8 <= llSize )
@@ -564,11 +621,7 @@ namespace
                         llNextChunk = llEnd;
                         if ( memcmp( pChunk, "MTrk", 4 ) != 0 ) continue; // unknown chunk: skipped
                         iTrack = (int)vScans.size();
-                        vScans.push_back( std::make_unique< TrackScan >() );
-                        pScan = vScans.back().get();
-                        pScan->llBegin = llBegin;
-                        pScan->llEnd = llEnd;
-                        pScan->llLongTicks = llLongTicks;
+                        pScan = NewScan( llBegin, llEnd );
                         prog.llTracksFound = vScans.size();
                     }
                 }
@@ -606,7 +659,7 @@ namespace
                 for ( int k = 0; k < 128; k++ ) llNotes += sc->aKeyCounts[k];
                 for ( int64_t d : sc->vKnownDur ) if ( d >= 0 ) vDur.push_back( d );
             }
-            size_t iCap = (size_t)std::max< uint64_t >( 1 << 20, llNotes / 256 );
+            size_t iCap = getenv( "PFAVIZ_KEEPALL" ) ? SIZE_MAX : (size_t)std::max< uint64_t >( 1 << 20, llNotes / 256 );   // TEMP
             if ( vDur.size() > iCap )
             {
                 std::nth_element( vDur.begin(), vDur.begin() + ( vDur.size() - iCap ), vDur.end() );
@@ -652,6 +705,7 @@ namespace
         stats.llTracks = vScans.size();
         for ( auto &s : vScans ) stats.llFusedBytes += s->llPackedBytes;
         stats.llNotes = info.llNoteCount;
+        if ( getenv( "PFAVIZ_KEEPALL" ) || getenv( "PFAVIZ_LONGBEATS" ) || getenv( "PFAVIZ_KNOWNDBG" ) ) fprintf( stderr, "known notes kept: %zu\n", song->vKnownId.size() );   // TEMP
 
         // Phase 3: merge
         llPhase = Timer::NowMicroSecs();
@@ -866,6 +920,10 @@ namespace
 
         size_t iChunks = (size_t)( ( es.llRawBytes + EventStream::ChunkSize - 1 ) >> EventStream::ChunkShift );
         es.vChunks.resize( iChunks );
+        // The stored chunks go straight to their place in the stream: one reservation (stored chunks are
+        // at most raw), committed as each window appends its chunks
+        if ( !es.Reserve() ) { sError = L"Out of memory for the event stream."; return nullptr; }
+        uint64_t llData = 0;
         std::vector< std::unique_ptr< uint8_t[] > > vPacked( iChunks );
         std::vector< uint64_t > vCur( T, 0 );          // each track's next group
         std::vector< uint32_t > vCounts;                // per slice of the window, per track
@@ -1021,7 +1079,7 @@ namespace
             dCopy += ( llT1 - llT0 ) / 1e6;
 
             // LZ4 per 64 KiB chunk (stored as is when that is not smaller): the chunks that end in the
-            // window (the last window: all the rest)
+            // window (the last window: all the rest), then appended to the stream in order
             size_t iEnd = s1 == iSlices ? iChunks : (size_t)( llWin1 >> EventStream::ChunkShift );
             Parallel::For( iThreads, iEnd - iNextChunk, [&]( size_t i, int ) {
                 size_t c = iNextChunk + i;
@@ -1033,6 +1091,13 @@ namespace
                 vPacked[c].reset( new uint8_t[iSize] );
                 memcpy( vPacked[c].get(), pTmp.get(), iSize );
                 es.vChunks[c].uSize = (uint32_t)iSize;
+            } );
+            for ( size_t c = iNextChunk; c < iEnd; c++ ) { es.vChunks[c].llOffset = llData; llData += es.vChunks[c].uSize; }
+            if ( !es.Commit( llData ) ) { sError = L"Out of memory for the event stream."; return nullptr; }
+            Parallel::For( iThreads, iEnd - iNextChunk, [&]( size_t i, int ) {
+                size_t c = iNextChunk + i;
+                memcpy( es.data.get() + es.vChunks[c].llOffset, vPacked[c].get(), es.vChunks[c].uSize );
+                vPacked[c].reset();
             } );
             iNextChunk = iEnd;
             dPack += ( Timer::NowMicroSecs() - llT1 ) / 1e6;
@@ -1053,14 +1118,8 @@ namespace
         stats.vSteps.push_back( { prog.iStage.load(), bFused ? L"copy from packed tracks" : L"parse into the stream", dCopy, PrivateBytes() } );
         stats.vSteps.push_back( { prog.iStage.load(), L"LZ4 chunks", dPack, PrivateBytes() } );
         llStep = Timer::NowMicroSecs();
-
-        uint64_t llData = 0;
-        for ( size_t c = 0; c < iChunks; c++ ) { es.vChunks[c].llOffset = llData; llData += es.vChunks[c].uSize; }
         es.llDataBytes = llData;
-        es.data.reset( new ( std::nothrow ) uint8_t[llData + Lz4::Slack] );
-        if ( !es.data ) { sError = L"Out of memory for the event stream."; return nullptr; }
-        for ( size_t c = 0; c < iChunks; c++ ) { memcpy( es.data.get() + es.vChunks[c].llOffset, vPacked[c].get(), es.vChunks[c].uSize ); vPacked[c].reset(); }
-        Step( L"stream into one block" );
+        vPacked = std::vector< std::unique_ptr< uint8_t[] > >();
         stats.adStageSeconds[LoadProgress::Building] = Seconds( llPhase );
         if ( Cancelled() ) { sError = L"Cancelled."; return nullptr; }
 

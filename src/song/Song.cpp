@@ -1,9 +1,29 @@
 #include "song/Song.h"
 
 #include <algorithm>
+#include <windows.h>
 
 #include "core/Lz4.h"
 #include "core/ThreadPool.h"
+
+void EventStream::DataFree::operator()( uint8_t *p ) const { VirtualFree( p, 0, MEM_RELEASE ); }
+
+bool EventStream::Reserve()
+{
+    m_llCommitted = 0;
+    data.reset( (uint8_t *)VirtualAlloc( nullptr, (SIZE_T)( llRawBytes + Lz4::Slack ), MEM_RESERVE, PAGE_READWRITE ) );
+    return (bool)data;
+}
+
+bool EventStream::Commit( uint64_t llEnd )
+{
+    const uint64_t Page = 4096;
+    llEnd = std::min( ( llEnd + Lz4::Slack + Page - 1 ) & ~( Page - 1 ), llRawBytes + Lz4::Slack );
+    if ( llEnd <= m_llCommitted ) return true;
+    if ( !VirtualAlloc( data.get() + m_llCommitted, (SIZE_T)( llEnd - m_llCommitted ), MEM_COMMIT, PAGE_READWRITE ) ) return false;
+    m_llCommitted = llEnd;
+    return true;
+}
 
 bool EventStream::DecodeChunk( size_t c, uint8_t *pOut ) const
 {

@@ -1,5 +1,6 @@
 #include "core/Lz4.h"
 
+#include <algorithm>
 #include <cstring>
 
 namespace
@@ -10,6 +11,7 @@ namespace
     const size_t MatchSearchLimit = 12;     // no match may start in the last 12 bytes
 
     inline uint32_t Read32( const uint8_t *p ) { uint32_t v; memcpy( &v, p, 4 ); return v; }
+    inline uint64_t Read64( const uint8_t *p ) { uint64_t v; memcpy( &v, p, 8 ); return v; }
     inline uint32_t Hash( uint32_t v ) { return ( v * 2654435761u ) >> ( 32 - HashBits ); }
 
     inline uint8_t *WriteLength( uint8_t *op, size_t n )
@@ -39,7 +41,15 @@ size_t Lz4::Compress( const uint8_t *src, size_t n, uint8_t *dst )
             // Extend the match (it may not run into the last literals)
             const uint8_t *matchEnd = end - LastLiterals;
             size_t len = MinMatch;
+            // 8 bytes at a time: the first differing byte is the lowest set byte of the XOR
+            while ( ip + len + 8 <= matchEnd )
+            {
+                uint64_t x = Read64( ref + len ) ^ Read64( ip + len );
+                if ( x ) { len += __builtin_ctzll( x ) >> 3; goto extended; }
+                len += 8;
+            }
             while ( ip + len < matchEnd && ref[len] == ip[len] ) len++;
+        extended:
             // and backwards over pending literals
             while ( ip > anchor && ref > src && ip[-1] == ref[-1] ) { ip--; ref--; len++; }
 
@@ -110,7 +120,14 @@ bool Lz4::Decompress( const uint8_t *src, size_t iSize, uint8_t *dst, size_t iRa
         else if ( off >= 8 )
             for ( ; op < mEnd; op += 8, ref += 8 ) { uint64_t a; memcpy( &a, ref, 8 ); memcpy( op, &a, 8 ); }
         else
-            for ( ; op < mEnd; ) *op++ = *ref++;
+        {
+            // A short period: its first 8 to 14 bytes one at a time, then 8 at a time from a whole
+            // number of periods back (at least 8 bytes, so a copy never reads what it writes)
+            size_t iBack = off * ( ( 8 + off - 1 ) / off );
+            uint8_t *pFirst = op + std::min< size_t >( iBack, ml );
+            for ( ; op < pFirst; ) *op++ = *ref++;
+            for ( ; op < mEnd; op += 8 ) { uint64_t a; memcpy( &a, op - iBack, 8 ); memcpy( op, &a, 8 ); }
+        }
         op = mEnd;
     }
     return op == oend;

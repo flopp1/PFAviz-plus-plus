@@ -724,7 +724,7 @@ public:
         }
         EndPending &e = End( pos >> 6 );
         unsigned j = pos & 63;
-        if ( IsPaired( pos ) && m_bFirstPairingOnly )
+        if ( m_bFirstPairingOnly && IsPaired( pos ) )
         {
             // The off still takes the note out of its slot; its end stays the first off's
             if ( bFromSlot ) SetLive( pos, false );
@@ -1037,7 +1037,7 @@ private:
     const PackedMonotone &m_Times;
     uint64_t m_n = 0, m_llBits = 0;
     StartRec m_aOpen[64];
-    static const size_t RingBlocks = 64;
+    static const size_t RingBlocks = 256;
     std::unique_ptr< StartRec[] > m_pRing;      // streaming: the starts of blocks m_bRawFrom on, by b % RingBlocks
     size_t m_bRawFrom = 0;
     // Per block from m_bBase on (a streaming builder drops the blocks it has compacted)
@@ -1147,6 +1147,8 @@ private:
         uint32_t aSlots[KeyStore::BlockSize];
         uint64_t llMaxDS = 0, llMaxDur = 0, llMaxEnd = 0, llMaxDurUs = 0;
         uint32_t uMaxRank = 0, uMaxDup = 0;
+        // (notes of a block mostly share their start and end: each is looked up once in a row)
+        uint64_t llStartAt = UINT64_MAX, llEndAt = UINT64_MAX, llStartUs = 0, llEndUs = 0;
         for ( unsigned j = 0; j < m_k; j++ )
         {
             const Rec &r = m_a[j];
@@ -1155,11 +1157,27 @@ private:
             llMaxEnd = std::max( llMaxEnd, r.llEndU );
             uMaxRank = std::max( uMaxRank, r.uRank );
             uMaxDup = std::max( uMaxDup, r.uDup );
-            if ( r.llEndU != r.llStartU ) llMaxDurUs = std::max( llMaxDurUs, m_Times.Get( r.llEndU ) - m_Times.Get( r.llStartU ) );
-            aSlots[j] = r.uSlot;
+            if ( r.llEndU != r.llStartU )
+            {
+                if ( r.llStartU != llStartAt ) { llStartAt = r.llStartU; llStartUs = m_Times.Get( llStartAt ); }
+                if ( r.llEndU != llEndAt ) { llEndAt = r.llEndU; llEndUs = m_Times.Get( llEndAt ); }
+                llMaxDurUs = std::max( llMaxDurUs, llEndUs - llStartUs );
+            }
         }
-        std::sort( aSlots, aSlots + m_k );
-        unsigned iPal = (unsigned)( std::unique( aSlots, aSlots + m_k ) - aSlots );
+        // The palette: the block's distinct slots, sorted (notes come in runs of one slot: a slot is
+        // looked up once per run)
+        unsigned iPal = 0;
+        for ( unsigned j = 0, uLast = UINT32_MAX; j < m_k; j++ )
+        {
+            uint32_t uSlot = m_a[j].uSlot;
+            if ( uSlot == uLast ) continue;
+            uLast = uSlot;
+            uint32_t *pAt = std::lower_bound( aSlots, aSlots + iPal, uSlot );
+            if ( pAt < aSlots + iPal && *pAt == uSlot ) continue;
+            memmove( pAt + 1, pAt, ( aSlots + iPal - pAt ) * sizeof( uint32_t ) );
+            *pAt = uSlot;
+            iPal++;
+        }
         c.uPalette = (uint32_t)m_Out.m_vPalette.size();
         m_Out.m_vPalette.insert( m_Out.m_vPalette.end(), aSlots, aSlots + iPal );
         c.wStart = (uint8_t)Bits( llMaxDS );
@@ -1172,10 +1190,11 @@ private:
         uint64_t llNeed = ( m_llBits + 63 ) / 64 + 1;
         if ( m_Out.m_vBits.size() < llNeed ) m_Out.m_vBits.Resize( (size_t)llNeed, true );
         uint64_t llBit = c.llBit;
+        uint32_t uPalSlot = UINT32_MAX, uPal = 0;
         for ( unsigned j = 0; j < m_k; j++ )
         {
             const Rec &r = m_a[j];
-            uint32_t uPal = (uint32_t)( std::lower_bound( aSlots, aSlots + iPal, r.uSlot ) - aSlots );
+            if ( r.uSlot != uPalSlot ) { uPalSlot = r.uSlot; uPal = (uint32_t)( std::lower_bound( aSlots, aSlots + iPal, r.uSlot ) - aSlots ); }
             Write( llBit, c.wStart, r.llStartU - c.llStartBase ); llBit += c.wStart;
             Write( llBit, c.wPal, uPal ); llBit += c.wPal;
             Write( llBit, c.wRank, r.uRank ); llBit += c.wRank;
@@ -1281,7 +1300,7 @@ private:
         std::sort( m_vEnds.begin(), m_vEnds.end(), []( const End &a, const End &b ) { return a.llLast < b.llLast; } );
         for ( const End &e : m_vEnds ) m_cb.Add( m_llGroupStart, e.llEnd, e.uSlot, e.uRank );
         m_vEnds.clear();
-        m_mapEnds.clear();
+        if ( !m_mapEnds.empty() ) m_mapEnds.clear();    // (clear() zeroes every bucket, even of an empty map)
         m_iLast = 0;
     }
 
@@ -1431,7 +1450,7 @@ namespace
                 cb.AddCodes( vCodes, Bits( uClasses + ( llUnpaired ? 1 : 0 ) - 1 ) );
             }
             vEnds.clear();
-            mapEnds.clear();
+            if ( !mapEnds.empty() ) mapEnds.clear();     // (clear() zeroes every bucket, even of an empty map)
             vWeird.clear();
             llUnpaired = 0;
             iLast = 0;
@@ -1482,28 +1501,54 @@ namespace
 namespace
 {
     // The original's per-(track, pitch) list of NoteOns, as runs of consecutive positions: in a
-    // chord or crash, one track's notes of a key at one tick are consecutive in the key's list
+    // chord or crash, one track's notes of a key at one tick are consecutive in the key's list.
+    // Only the top is used, and a stack can hold hundreds of runs (tombstones under live notes): the
+    // top runs are inline, in the cache line after the rest of the state, the older ones on the heap
     class RunStack
     {
     public:
-        bool Empty() const { return m_v.empty(); }
-        uint32_t Back() const { return m_v.back().uStart + m_v.back().uLen - 1; }
-        void PopBack() { if ( !--m_v.back().uLen ) m_v.pop_back(); }
+        bool Empty() const { return !m_nTop; }
+        uint32_t Back() const { return m_aTop[m_nTop - 1].uStart + m_aTop[m_nTop - 1].uLen - 1; }
+        void PopBack()
+        {
+            if ( !--m_aTop[m_nTop - 1].uLen && !--m_nTop && m_pSpill && !m_pSpill->empty() ) Refill();
+        }
         void Push( uint32_t pos )
         {
-            if ( !m_v.empty() && m_v.back().uStart + m_v.back().uLen == pos ) m_v.back().uLen++;
-            else m_v.push_back( { pos, 1 } );
+            if ( m_nTop && m_aTop[m_nTop - 1].uStart + m_aTop[m_nTop - 1].uLen == pos ) { m_aTop[m_nTop - 1].uLen++; return; }
+            if ( m_nTop == Inline ) Spill();
+            m_aTop[m_nTop++] = { pos, 1 };
         }
         template < class F > void ForEach( F &&fn ) const
         {
-            for ( const Run &r : m_v )
-                for ( uint32_t i = 0; i < r.uLen; i++ ) fn( r.uStart + i );
+            auto Each = [&]( const Run &r ) { for ( uint32_t i = 0; i < r.uLen; i++ ) fn( r.uStart + i ); };
+            if ( m_pSpill ) for ( const Run &r : *m_pSpill ) Each( r );
+            for ( unsigned i = 0; i < m_nTop; i++ ) Each( m_aTop[i] );
         }
-        void Clear() { m_v.clear(); m_v.shrink_to_fit(); }
+        void Clear() { m_nTop = 0; m_pSpill.reset(); }
 
     private:
         struct Run { uint32_t uStart, uLen; };
-        std::vector< Run > m_v;
+        static const unsigned Inline = 6, Kept = 2;     // runs inline; kept there when they spill
+        // The oldest Inline - Kept runs move to the heap
+        void Spill()
+        {
+            if ( !m_pSpill ) m_pSpill.reset( new std::vector< Run >() );
+            m_pSpill->insert( m_pSpill->end(), m_aTop, m_aTop + ( Inline - Kept ) );
+            memmove( m_aTop, m_aTop + ( Inline - Kept ), Kept * sizeof( Run ) );
+            m_nTop = Kept;
+        }
+        // The inline runs are used up: the newest Inline - Kept from the heap
+        void Refill()
+        {
+            size_t n = std::min< size_t >( Inline - Kept, m_pSpill->size() );
+            memcpy( m_aTop, m_pSpill->data() + m_pSpill->size() - n, n * sizeof( Run ) );
+            m_pSpill->resize( m_pSpill->size() - n );
+            m_nTop = (uint8_t)n;
+        }
+        Run m_aTop[Inline];
+        std::unique_ptr< std::vector< Run > > m_pSpill;
+        uint8_t m_nTop = 0;
     };
 }
 
@@ -1618,9 +1663,13 @@ namespace
             m_vGiant.resize( iSegments );
             for ( size_t g = 0; g < iSegments; g++ ) m_vGiant[g] = vRaw[g + 1] - vRaw[g] > GiantBytes;
             iLanes = std::max( 1, std::min( iLanes, iWorkers ) );
-            for ( int k = 0; k < 128; k++ ) { m_aOwner[k] = aOwner[k]; m_aLane[k] = aOwner[k] >= 0 ? aOwner[k] % iLanes : -1; }
+            for ( int k = 0; k < 128; k++ ) m_aRoute[k] = (int8_t)aOwner[k];
             for ( int l = 0; l < iLanes; l++ )
+            {
                 m_vLanes.emplace_back( new Lane( iWorkers, ( iWorkers - l + iLanes - 1 ) / iLanes, iSegments ) );
+                // A giant segment: every lane, each for the keys of its own workers (worker w: lane w % L)
+                for ( int k = 0; k < 128; k++ ) m_vLanes.back()->aRouteGiant[k] = (int8_t)( aOwner[k] >= 0 && aOwner[k] % iLanes == l ? aOwner[k] : -1 );
+            }
         }
 
         int Lanes() const { return (int)m_vLanes.size(); }
@@ -1651,40 +1700,79 @@ namespace
                 if ( !pB ) break;
                 pB->llBaseU = pB->llCompleteU = u0;
                 size_t n = 0;
-                uint32_t uOrd = 0;
-                uint64_t llGroups = 0;
-                bool bOk = m_es.Walk( (size_t)u0, (size_t)u1, [&]( size_t u, const StreamEvent &e ) {
-                    unsigned t = e.cStatus >> 4;
-                    if ( ( t == 0x9 || t == 0x8 ) && pB && m_aOwner[e.cData1] >= 0 && ( !bGiant || m_aLane[e.cData1] == l ) )
+                // The stream's grammar (Song.h) parsed here rather than through Walk: per key byte, one
+                // table lookup gives the worker, or -1 (not routed by this lane)
+                const int8_t *pRoute = bGiant ? ln.aRouteGiant : m_aRoute;
+                bool bOk = true;
+                {
+                    const EventStream::SeekPoint &sp = m_es.SeekPointFor( (size_t)u0 );
+                    StreamBytes r;
+                    r.Start( m_es, sp.llRaw );
+                    uint64_t u = sp.llU;
+                    int64_t llPrev = -1;
+                    uint64_t llGroups = 0;
+                    std::vector< NoteRec > *pPer = pB->vPer.data();
+                    uint64_t llBase = pB->llBaseU;
+                    while ( u < u1 )
                     {
-                        if ( n >= BatchRecs || u - pB->llBaseU >= UINT32_MAX )
+                        r.Need();
+                        uint64_t hdr = EventStream::ReadVar( r.p );
+                        uint32_t uTrack = (uint32_t)( llPrev + 1 + (int64_t)( hdr >> 1 ) );
+                        bool bEmit = u >= u0;
+                        uint32_t uOrd = 0;
+                        unsigned h;
+                        do
                         {
-                            uint64_t llComplete = pB->llCompleteU;
-                            Publish( ln, s++, iReaders, false );
-                            pB = Acquire( ln, s );
-                            n = 0;
-                            if ( pB ) { pB->llBaseU = u; pB->llCompleteU = llComplete; }
+                            r.Need();
+                            h = *r.p++;
+                            unsigned op = h >> 5;
+                            if ( op > 2 ) { r.p += ( op == 5 || op == 6 ) ? 1 : 2; uOrd++; continue; }
+                            // NoteOn (op 0, velocity > 0) or NoteOff (op 1, or 2: a NoteOn of velocity 0)
+                            if ( op != 2 ) r.p++;
+                            uint8_t cCh = (uint8_t)( ( h & 0x0F ) | ( op == 0 ? 0x80 : 0 ) );
+                            unsigned k;
+                            do
+                            {
+                                r.Need();
+                                k = *r.p++;
+                                unsigned key = k & 0x7F;
+                                int w = pRoute[key];
+                                if ( w >= 0 && bEmit )
+                                {
+                                    if ( n >= BatchRecs || u - llBase >= UINT32_MAX )
+                                    {
+                                        uint64_t llComplete = pB->llCompleteU;
+                                        Publish( ln, s++, iReaders, false );
+                                        pB = Acquire( ln, s );
+                                        n = 0;
+                                        if ( !pB ) { bOk = false; break; }
+                                        pB->llBaseU = llBase = u;
+                                        pB->llCompleteU = llComplete;
+                                        pPer = pB->vPer.data();
+                                    }
+                                    pPer[w].push_back( { (uint32_t)( u - llBase ), uTrack, uOrd, (uint8_t)key, cCh } );
+                                    n++;
+                                }
+                                uOrd++;
+                            } while ( !( k & 0x80 ) );
+                        } while ( bOk && !( h & 0x10 ) );
+                        if ( !bOk ) break;
+                        if ( hdr & 1 )
+                        {
+                            if ( bEmit ) pB->llCompleteU = u + 1;
+                            u++;
+                            llPrev = -1;
                         }
-                        if ( pB )
+                        else llPrev = uTrack;
+                        if ( ( ++llGroups & 1023 ) == 0 &&
+                             ( m_bAbort.load( std::memory_order_relaxed ) || ( pCancel && pCancel->load( std::memory_order_relaxed ) ) ||
+                               ( pStop && pStop->load( std::memory_order_relaxed ) ) ) )
                         {
-                            pB->vPer[m_aOwner[e.cData1]].push_back( { (uint32_t)( u - pB->llBaseU ), e.uTrack, uOrd, e.cData1,
-                                                                    (uint8_t)( ( e.cStatus & 0x0F ) | ( t == 0x9 && e.cData2 ? 0x80 : 0 ) ) } );
-                            n++;
+                            bOk = false;
+                            break;
                         }
                     }
-                    uOrd++;
-                }, [&]( size_t u, uint32_t, bool bLastOfTick ) {
-                    uOrd = 0;
-                    if ( !pB ) return false;
-                    if ( bLastOfTick ) pB->llCompleteU = u + 1;
-                    if ( ( ++llGroups & 1023 ) == 0 )
-                    {
-                        if ( m_bAbort.load( std::memory_order_relaxed ) ) return false;
-                        if ( pCancel && pCancel->load( std::memory_order_relaxed ) ) return false;
-                        if ( pStop && pStop->load( std::memory_order_relaxed ) ) return false;
-                    }
-                    return true;
-                } );
+                }
                 if ( !bOk || !pB ) { Abort(); break; }
                 pB->llCompleteU = u1;
                 Publish( ln, s++, iReaders, true );     // the segment's last batch
@@ -1745,6 +1833,7 @@ namespace
                 for ( Batch &bt : aSlots ) bt.vPer.resize( iWorkers );
             }
             int iMine;                          // workers reading this lane's giant segments
+            int8_t aRouteGiant[128];            // per key: its worker, in a giant segment (-1: another lane's)
             std::mutex mx;
             std::condition_variable cv;
             Batch aSlots[Window];
@@ -1776,7 +1865,7 @@ namespace
 
         const EventStream &m_es;
         int m_iWorkers;
-        int m_aOwner[128], m_aLane[128];
+        int8_t m_aRoute[128];                       // per key: its worker (-1: none)
         std::vector< uint64_t > m_vCuts;            // segment g is ticks [m_vCuts[g], m_vCuts[g + 1])
         std::vector< bool > m_vGiant;
         std::vector< std::unique_ptr< Lane > > m_vLanes;
@@ -1833,30 +1922,58 @@ public:
     }
 
 private:
-    // A song can have a million (track, key) states at once, nearly all on one channel: the slots of
-    // the first channel used are here, the others' apart. What a NoteOn or NoteOff touches comes first;
-    // the stack (overflowing channels) and the other channels' slots after
-    struct KeyState
+    // A song can have a million (track, key) states at once, nearly all on one channel, and a NoteOn
+    // or NoteOff touches one at random among its thread's: one cache line, and the next for a state
+    // with a stack. The first channel used is here, the others in an extra record.
+    // The stack: from a channel's first overflow, every NoteOn (paired ones are tombstones), the
+    // unpaired slots' first; the overflow pairs the latest unpaired NoteOn of the key in the track
+    struct KeyExtra
     {
         uint32_t aCount[16];
-        uint32_t aSlots0[10];
-        int8_t cCh0;                        // the channel of aSlots0 (-1: none yet)
-        bool bStacked;                      // since a channel first overflowed: every NoteOn is in the stack
-        uint32_t uOns;                      // NoteOns so far
-        const uint64_t *pKnown, *pKnownEnd; // its notes in Song::vKnownId not reached yet
-        // Until a channel overflows, empty: the overflow pairs the latest unpaired NoteOn of the key in
-        // the track, which is then the stack's last; from then on, every NoteOn (paired ones are
-        // tombstones), the unpaired slots' first
-        RunStack stack;
-        std::unique_ptr< uint32_t[] > pMore; // 16 x 10, for the other channels'
-        uint32_t *Slots( unsigned ch )
-        {
-            if ( cCh0 == (int)ch ) return aSlots0;
-            if ( cCh0 < 0 ) { cCh0 = (int8_t)ch; return aSlots0; }
-            if ( !pMore ) pMore.reset( new uint32_t[16 * 10] );
-            return &pMore[ch * 10];
-        }
+        uint32_t aSlots[16 * 10];
     };
+    struct alignas( 64 ) KeyState
+    {
+        uint32_t aSlots0[10];
+        uint32_t uCount0;                   // NoteOns minus NoteOffs on cCh0
+        uint32_t uOns;                      // NoteOns so far
+        uint32_t uExtra;                    // m_vExtra index + 1 (0: none)
+        uint32_t uKnownLo;                  // its next note in Song::vKnownId, in 40 bits (NoKnown: none left)
+        uint8_t cKnownHi;
+        int8_t cCh0;                        // the channel of aSlots0 (-1: none yet)
+        bool bStacked;                      // since a channel first overflowed
+        alignas( 64 ) RunStack stack;
+    };
+    static_assert( sizeof( KeyState ) == 128, "two cache lines" );
+    static const uint64_t NoKnown = ( uint64_t( 1 ) << 40 ) - 1;
+
+    // Index i of Song::vKnownId if it is a note of the state with this id prefix, else NoKnown
+    void SetKnown( KeyState &s, uint64_t i, uint64_t llPrefix ) const
+    {
+        const std::vector< uint64_t > &v = m_Song.vKnownId;
+        if ( i >= v.size() || ( v[i] >> 40 ) != ( llPrefix >> 40 ) ) i = NoKnown;
+        s.uKnownLo = (uint32_t)i;
+        s.cKnownHi = (uint8_t)( i >> 32 );
+    }
+
+    KeyExtra &Extra( KeyState &s )
+    {
+        if ( !s.uExtra )
+        {
+            if ( !m_vExtraFree.empty() ) { s.uExtra = m_vExtraFree.back(); m_vExtraFree.pop_back(); }
+            else { m_vExtra.emplace_back(); s.uExtra = (uint32_t)m_vExtra.size(); }
+            KeyExtra &x = m_vExtra[s.uExtra - 1];
+            memset( x.aCount, 0, sizeof( x.aCount ) );
+        }
+        return m_vExtra[s.uExtra - 1];
+    }
+    uint32_t Count( const KeyState &s, unsigned ch ) const
+    {
+        if ( s.cCh0 == (int)ch ) return s.uCount0;
+        return s.uExtra ? m_vExtra[s.uExtra - 1].aCount[ch] : 0;
+    }
+    uint32_t &CountRef( KeyState &s, unsigned ch ) { return s.cCh0 == (int)ch ? s.uCount0 : Extra( s ).aCount[ch]; }
+    uint32_t *Slots( KeyState &s, unsigned ch ) { return s.cCh0 == (int)ch ? s.aSlots0 : &Extra( s ).aSlots[ch * 10]; }
 
     KeyState &State( uint32_t uTrack, unsigned key )
     {
@@ -1866,16 +1983,15 @@ private:
             if ( !m_vFree.empty() ) { idx = m_vFree.back(); m_vFree.pop_back(); }
             else { m_vPool.emplace_back(); idx = (uint32_t)m_vPool.size(); }
             KeyState &s = m_vPool[idx - 1];
-            memset( s.aCount, 0, sizeof( s.aCount ) );
-            s.cCh0 = -1;
-            s.bStacked = false;
-            s.pMore.reset();
-            s.stack.Clear();
+            s.uCount0 = 0;
             s.uOns = 0;
+            s.uExtra = 0;
+            s.bStacked = false;
+            s.stack.Clear();
+            s.cCh0 = -1;
             const std::vector< uint64_t > &v = m_Song.vKnownId;
-            uint64_t llLo = ( (uint64_t)uTrack << 48 ) | ( (uint64_t)key << 40 ), llHi = llLo | ( ( uint64_t( 1 ) << 40 ) - 1 );
-            s.pKnown = v.data() + ( std::lower_bound( v.begin(), v.end(), llLo ) - v.begin() );
-            s.pKnownEnd = v.data() + ( std::upper_bound( v.begin(), v.end(), llHi ) - v.begin() );
+            uint64_t llPrefix = ( (uint64_t)uTrack << 48 ) | ( (uint64_t)key << 40 );
+            SetKnown( s, (uint64_t)( std::lower_bound( v.begin(), v.end(), llPrefix ) - v.begin() ), llPrefix );
         }
         return m_vPool[idx - 1];
     }
@@ -1886,17 +2002,21 @@ private:
         KeyBuilder &kb = *m_vBuilders[key];
         uint64_t pos = kb.Append( u, uTrack * 16 + ch, uOrd );
         KeyState &s = State( uTrack, key );
+        if ( s.cCh0 < 0 ) s.cCh0 = (int8_t)ch;
         // A note whose pairing the count pass found is final now: one no off will pair would otherwise be
         // live in its slot until its track ends, a long one until its off, and every later note of the
         // key would wait for it
-        bool bMatch = s.pKnown < s.pKnownEnd && ( *s.pKnown & ( ( uint64_t( 1 ) << 40 ) - 1 ) ) == s.uOns, bKnown = bMatch;
-        uint64_t llKnownEnd = bKnown ? m_Song.vKnownEnd[s.pKnown - m_Song.vKnownId.data()] : UINT64_MAX;
+        uint64_t llKnown = s.uKnownLo | ( (uint64_t)s.cKnownHi << 32 );
+        uint64_t llPrefix = ( (uint64_t)uTrack << 48 ) | ( (uint64_t)key << 40 );
+        bool bMatch = llKnown != NoKnown && m_Song.vKnownId[llKnown] == ( llPrefix | s.uOns ), bKnown = bMatch;
+        uint64_t llKnownEnd = bKnown ? m_Song.vKnownEnd[llKnown] : UINT64_MAX;
         if ( bKnown && llKnownEnd != UINT64_MAX && !kb.CanPrePair() ) bKnown = false;
-        s.pKnown += bMatch;
+        if ( bMatch ) SetKnown( s, llKnown + 1, llPrefix );
         s.uOns++;
-        if ( s.aCount[ch] < 10 )
+        uint32_t &uCount = CountRef( s, ch );
+        if ( uCount < 10 )
         {
-            s.Slots( ch )[s.aCount[ch]] = (uint32_t)pos;
+            Slots( s, ch )[uCount] = (uint32_t)pos;
             if ( !bKnown ) kb.SetLive( pos, true );
         }
         else if ( !s.bStacked )
@@ -1905,24 +2025,26 @@ private:
             uint32_t aPos[160];
             unsigned n = 0;
             for ( unsigned c = 0; c < 16; c++ )
-                if ( s.aCount[c] )
-                {
-                    const uint32_t *pSlots = s.Slots( c );
-                    for ( uint32_t j = 0; j < std::min< uint32_t >( s.aCount[c], 10 ); j++ )
-                        if ( !kb.IsPaired( pSlots[j] ) ) aPos[n++] = pSlots[j];
-                }
+            {
+                uint32_t k = Count( s, c );
+                if ( !k ) continue;
+                const uint32_t *pSlots = Slots( s, c );
+                for ( uint32_t j = 0; j < std::min< uint32_t >( k, 10 ); j++ )
+                    if ( !kb.IsPaired( pSlots[j] ) ) aPos[n++] = pSlots[j];
+            }
             std::sort( aPos, aPos + n );
             for ( unsigned j = 0; j < n; j++ ) s.stack.Push( aPos[j] );
             s.bStacked = true;
         }
         if ( s.bStacked )
         {
-            while ( !s.stack.Empty() && kb.IsPaired( s.stack.Back() ) ) s.stack.PopBack();
-            s.stack.Push( (uint32_t)pos );
+            RunStack &st = s.stack;
+            while ( !st.Empty() && kb.IsPaired( st.Back() ) ) st.PopBack();
+            st.Push( (uint32_t)pos );
         }
         if ( bKnown && llKnownEnd == UINT64_MAX ) kb.Resolve( pos );
         else if ( bKnown ) kb.PrePair( pos, llKnownEnd );
-        s.aCount[ch]++;
+        CountRef( s, ch )++;    // (the extra record may have moved)
     }
 
     void Off( uint32_t uTrack, unsigned ch, unsigned key, uint64_t u, uint32_t uOrd )
@@ -1930,19 +2052,21 @@ private:
         uint32_t idx = m_vStateIdx[uTrack * m_vKeys.size() + m_aMine[key]];
         if ( !idx ) return;
         KeyState &s = m_vPool[idx - 1];
-        if ( !s.aCount[ch] ) return;
+        uint32_t uCount = Count( s, ch );
+        if ( !uCount ) return;
         if ( m_pStats ) m_pStats->Off( u );    // releases a held note (NoteStats)
         KeyBuilder &kb = *m_vBuilders[key];
-        if ( s.aCount[ch] <= 10 )
-            kb.Pair( s.Slots( ch )[s.aCount[ch] - 1], u, uOrd, true );
+        if ( uCount <= 10 )
+            kb.Pair( Slots( s, ch )[uCount - 1], u, uOrd, true );
         else
         {
             // Overflow: the latest unpaired NoteOn of this pitch in the track, on any channel (the state
             // is stacked: a channel overflowed)
-            while ( !s.stack.Empty() && kb.IsPaired( s.stack.Back() ) ) s.stack.PopBack();
-            if ( !s.stack.Empty() ) kb.Pair( s.stack.Back(), u, uOrd, false );
+            RunStack &st = s.stack;
+            while ( !st.Empty() && kb.IsPaired( st.Back() ) ) st.PopBack();
+            if ( !st.Empty() ) kb.Pair( st.Back(), u, uOrd, false );
         }
-        s.aCount[ch]--;
+        CountRef( s, ch )--;
     }
 
     // Nothing in the track can change any more: provisional pairings are final, unpaired ons are dropped
@@ -1954,15 +2078,20 @@ private:
             if ( !idx ) continue;
             KeyState &s = m_vPool[idx - 1];
             KeyBuilder &kb = *m_vBuilders[m_vKeys[m]];
-            for ( int ch = 0; ch < 16; ch++ )
-                for ( uint32_t j = 0; j < std::min< uint32_t >( s.aCount[ch], 10 ); j++ )
+            for ( unsigned ch = 0; ch < 16; ch++ )
+            {
+                uint32_t k = Count( s, ch );
+                if ( !k ) continue;
+                const uint32_t *pSlots = Slots( s, ch );
+                for ( uint32_t j = 0; j < std::min< uint32_t >( k, 10 ); j++ )
                 {
-                    uint64_t pos = s.Slots( ch )[j];
-                    kb.SetLive( pos, false );
-                    kb.Resolve( pos );
+                    kb.SetLive( pSlots[j], false );
+                    kb.Resolve( pSlots[j] );
                 }
+            }
             s.stack.ForEach( [&]( uint32_t pos ) { if ( !kb.IsPaired( pos ) ) kb.Resolve( pos ); } );
             s.stack.Clear();
+            if ( s.uExtra ) m_vExtraFree.push_back( s.uExtra );
             m_vFree.push_back( idx );
             idx = 0;
         }
@@ -1977,6 +2106,8 @@ private:
     std::vector< uint32_t > m_vStateIdx;
     std::vector< KeyState > m_vPool;
     std::vector< uint32_t > m_vFree;
+    std::vector< KeyExtra > m_vExtra;
+    std::vector< uint32_t > m_vExtraFree;
     StatsRecorder *m_pStats = nullptr;
 };
 

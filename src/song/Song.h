@@ -43,6 +43,8 @@ struct StreamEvent
 class EventStream
 {
 public:
+    // The stored chunks: one reservation of the raw size, committed as the chunks are stored
+    struct DataFree { void operator()( uint8_t *p ) const; };
     static const unsigned ChunkShift = 16;
     static const size_t ChunkSize = size_t( 1 ) << ChunkShift;
     struct Chunk { uint64_t llOffset; uint32_t uSize; };   // in data; uSize == raw size: stored uncompressed
@@ -52,9 +54,14 @@ public:
     PackedMonotone times;                   // microseconds of each unique tick (R3)
     std::vector< Chunk > vChunks;
     std::vector< SeekPoint > vSeek;         // ascending; the first tick starting in each chunk that has one
-    std::unique_ptr< uint8_t[] > data;      // the stored chunks
+    std::unique_ptr< uint8_t[], DataFree > data;
     uint64_t llRawBytes = 0, llDataBytes = 0;
     uint64_t llEvents = 0;
+
+    // A reservation for the stored chunks (the raw size plus the decoder's slack), nothing committed
+    bool Reserve();
+    // Commits the reservation up to llEnd (plus the slack)
+    bool Commit( uint64_t llEnd );
 
     size_t UniqueTicks() const { return ticks.Size(); }
     size_t ChunkRaw( size_t c ) const { return (size_t)std::min< uint64_t >( ChunkSize, llRawBytes - ( (uint64_t)c << ChunkShift ) ); }
@@ -94,6 +101,9 @@ public:
     {
         Walk( 0, UniqueTicks(), fn, []( size_t, uint32_t, bool ) { return true; } );
     }
+
+private:
+    uint64_t m_llCommitted = 0;
 };
 
 // The raw stream as consecutive bytes: chunks are decoded as the reader moves on. After Need(),
