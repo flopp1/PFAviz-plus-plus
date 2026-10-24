@@ -6,12 +6,12 @@ A performance rewrite of [Piano From Above](https://github.com/brian-pantano/Pia
 
 **Loading**
 - Files load on a background thread with a progress and statistics popup: per-stage times, throughput, memory in use and its peak.
-- The loader is memory-mapped and multi-threaded. A 100 M-note file loads in about 2.1 s on a 6-core CPU; files that do not fit in memory are read once, at the disk's sequential speed.
+- The loader is memory-mapped and multi-threaded. A 100 M-note file loads in about 1.9 s on a 6-core CPU; files that do not fit in memory are read once, at the disk's sequential speed.
 - Events are stored LZ4-compressed (0.2–0.4 bytes per event on black MIDIs), and notes that can never show are dropped: a 1.1 billion-note, 6.3 GB file takes about 270 MB once loaded.
-- Peak memory while loading stays close to what the song takes once loaded. The event stream is built a window at a time, and the count pass already works out which notes no note-off will pair and when long notes end, so pairing finishes those at once instead of holding back every later note of their key. *Night of Nights* (17.7 GB, 2.3 billion notes): peak 10.4 → 4.8 GB, 3.9 GB once loaded; *Destruction 321 SE*: 2.7 → 1.7 GB.
+- Peak memory while loading stays close to what the song takes once loaded. The event stream is built a window at a time, and the count pass already works out which notes no note-off will pair and when long notes end, so pairing finishes those at once instead of holding back every later note of their key. *Night of Nights* (17.7 GB, 2.3 billion notes): peak 10.4 → 4.4 GB, 3.9 GB once loaded; *Destruction 321 SE*: 2.7 → 1.5 GB.
 - **Compact visual store** (Performance tab, on by default) keeps the notes LZ4-compressed in groups of 2048 per key, decoding only the groups a frame draws: 20–36 % less memory for the notes (*Night of Nights*: 2,260 → 1,635 MB), with the same pixels. Frames read from it while scrubbing (a jump every frame) cost 0–25 % more CPU, still under about 6 ms on *Night of Nights* and *Destruction 321 SE*.
 - Notes transposed past key 127 (a common black MIDI artefact) are read as stock Piano From Above reads them and dropped, instead of throwing the rest of their track out of step; velocities and controller values past 127 are clamped.
-- **Weird notes end at their own note-off.** When more than 10 notes stack up on one channel and key in a track, the original pairs the next note-off with the latest unpaired note of that key on *any* channel; a note taken from another channel's stack is then paired again by its own channel's note-off. The original draws it to that later note-off but stops drawing it (and unlights its key) at the first one, so it seems to end early, often the moment it reaches the keyboard. Here it lasts to its later note-off, which in *Night of Nights* is its own channel's for 1,146 of its 1,174 such notes (a note-off on another channel cannot end it). Songs with them also load with one pairing pass instead of two (*Night of Nights*, from an SSD: loading 94 s, pairing 66 s).
+- **Weird notes end at their own note-off.** When more than 10 notes stack up on one channel and key in a track, the original pairs the next note-off with the latest unpaired note of that key on *any* channel; a note taken from another channel's stack is then paired again by its own channel's note-off. The original draws it to that later note-off but stops drawing it (and unlights its key) at the first one, so it seems to end early, often the moment it reaches the keyboard. Here it lasts to its later note-off, which in *Night of Nights* is its own channel's for 1,146 of its 1,174 such notes (a note-off on another channel cannot end it). Songs with them also load with one pairing pass instead of two (*Night of Nights*, from an SSD: loading 76 s, pairing 53 s).
 - **End weird notes at their first note-off** (Performance tab, off by default): those notes keep their first pairing instead, so they are drawn short.
 
 **Drawing**
@@ -31,6 +31,7 @@ A performance rewrite of [Piano From Above](https://github.com/brian-pantano/Pia
   - **Collapse stacked notes**: one voice per channel, key and tick, lasting until the last of the stacked notes ends. RFTMIS rev10 sends 42 % fewer note-ons.
   - **Limit sending to N messages/s**: looks 50 ms ahead and skips the quietest note-ons first so the rest fit; within the last velocity it thins evenly, so songs with one velocity still play partly. Note-ons stay within N/2 per second; total messages average N but can briefly reach about 1.5 N as earlier notes end.
 - When one thread cannot decode a dense passage in time, decoding spreads over more threads, up to the Performance tab's thread setting (a change applies at once), and back to one when the passage ends. The visuals stay exact; audio may differ slightly from one thread's: with collapsing on, a tick split between threads can sound a key once per thread, and the send budget is shared between them. Night of Nights' busiest second (224 M events) decodes in 0.18 s on 16 threads with collapsing, the budget and the velocity floor on, against 0.96 s on one.
+- **Start songs paused after loading** (Controls tab, off by default).
 - Mute, volume, pause, stop, seeking (with controller and program chase) and the metronome behave as in the original (clicks inside a parallel stretch are left out).
 
 **Statistics**
@@ -59,6 +60,8 @@ Open a song with File > Play Song, or pass it on the command line:
 ```
 PFAviz++.exe "song.mid"
 ```
+
+The window's exact size can be typed in under Visual > Window size, from 640 × 469 up to its monitor's size; the window then moves, if it has to, to lie wholly on that monitor.
 
 Settings are kept in `%APPDATA%\PFAviz++\config.ini`.
 

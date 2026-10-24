@@ -106,6 +106,10 @@
 #define IDC_PERF_VELFLOOR               1089
 #define IDC_PERF_MINVEL                 1090
 #define IDC_PERF_INSTANCING             1091
+#define IDC_STARTPAUSED                 1096
+#define IDC_WINWIDTH                    1097
+#define IDC_WINHEIGHT                   1098
+#define IDC_WINSIZEMAX                  1099
 
 // Video rendering
 #define IDC_VID_FILE                    1300

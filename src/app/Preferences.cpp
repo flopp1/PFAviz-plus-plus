@@ -103,6 +103,39 @@ namespace
         SetWindowLongPtrW( GetDlgItem( hWnd, IDC_BKGCOLOR ), GWLP_USERDATA, cVisual.iBkgColor );
     }
 
+    // The main window's size when the page opened, or when it was last applied (applied again only
+    // when it is changed)
+    SIZE g_szWindow = {};
+
+    VOID SetWindowSizeEdits( HWND hWnd )
+    {
+        g_szWindow = MainWindowSize();
+        SIZE szMax = MainWindowMaxSize();
+        SetDlgItemInt( hWnd, IDC_WINWIDTH, (UINT)g_szWindow.cx, FALSE );
+        SetDlgItemInt( hWnd, IDC_WINHEIGHT, (UINT)g_szWindow.cy, FALSE );
+        bool bFullScreen = Config::GetConfig().GetViewSettings().GetFullScreen();
+        wchar_t buf[96];
+        if ( bFullScreen ) swprintf( buf, 96, L"pixels (not in full screen)" );
+        else swprintf( buf, 96, L"pixels (%d x %d to %ld x %ld)", MINWIDTH, MINHEIGHT, szMax.cx, szMax.cy );
+        SetDlgItemTextW( hWnd, IDC_WINSIZEMAX, buf );
+        EnableWindow( GetDlgItem( hWnd, IDC_WINWIDTH ), !bFullScreen );
+        EnableWindow( GetDlgItem( hWnd, IDC_WINHEIGHT ), !bFullScreen );
+    }
+
+    // Reads a window size edit within [iMin, iMax]; otherwise says so and keeps the sheet open
+    bool ReadSize( HWND hWnd, int iId, int iMin, int iMax, const wchar_t *sWhat, int &iValue )
+    {
+        BOOL bOk = FALSE;
+        UINT u = GetDlgItemInt( hWnd, iId, &bOk, FALSE );
+        if ( bOk && (int)u >= iMin && (int)u <= iMax ) { iValue = (int)u; return true; }
+        wchar_t buf[128];
+        swprintf( buf, 128, L"Please specify a window %ls between %d and %d pixels", sWhat, iMin, iMax );
+        MessageBoxW( hWnd, buf, L"Error", MB_OK | MB_ICONEXCLAMATION );
+        PostMessageW( hWnd, WM_NEXTDLGCTL, ( WPARAM )GetDlgItem( hWnd, iId ), TRUE );
+        SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_INVALID );
+        return false;
+    }
+
     INT_PTR CALLBACK VisualProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
     {
         switch ( msg )
@@ -114,6 +147,7 @@ namespace
                     SendDlgItemMessageW( hWnd, IDC_LASTKEY, CB_ADDSTRING, 0, ( LPARAM )Notes::NoteName( i ) );
                 }
                 SetVisualProc( hWnd, Config::GetConfig().GetVisualSettings() );
+                SetWindowSizeEdits( hWnd );
                 return TRUE;
             // Draws the coloured buttons
             case WM_DRAWITEM:
@@ -187,6 +221,13 @@ namespace
                     VisualSettings cVisual = config.GetVisualSettings();
                     ViewSettings &cView = config.GetViewSettings();
                     bool bAlwaysShowControls = cVisual.bAlwaysShowControls;
+                    int iWidth = (int)g_szWindow.cx, iHeight = (int)g_szWindow.cy;
+                    if ( !cView.GetFullScreen() )
+                    {
+                        SIZE szMax = MainWindowMaxSize();
+                        if ( !ReadSize( hWnd, IDC_WINWIDTH, MINWIDTH, (int)szMax.cx, L"width", iWidth ) ) return TRUE;
+                        if ( !ReadSize( hWnd, IDC_WINHEIGHT, MINHEIGHT, (int)szMax.cy, L"height", iHeight ) ) return TRUE;
+                    }
 
                     cVisual.eKeysShown = VisualSettings::All128;
                     for ( int i = 0; i < 4; i++ )
@@ -203,6 +244,11 @@ namespace
                     config.SetVisualSettings( cVisual );
                     if ( cView.GetFullScreen() && bAlwaysShowControls != cVisual.bAlwaysShowControls )
                         cView.SetControls( cView.GetControls(), true );
+                    if ( iWidth != g_szWindow.cx || iHeight != g_szWindow.cy )
+                    {
+                        SetMainWindowSize( iWidth, iHeight );
+                        SetWindowSizeEdits( hWnd );
+                    }
                     SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_NOERROR );
                     return TRUE;
                 }
@@ -299,10 +345,11 @@ namespace
                 SetDlgItemTextW( hWnd, IDC_LRARROWS, buf );
                 swprintf( buf, 32, L"%g", cControls.dSpeedUpPct );
                 SetDlgItemTextW( hWnd, IDC_UDARROWS, buf );
+                CheckDlgButton( hWnd, IDC_STARTPAUSED, cControls.bStartPaused ? BST_CHECKED : BST_UNCHECKED );
                 return TRUE;
             }
             case WM_COMMAND:
-                if ( HIWORD( wParam ) == EN_CHANGE ) Changed( hWnd );
+                if ( HIWORD( wParam ) == EN_CHANGE || HIWORD( wParam ) == BN_CLICKED ) Changed( hWnd );
                 break;
             case WM_NOTIFY:
             {
@@ -320,6 +367,7 @@ namespace
                     ControlsSettings cControls = config.GetControlsSettings();
                     if ( !ReadEdit( hWnd, IDC_LRARROWS, cControls.dFwdBackSecs, L"Please specify a numeric value for the left and right arrows" ) ) return TRUE;
                     if ( !ReadEdit( hWnd, IDC_UDARROWS, cControls.dSpeedUpPct, L"Please specify a numeric value for the up and down arrows" ) ) return TRUE;
+                    cControls.bStartPaused = IsDlgButtonChecked( hWnd, IDC_STARTPAUSED ) == BST_CHECKED;
                     config.SetControlsSettings( cControls );
                     SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_NOERROR );
                     return TRUE;

@@ -928,6 +928,48 @@ VOID SetOnTop( BOOL bOnTop )
     CheckMenuItem( GetMainMenu(), ID_VIEW_ALWAYSONTOP, MF_BYCOMMAND | ( bOnTop ? MF_CHECKED : MF_UNCHECKED ) );
 }
 
+namespace
+{
+    MONITORINFO MainMonitor()
+    {
+        MONITORINFO mi = { sizeof( mi ) };
+        GetMonitorInfoW( MonitorFromWindow( g_hWnd, MONITOR_DEFAULTTONEAREST ), &mi );
+        return mi;
+    }
+}
+
+SIZE MainWindowMaxSize()
+{
+    RECT rc = MainMonitor().rcMonitor;
+    return { std::max< LONG >( rc.right - rc.left, MINWIDTH ), std::max< LONG >( rc.bottom - rc.top, MINHEIGHT ) };
+}
+
+SIZE MainWindowSize()
+{
+    WINDOWPLACEMENT wp = { sizeof( wp ) };
+    RECT rc;
+    if ( ( IsZoomed( g_hWnd ) || IsIconic( g_hWnd ) ) && GetWindowPlacement( g_hWnd, &wp ) ) rc = wp.rcNormalPosition;
+    else GetWindowRect( g_hWnd, &rc );
+    return { rc.right - rc.left, rc.bottom - rc.top };
+}
+
+VOID SetMainWindowSize( int iWidth, int iHeight )
+{
+    if ( IsZoomed( g_hWnd ) || IsIconic( g_hWnd ) ) ShowWindow( g_hWnd, SW_RESTORE );
+    MONITORINFO mi = MainMonitor();
+    SIZE szMax = MainWindowMaxSize();
+    iWidth = std::clamp( iWidth, MINWIDTH, (int)szMax.cx );
+    iHeight = std::clamp( iHeight, MINHEIGHT, (int)szMax.cy );
+    const RECT &rcWork = mi.rcWork;
+    const RECT &rcIn = iWidth <= rcWork.right - rcWork.left && iHeight <= rcWork.bottom - rcWork.top ? rcWork : mi.rcMonitor;
+    // Where it is, unless that leaves part of it off the monitor
+    RECT rc;
+    GetWindowRect( g_hWnd, &rc );
+    int iLeft = std::clamp( (int)rc.left, (int)rcIn.left, std::max( (int)rcIn.left, (int)rcIn.right - iWidth ) );
+    int iTop = std::clamp( (int)rc.top, (int)rcIn.top, std::max( (int)rcIn.top, (int)rcIn.bottom - iHeight ) );
+    SetWindowPos( g_hWnd, nullptr, iLeft, iTop, iWidth, iHeight, SWP_NOZORDER | SWP_NOACTIVATE );
+}
+
 VOID SetFullScreen( BOOL bFullScreen )
 {
     static const ViewSettings &cView = Config::GetConfig().GetViewSettings();

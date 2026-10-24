@@ -224,18 +224,21 @@ void ControlsSettings::LoadDefaultValues()
 {
     dFwdBackSecs = 3.0;
     dSpeedUpPct = 10.0;
+    bStartPaused = false;
 }
 
 void ControlsSettings::Load( const IniFile &ini )
 {
     dFwdBackSecs = ini.GetDouble( "Controls", "FwdBackSecs", dFwdBackSecs );
     dSpeedUpPct = ini.GetDouble( "Controls", "SpeedUpPct", dSpeedUpPct );
+    bStartPaused = ini.GetBool( "Controls", "StartPaused", bStartPaused );
 }
 
 void ControlsSettings::Save( IniFile &ini ) const
 {
     ini.SetDouble( "Controls", "FwdBackSecs", dFwdBackSecs );
     ini.SetDouble( "Controls", "SpeedUpPct", dSpeedUpPct );
+    ini.SetInt( "Controls", "StartPaused", bStartPaused );
 }
 
 const wchar_t *const ExportSettings::Presets[] = { L"ultrafast", L"superfast", L"veryfast", L"faster", L"fast",

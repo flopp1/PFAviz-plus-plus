@@ -70,6 +70,7 @@ struct ControlsSettings
     void Save( IniFile &ini ) const;
 
     double dFwdBackSecs, dSpeedUpPct;
+    bool bStartPaused;          // a song is paused at its start once it has loaded
 };
 
 // Offline video rendering (Performance > Render video...): rendered off-screen and piped to ffmpeg

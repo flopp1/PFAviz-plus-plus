@@ -240,7 +240,7 @@ void FinishLoad( LPARAM lParam )
         pGameState->SetChannelColors( Config::GetConfig().GetVisualSettings().colors );
         if ( !cPlayback.GetPlayable() ) cPlayback.SetPlayable( true, true );
         if ( cPlayback.GetPlayMode() != PlayMode::Play ) cPlayback.SetPlayMode( PlayMode::Play, true );
-        cPlayback.SetPaused( false, true );
+        cPlayback.SetPaused( Config::GetConfig().GetControlsSettings().bStartPaused, true );
         cPlayback.SetPosition( 0 );
         cView.SetZoomMove( false, true );
         SetWindowTextW( g_hWnd, pJob->sFile.c_str() + ( pJob->sFile.find_last_of( L'\\' ) + 1 ) );

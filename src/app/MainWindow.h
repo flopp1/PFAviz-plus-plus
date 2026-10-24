@@ -26,6 +26,12 @@ VOID ShowControls( BOOL bShow );
 VOID ShowKeyboard( BOOL bShow );
 VOID SetOnTop( BOOL bOnTop );
 VOID SetFullScreen( BOOL bFullScreen );
+// The main window's largest size (its monitor's), its size now (the restored size when maximized),
+// and setting it: clamped to MINWIDTH x MINHEIGHT up to the largest, and moved to lie wholly on its
+// monitor (in the work area when it fits there)
+SIZE MainWindowMaxSize();
+SIZE MainWindowSize();
+VOID SetMainWindowSize( int iWidth, int iHeight );
 VOID SetZoomMove( BOOL bZoomMove );
 VOID SetMute( BOOL bMute );
 VOID SetSpeed( double dSpeed );
