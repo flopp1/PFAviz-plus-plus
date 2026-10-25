@@ -292,6 +292,7 @@ namespace
         { 2560, 1440, L"2560 x 1440 (1440p)" },
         { 3840, 2160, L"3840 x 2160 (4K)" },
         { 7680, 4320, L"7680 x 4320 (8K)" },
+        { 15360, 8640, L"15360 x 8640 (16K)" },
     };
     const int ResolutionCount = sizeof( aResolutions ) / sizeof( aResolutions[0] );   // then "Custom"
 
@@ -371,10 +372,10 @@ namespace
         if ( !s.bUseWindowSize )
         {
             u = GetDlgItemInt( hWnd, IDC_VID_WIDTH, &bOk, FALSE );
-            if ( !bOk || u < 16 || u > 8192 || ( u & 1 ) ) return Bad( IDC_VID_WIDTH, L"Please specify an even width between 16 and 8192 pixels." );
+            if ( !bOk || u < 16 || u > 16384 || ( u & 1 ) ) return Bad( IDC_VID_WIDTH, L"Please specify an even width between 16 and 16384 pixels." );
             s.iWidth = (int)u;
             u = GetDlgItemInt( hWnd, IDC_VID_HEIGHT, &bOk, FALSE );
-            if ( !bOk || u < 16 || u > 8192 || ( u & 1 ) ) return Bad( IDC_VID_HEIGHT, L"Please specify an even height between 16 and 8192 pixels." );
+            if ( !bOk || u < 16 || u > 16384 || ( u & 1 ) ) return Bad( IDC_VID_HEIGHT, L"Please specify an even height between 16 and 16384 pixels." );
             s.iHeight = (int)u;
         }
         u = GetDlgItemInt( hWnd, IDC_VID_FPS, &bOk, FALSE );
