@@ -75,6 +75,14 @@ Environment variables for timed test runs: `PFAVIZ_MUTE=1`, `PFAVIZ_UNCAPPED=1`,
 
 You need [w64devkit](https://github.com/skeeto/w64devkit) (GCC 16 was used). Visual Studio is not required.
 
+Compressed and archived songs are read with [libarchive](https://www.libarchive.org) and its compression libraries (zlib, bzip2, xz, zstd and lz4), built static into `vendor/archive` once, from the w64devkit shell, before the first `make`. The script downloads pinned releases (it needs `curl`, which Windows 10 and later include), checks their SHA-256 and builds them with w64devkit's CMake:
+
+```
+sh build-deps.sh
+```
+
+Then:
+
 ```
 make
 ```

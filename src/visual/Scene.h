@@ -54,6 +54,7 @@ struct ViewInputs
     bool bShowKB = true;
     long long llStartTime = 0, llTimeSpan = 3000000;
     unsigned uClean = 0;              // Clean flags (0: the original's drawing)
+    bool bLines = true;               // the key dividers and measure lines
 };
 
 struct FrameGlobals
@@ -65,6 +66,7 @@ struct FrameGlobals
     long long llStartTime, llTimeSpan, llRndStartTime;
     int iBufferWidth, iBufferHeight;
     unsigned uClean;
+    bool bLines;
 };
 
 namespace Scene

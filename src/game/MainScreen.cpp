@@ -635,6 +635,7 @@ ViewInputs MainScreen::GetViewInputs( int iWidth, int iHeight, long long llStart
     in.llStartTime = llStartTime;
     in.llTimeSpan = m_llTimeSpan;
     in.uClean = cVisual.uClean;
+    in.bLines = !cVisual.bHideLines;
     return in;
 }
 
@@ -714,20 +715,21 @@ void MainScreen::RenderStatus( Renderer *pRenderer, LPRECT prcStatus, long long 
     wcscpy( aValue[VS::StatScore], L"N/A" );
     if ( Shown( VS::StatTempo ) ) swprintf( aValue[VS::StatTempo], 48, L"%.2f BPM", 60000000.0 / TempoAt( m_pSong->vMeta, llTime ) );
 
+    auto Count = []( wchar_t *s, uint64_t n ) {
+        wchar_t buf[32];
+        int iDigits = swprintf( buf, 32, L"%llu", (unsigned long long)n ), j = 0;
+        for ( int i = 0; i < iDigits; i++ )
+        {
+            if ( i && ( iDigits - i ) % 3 == 0 ) s[j++] = L',';
+            s[j++] = buf[i];
+        }
+        s[j] = 0;
+    };
+    if ( Shown( VS::StatCC ) ) Count( aValue[VS::StatCC], m_pSong->ccCounts.Passed( llTime ) );
     if ( uStats & VS::NoteStats )
     {
         // From the tables counted while loading (n/a: the song was loaded with them off)
         const NoteStats &ns = m_pSong->noteStats;
-        auto Count = []( wchar_t *s, uint64_t n ) {
-            wchar_t buf[32];
-            int iDigits = swprintf( buf, 32, L"%llu", (unsigned long long)n ), j = 0;
-            for ( int i = 0; i < iDigits; i++ )
-            {
-                if ( i && ( iDigits - i ) % 3 == 0 ) s[j++] = L',';
-                s[j++] = buf[i];
-            }
-            s[j] = 0;
-        };
         if ( ns.Empty() ) for ( int i = 0; i < 3; i++ ) wcscpy( aValue[VS::StatNotes + i], L"n/a" );
         else
         {

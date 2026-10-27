@@ -431,8 +431,10 @@ void FastEngine::SweepKey( const VisualStore &S, const uint64_t *pCpos, int k, c
                     }
                     if ( u == INT_MIN ) continue;
                     long long llD = pSeg->Dur( k, q, e );
-                    if ( llD < F.vG[iB - u] ) continue;
                     long long llE = llS + llD;
+                    // Reaches row u (clean drawing as the exact queries below)
+                    if ( !( ( F.uClean & Clean::MinHeight ) && iB - u <= 1 ) &&
+                         ( ( F.uClean & Clean::EdgeRound ) ? llE - F.R < F.Theta( u ) : llD < F.vG[iB - u] ) ) continue;
                     size_t pos = (size_t)e.Pos();
                     bool bVisible;
                     if ( pos >= bd.iB ) bVisible = true;
@@ -550,7 +552,7 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
     // The LOD cache for this setting and store (not while hidden notes are skipped one by one: a
     // note it dropped could be visible while the one covering it is hidden)
     m_bLodFrame = false;
-    if ( m_bLod && m_pLod && !m_bSkipHidden && !( m_F.uClean & ( Clean::MinHeight | Clean::EdgeRound ) ) )
+    if ( m_bLod && m_pLod && !m_bSkipHidden )
     {
         LodCache::Setting &ls = m_LodSetting;
         ls.fNotesY = m_F.fNotesY;
@@ -559,6 +561,7 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
         ls.llUsPP = m_F.llUsPP;
         ls.iRowLo = m_F.iRowLo;
         ls.iRowHi = m_F.iRowHi;
+        ls.uClean = m_F.uClean & ( Clean::MinHeight | Clean::EdgeRound );
         std::shared_ptr< const VisualStore > pStore = bView ? m_pView : std::shared_ptr< const VisualStore >( std::shared_ptr< const VisualStore >(), &m_Store );
         m_pLod->Configure( ls, m_F.vTheta, pStore, bView ? 1 + 2 * m_uViewGen : 0, &m_Times );
         long long t0 = m_F.R + m_F.vTheta.back(), t1 = m_F.R + m_F.vTheta.front();

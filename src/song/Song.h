@@ -284,6 +284,19 @@ struct VelocityBins
     size_t MemoryBytes() const { return vOffset.capacity() * 8 + vData.capacity(); }
 };
 
+// Controller (CC) events per bin of BinUs of song time, for the stats box's CC line (BuildSendCounts)
+struct EventCounts
+{
+    static const long long BinUs = 10000;       // VelocityBins::BinUs: counted in the same pass
+    static const size_t CumShift = 10;          // a running total every 1024 bins
+    std::vector< uint64_t > vCount;
+    std::vector< uint64_t > vCum;               // events before bin i << CumShift
+
+    bool Empty() const { return vCount.empty(); }
+    uint64_t Passed( long long llTime ) const;  // events up to llTime (to the end of its bin)
+    size_t MemoryBytes() const { return ( vCount.capacity() + vCum.capacity() ) * 8; }
+};
+
 struct Song
 {
     RefMidiInfo info;                       // llFirstNote is set by the pairing pass
@@ -305,6 +318,7 @@ struct Song
     VisualStore visual;                     // notes per key, paired (built by BuildVisualStore)
     NoteStats noteStats;                    // for the overlay's extra statistics (built with visual, when asked for)
     VelocityBins aSendOns[2];               // [0] every note-on, [1] as collapsed (BuildSendCounts)
+    EventCounts ccCounts;                   // controller events (BuildSendCounts)
     // "End weird notes at their first note-off": a note re-paired by a later off keeps its first pairing
     // (DESIGN.md 6.3); by default it ends at the later off instead
     bool bFirstPairingOnly = false;

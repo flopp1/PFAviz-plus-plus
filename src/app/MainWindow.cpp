@@ -113,7 +113,8 @@ LRESULT WINAPI WndProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
                     wchar_t sFilename[1024] = { 0 };
                     ofn.lStructSize = sizeof( ofn );
                     ofn.hwndOwner = hWnd;
-                    ofn.lpstrFilter = L"MIDI Files\0*.mid;*.midi\0All Files\0*.*\0";
+                    ofn.lpstrFilter = L"MIDI Files (also compressed or in archives)\0*.mid;*.midi;*.zip;*.7z;*.rar;*.tar;*.gz;*.tgz;*.bz2;*.xz;*.txz;*.lzma;*.zst;*.lz4\0"
+                                      L"MIDI Files\0*.mid;*.midi\0All Files\0*.*\0";
                     ofn.lpstrFile = sFilename;
                     ofn.nMaxFile = sizeof( sFilename ) / sizeof( wchar_t );
                     ofn.lpstrTitle = L"Please select a song to play";
@@ -583,6 +584,25 @@ BOOL IsSpeedEdit( HWND hWnd )
            ( GetDlgCtrlID( hWnd ) == IDC_SPEEDEDIT || GetDlgCtrlID( hWnd ) == IDC_NSPEEDEDIT );
 }
 
+VOID ShowSpeedBoxes( BOOL bShow )
+{
+    // With the boxes: shorter sliders, each followed by its box; without: the original's places
+    HWND hWndToolbar = GetDlgItem( g_hWndBar, IDC_TOPTOOLBAR );
+    const int aShown[3][2] = { { 522, 90 }, { 669, 35 }, { 703, 90 } }, aOriginal[3][2] = { { 522, 100 }, { 629, 35 }, { 665, 100 } };
+    const int ( *a )[2] = bShow ? aShown : aOriginal;
+    const int aId[3] = { IDC_SPEED, IDC_NSPEEDLABEL, IDC_NSPEED };
+    for ( int i = 0; i < 3; i++ )
+    {
+        HWND h = GetDlgItem( hWndToolbar, aId[i] );
+        RECT rc;
+        GetWindowRect( h, &rc );
+        MapWindowPoints( nullptr, hWndToolbar, ( LPPOINT )&rc, 2 );
+        SetWindowPos( h, nullptr, a[i][0], rc.top, a[i][1], rc.bottom - rc.top, SWP_NOZORDER | SWP_NOACTIVATE );
+    }
+    for ( int iId : { IDC_SPEEDEDIT, IDC_NSPEEDEDIT } ) ShowWindow( GetDlgItem( hWndToolbar, iId ), bShow ? SW_SHOWNA : SW_HIDE );
+    RedrawWindow( hWndToolbar, nullptr, nullptr, RDW_ERASE | RDW_INVALIDATE | RDW_ALLCHILDREN );
+}
+
 HWND CreateRebar( HWND hWndOwner )
 {
     HWND hWndRebar = CreateWindowExW( WS_EX_CONTROLPARENT, REBARCLASSNAMEW, nullptr,
@@ -659,7 +679,7 @@ HWND CreateRebar( HWND hWndOwner )
                                           613, 5, 48, 20, hWndToolbar, ( HMENU )IDC_SPEEDEDIT, g_hInstance, nullptr );
 
     HWND hWndStatic7 = CreateWindowExW( 0, WC_STATICW, L"Notes:", WS_CHILD | WS_VISIBLE | SS_LEFT,
-                                        669, 8, 35, 13, hWndToolbar, nullptr, g_hInstance, nullptr );
+                                        669, 8, 35, 13, hWndToolbar, ( HMENU )IDC_NSPEEDLABEL, g_hInstance, nullptr );
     HWND hWndNSpeed = CreateWindowExW( 0, TRACKBAR_CLASSW, nullptr, WS_CHILD | WS_VISIBLE | WS_TABSTOP | TBS_BOTH | TBS_NOTICKS,
                                        703, 2, 90, 26, hWndToolbar, ( HMENU )IDC_NSPEED, g_hInstance, nullptr );
     SendMessageW( hWndNSpeed, TBM_SETRANGE, FALSE, MAKELONG( 0, NSpeedSteps ) );
@@ -705,6 +725,7 @@ HWND CreateRebar( HWND hWndOwner )
     SendMessageW( hWndNSpeed, TBM_SETPOS, TRUE, NSpeedToSlider( cPlayback.GetNSpeed() ) );
     ShowSpeedText( cPlayback.GetSpeed() );
     ShowNSpeedText( cPlayback.GetNSpeed() );
+    ShowSpeedBoxes( !Config::GetConfig().GetVisualSettings().bHideSpeedBoxes );
     SendMessageW( hWndVolume, TBM_SETPOS, TRUE, ( LONG )( 100 * cPlayback.GetVolume() + .5 ) );
     SendMessageW( hWndMetronome, CB_SETCURSEL, cPlayback.GetMetronome(), 0 );
 

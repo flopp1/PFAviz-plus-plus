@@ -100,6 +100,10 @@
 #define IDC_CLEAN_MINHEIGHT             1111     // + the bit of the Clean flag (visual/Scene.h)
 #define IDC_CLEAN_KEEPBOTTOM            1112
 #define IDC_CLEAN_EDGES                 1113
+#define IDC_BKGON                       1114
+#define IDC_HIDELINES                   1115
+#define IDC_HIDESPEEDBOXES              1116
+#define IDC_NSPEEDLABEL                 1117
 #define IDC_PERF_LOADSTATS              1071
 #define IDC_PERF_KDMAPI                 1072
 #define IDC_PERF_SKIPPING               1073

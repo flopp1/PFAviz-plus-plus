@@ -9,6 +9,10 @@
 // as late: B's rows contain A's after the original clipping, B is drawn after A, and B is visible
 // whenever A is (upcoming once A is, ends no earlier, comes later in the jump order). Notes of
 // height 0 are dropped too: the bucket sweep never selects them. Unpaired notes are left out.
+// Clean drawing (Setting::uClean) changes what a note covers: with MinHeight every note is at least
+// a row tall (none is dropped for its height); with EdgeRound its top is rounded from its end time,
+// so a later note ending no earlier covers it whatever the two durations (and a note whose end is in
+// its start's cell is dropped, being 0 rows tall in every frame, unless MinHeight).
 //
 // The cache is built in segments of start time (Setting::SegmentUs), in the background around the playhead,
 // and only replaces the bucket loop of FastEngine::SweepKey for buckets whose whole start range is
@@ -36,6 +40,7 @@ public:
         float fNotesY = 0, fNotesCY = 0;
         long long llSpan = 0, llUsPP = 0;
         int iRowLo = 0, iRowHi = 0;
+        unsigned uClean = 0;                // Clean::MinHeight and Clean::EdgeRound (visual/Scene.h); other flags 0
         std::vector< long long > vTheta;    // the frame's Theta table (rows iRowLo - 1 ...), set by Configure
         // Segment length: 8 note spans, from 1 to 10 s, so fast note speeds (few notes per cell
         // dropped) keep a few seconds of song around the playhead rather than a minute
@@ -43,7 +48,7 @@ public:
         bool Same( const Setting &o ) const
         {
             return fNotesY == o.fNotesY && fNotesCY == o.fNotesCY && llSpan == o.llSpan && llUsPP == o.llUsPP &&
-                   iRowLo == o.iRowLo && iRowHi == o.iRowHi;
+                   iRowLo == o.iRowLo && iRowHi == o.iRowHi && uClean == o.uClean;
         }
     };
     // A kept note in 16 bytes: its store position (39 bits), the re-paired flag and its start in

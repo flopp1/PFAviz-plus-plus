@@ -32,7 +32,7 @@ struct VisualSettings
     // aStatOrder lists them all top to bottom. New lines are added at the end, so saved bits stay put.
     enum Stat { StatTime, StatFPS, StatScore, StatNotes, StatNPS, StatPolyphony, StatSent, StatSkipped, StatCollapsed, StatLag,
                 StatSkipping, StatOtherMs, StatNotesMs, StatSceneMs, StatPresentMs,
-                StatDecoded, StatDecoderBusy, StatSenderBusy, StatRing, StatSendCost, StatTempo, StatVoices, StatSynthCpu, StatCount };
+                StatDecoded, StatDecoderBusy, StatSenderBusy, StatRing, StatSendCost, StatTempo, StatVoices, StatSynthCpu, StatCC, StatCount };
     static constexpr unsigned NoteStats = 7u << StatNotes;      // counted while a song loads (Song::noteStats)
     static constexpr unsigned PipelineStats = 31u << StatDecoded;
     static constexpr unsigned VoiceStats = 3u << StatVoices;    // asked of the synth (KDMAPI only)
@@ -49,10 +49,13 @@ struct VisualSettings
     unsigned uStats;
     unsigned char aStatOrder[StatCount];
     unsigned int colors[16], iBkgColor;
-    std::wstring sBkgImage;     // the background image's file (empty: none), drawn over iBkgColor
+    bool bBkgImage;             // the background image is shown
+    std::wstring sBkgImage;     // its file, drawn over iBkgColor
     int iBkgFit;                // Renderer::ImageFit
     int iBkgOpacity;            // percent
     unsigned uClean;            // Clean flags (visual/Scene.h): the original's rounding quirks left out
+    bool bHideLines;            // no key dividers or measure lines over the background
+    bool bHideSpeedBoxes;       // the toolbar as the original's: sliders only, without the exact speed boxes
 };
 
 struct AudioSettings
@@ -252,7 +255,11 @@ public:
     // The game thread reads the visual settings every frame: their string (the background image's file)
     // only through GetBkgImage, under the lock this takes, when VisualGen has changed
     void SetVisualSettings( const VisualSettings &s ) { std::lock_guard< std::mutex > lock( m_mxVisual ); m_VisualSettings = s; m_uVisualGen++; }
-    std::wstring GetBkgImage() const { std::lock_guard< std::mutex > lock( m_mxVisual ); return m_VisualSettings.sBkgImage; }
+    std::wstring GetBkgImage() const    // empty when none is shown
+    {
+        std::lock_guard< std::mutex > lock( m_mxVisual );
+        return m_VisualSettings.bBkgImage ? m_VisualSettings.sBkgImage : std::wstring();
+    }
     unsigned VisualGen() const { return m_uVisualGen.load(); }
     void SetAudioSettings( const AudioSettings &s ) { std::lock_guard< std::mutex > lock( m_mxAudio ); m_AudioSettings = s; }
     void SetVideoSettings( const VideoSettings &s ) { m_VideoSettings = s; }

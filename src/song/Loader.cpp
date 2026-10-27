@@ -14,6 +14,7 @@
 
 #include "core/Lz4.h"
 #include "core/MappedFile.h"
+#include "song/Archive.h"
 #include "core/ThreadPool.h"
 #include "core/Util.h"
 #include "song/TempoMap.h"
@@ -28,7 +29,7 @@ namespace
     const uint64_t CheckpointEvery = 4096; // groups between resume points inside a track
     const size_t FusedChunk = 256 << 10;    // fused read: raw bytes per packed chunk (closed at the next group)
 
-    enum ScanMode { Count, Emit, Fused };
+    enum ScanMode { Count, Emit, Fused, Stream };
 
     // 8 bytes (a song can have hundreds of millions of groups, held from the count pass to the build)
     struct GroupRec
@@ -262,17 +263,40 @@ namespace
         }
     };
 
+    // Stream: a track scanned in windows as it is read from an archive (Archive::Reader), as Fused; what
+    // carries from one window to the next
+    struct StreamState
+    {
+        explicit StreamState( int64_t llLongTicks ) : sim( llLongTicks ) {}
+        bool bStarted = false, bDone = false;   // bDone: the track ended (end of track, or malformed)
+        size_t iUsed = 0;                       // bytes of the window taken (whole events)
+        long long llTick = 0, llGroupTick = LLONG_MIN;
+        int iRunning = 0;
+        int64_t llGroup = -1;
+        uint32_t uRunKey = UINT32_MAX, uSize = 0, uEvents = 0;
+        PairSim sim;
+        std::unique_ptr< uint8_t[] > pStage;
+        size_t iDst = 0, iStageCap = 0;
+        ptrdiff_t iLastKey = -1, iRunHeader = -1;
+        uint64_t llChunkFirst = 0;
+    };
+
     // One track, SMF semantics identical to RefMidi::ParseTrack (DESIGN.md 1.5).
     // Count: fills pScan (groups with their encoded sizes, checkpoints, info, meta).
     // Emit:  re-reads from a checkpoint and writes groups [llFirstWrite, llStopGroup) to the payload
     //        (the groups' runs at their offsets in it, GroupRec::uA); the groups between the checkpoint
     //        and llFirstWrite go to pDiscard (room for the largest group).
     // Fused: Count, and also encodes the groups' runs into pScan->vPacked (DESIGN.md 4.2a).
+    // Stream: Fused over [pTrack, pEnd), a window of the track (bLast: the rest of it), stopping before an
+    //         event the window cuts (*pState: where it stopped, and what carries over)
+    // A window ends inside an event when a read runs past it (MORE): back to the event's start
+#define MORE( c ) if ( MODE == Stream && !bLast && ( c ) ) { p = pEventStart; llTick = llTickBefore; iRunning = iRunningBefore; bMore = true; break; }
     template < int MODE >
     void ScanTrack( const uint8_t *pTrack, const uint8_t *pEnd, const Checkpoint &start, uint64_t llStopGroup, int iTrack,
-                    TrackScan *pScan, const GroupRec *pGroups, uint8_t *pPayload, uint64_t llFirstWrite = 0, uint8_t *pDiscard = nullptr )
+                    TrackScan *pScan, const GroupRec *pGroups, uint8_t *pPayload, uint64_t llFirstWrite = 0, uint8_t *pDiscard = nullptr,
+                    StreamState *pState = nullptr, bool bLast = true )
     {
-        constexpr bool COUNT = MODE != Emit, WRITE = MODE != Count;
+        constexpr bool COUNT = MODE != Emit, WRITE = MODE != Count, FUSED = MODE == Fused || MODE == Stream;
         const uint8_t *p = pTrack + start.llPos;
         long long llTick = start.llTick;
         int iRunning = start.cRunning;
@@ -282,21 +306,34 @@ namespace
         uint32_t uRunKey = UINT32_MAX;
         // count state
         uint32_t uSize = 0, uEvents = 0;
-        PairSim sim( COUNT ? pScan->llLongTicks : 0 );
+        PairSim simLocal( COUNT && MODE != Stream ? pScan->llLongTicks : 0 );
+        PairSim &sim = MODE == Stream ? pState->sim : simLocal;
         // emit state
         uint8_t *pDst = nullptr, *pLastKey = nullptr, *pRunHeader = nullptr;
         // fused state: the runs of the groups since the last chunk, in a buffer that grows for huge groups
         std::unique_ptr< uint8_t[] > pStage;
         uint8_t *pStageEnd = nullptr;
         uint64_t llChunkFirst = 0;
-        if ( MODE == Fused )
+        bool bMore = false;     // Stream: the window ended inside the track
+        if ( MODE == Stream && pState->bStarted )
+        {
+            StreamState &st = *pState;
+            llTick = st.llTick; iRunning = st.iRunning; llGroup = st.llGroup; llGroupTick = st.llGroupTick;
+            uRunKey = st.uRunKey; uSize = st.uSize; uEvents = st.uEvents; llChunkFirst = st.llChunkFirst;
+            pStage = std::move( st.pStage );
+            pDst = pStage.get() + st.iDst;
+            pStageEnd = pStage.get() + st.iStageCap;
+            pLastKey = st.iLastKey >= 0 ? pStage.get() + st.iLastKey : nullptr;
+            pRunHeader = st.iRunHeader >= 0 ? pStage.get() + st.iRunHeader : nullptr;
+        }
+        else if ( FUSED )
         {
             pStage.reset( new uint8_t[FusedChunk * 2] );
             pDst = pStage.get();
             pStageEnd = pDst + FusedChunk * 2;
         }
         auto Reserve = [&]() {  // room for one event (at most 3 bytes)
-            if ( MODE != Fused || pStageEnd - pDst >= 3 ) return;
+            if ( !FUSED || pStageEnd - pDst >= 3 ) return;
             size_t iUsed = (size_t)( pDst - pStage.get() ), iCap = (size_t)( pStageEnd - pStage.get() ) * 2;
             uint8_t *pNew = new uint8_t[iCap];
             memcpy( pNew, pStage.get(), iUsed );
@@ -307,7 +344,7 @@ namespace
             pStageEnd = pNew + iCap;
         };
         auto Flush = [&]( uint64_t llNextGroup ) {  // the staged groups [llChunkFirst, llNextGroup) become a chunk
-            if ( MODE != Fused ) return;
+            if ( !FUSED ) return;
             size_t iRaw = (size_t)( pDst - pStage.get() );
             if ( iRaw )
             {
@@ -345,6 +382,7 @@ namespace
             iMinNote = in.iMinNote; iMaxNote = in.iMaxNote; iMaxVolume = in.iMaxVolume;
         }
 
+        bool bEnded = false;    // Stream: the track ended inside the window (end of track, or a bad status)
         while ( p < pEnd )
         {
             const uint8_t *pEventStart = p;
@@ -354,9 +392,9 @@ namespace
             int iStatus;
             long long llDelta;
             if ( *p < 0x80 ) llDelta = *p++;    // (nearly every delta is one byte; p < pEnd here)
-            else if ( !ReadVarLen( p, pEnd, llDelta ) ) { if ( COUNT ) pScan->info.bMalformed = true; break; }
+            else if ( !ReadVarLen( p, pEnd, llDelta ) ) { MORE( p >= pEnd ) if ( COUNT ) pScan->info.bMalformed = true; break; }
             llTick += llDelta;
-            if ( p >= pEnd ) { if ( COUNT ) pScan->info.bMalformed = true; break; }
+            if ( p >= pEnd ) { MORE( true ) if ( COUNT ) pScan->info.bMalformed = true; break; }
             if ( *p >= 0x80 ) iStatus = *p++;
             else if ( iRunning ) iStatus = iRunning;
             else { if ( COUNT ) pScan->info.bMalformed = true; break; }
@@ -366,7 +404,7 @@ namespace
                 iRunning = iStatus;
                 unsigned iType = iStatus >> 4, iChannel = iStatus & 0xF;
                 int iDataBytes = ( iType == 0xC || iType == 0xD ) ? 1 : 2;
-                if ( pEnd - p < iDataBytes ) { if ( COUNT ) pScan->info.bMalformed = true; break; }
+                if ( pEnd - p < iDataBytes ) { MORE( true ) if ( COUNT ) pScan->info.bMalformed = true; break; }
                 // Data bytes are read as data, as the original reads them (DESIGN.md 1.5). A key, controller
                 // or program past 127 drops the event (its tick still counts for the length); a second
                 // byte past 127 (velocity, value) is clamped
@@ -392,7 +430,7 @@ namespace
                         uSize = uEvents = 0;
                     }
                     if ( MODE == Emit ) pDst = llNext >= llFirstWrite ? pPayload + pGroups[llNext].uA : pDiscard;
-                    else if ( MODE == Fused && pDst - pStage.get() >= (ptrdiff_t)FusedChunk ) Flush( llNext );
+                    else if ( FUSED && pDst - pStage.get() >= (ptrdiff_t)FusedChunk ) Flush( llNext );
                     llGroup = (int64_t)llNext;
                     llGroupTick = llTick;
                 }
@@ -471,21 +509,21 @@ namespace
             {
                 iRunning = 0;
                 long long llLen;
-                if ( !ReadVarLen( p, pEnd, llLen ) || llLen > pEnd - p ) { if ( COUNT ) pScan->info.bMalformed = true; break; }
+                if ( !ReadVarLen( p, pEnd, llLen ) || llLen > pEnd - p ) { MORE( p >= pEnd || llLen > pEnd - p ) if ( COUNT ) pScan->info.bMalformed = true; break; }
                 p += llLen; // SysEx is ignored entirely
                 AddInfo( llTick );
             }
             else if ( iStatus == 0xFF )
             {
                 iRunning = 0;
-                if ( p >= pEnd ) { if ( COUNT ) pScan->info.bMalformed = true; break; }
+                if ( p >= pEnd ) { MORE( true ) if ( COUNT ) pScan->info.bMalformed = true; break; }
                 uint8_t cType = *p++;
                 long long llLen;
-                if ( !ReadVarLen( p, pEnd, llLen ) || llLen > pEnd - p ) { if ( COUNT ) pScan->info.bMalformed = true; break; }
+                if ( !ReadVarLen( p, pEnd, llLen ) || llLen > pEnd - p ) { MORE( p >= pEnd || llLen > pEnd - p ) if ( COUNT ) pScan->info.bMalformed = true; break; }
                 const uint8_t *pMeta = p;
                 p += llLen;
                 AddInfo( llTick );
-                if ( cType == 0x2F ) break;
+                if ( cType == 0x2F ) { if ( MODE == Stream ) bEnded = true; break; }
                 if ( COUNT )
                 {
                     if ( ( cType == RefMetaEvent::SetTempo && llLen == 3 ) || ( cType == RefMetaEvent::TimeSignature && llLen == 4 ) )
@@ -503,11 +541,14 @@ namespace
             else
             {
                 if ( COUNT ) pScan->info.bMalformed = true; // 0xF1-0xFE are not valid in a Standard MIDI File
+                if ( MODE == Stream ) bEnded = true;
                 break;
             }
         }
 
-        CloseGroup();
+        // Stream: the window used up at an event's end (any other stop at its end ended the track)
+        if ( MODE == Stream && !bLast && !bMore && !bEnded && p >= pEnd ) bMore = true;
+        if ( !bMore ) CloseGroup();
         if ( COUNT )
         {
             RefTrackInfo &out = pScan->info;
@@ -517,17 +558,38 @@ namespace
             pScan->llOutOfRange += llOutOfRange;
             for ( int k = 0; k < 128; k++ ) pScan->aKeyCounts[k] += aKeyCounts[k];
         }
+        if ( MODE == Stream )
+        {
+            StreamState &st = *pState;
+            st.iUsed = (size_t)( p - pTrack );
+            if ( bMore )
+            {
+                st.bStarted = true;
+                st.llTick = llTick; st.iRunning = iRunning; st.llGroup = llGroup; st.llGroupTick = llGroupTick;
+                st.uRunKey = uRunKey; st.uSize = uSize; st.uEvents = uEvents; st.llChunkFirst = llChunkFirst;
+                st.iDst = (size_t)( pDst - pStage.get() );
+                st.iStageCap = (size_t)( pStageEnd - pStage.get() );
+                st.iLastKey = pLastKey ? pLastKey - pStage.get() : -1;
+                st.iRunHeader = pRunHeader ? pRunHeader - pStage.get() : -1;
+                st.pStage = std::move( pStage );
+                return;
+            }
+            st.bDone = true;
+        }
         if ( COUNT && llGroup >= 0 ) pScan->AddGroup( llGroupTick, uSize );
         if ( COUNT ) sim.Finish( (uint64_t)iTrack, pScan->vKnownId, pScan->vKnownEnd, pScan->vKnownDur );
         Flush( (uint64_t)( llGroup + 1 ) );
     }
+#undef MORE
 
     double Seconds( long long llFrom ) { return ( Timer::NowMicroSecs() - llFrom ) / 1e6; }
 
     uint64_t PrivateBytes() { return Util::ProcessMemory(); }
 
+    // pReader: a compressed file or archive, read front to back as it is decompressed (pData null,
+    // llSize the file's size): a fused count pass over the tracks as they come out
     std::unique_ptr< Song > LoadImpl( const uint8_t *pData, uint64_t llSize, MappedFile *pFile, int iThreads,
-                                      LoadProgress &prog, LoadStats &stats, std::wstring &sError )
+                                      LoadProgress &prog, LoadStats &stats, std::wstring &sError, Archive::Reader *pReader = nullptr )
     {
         long long llStart = Timer::NowMicroSecs();
         long long llStep = llStart;
@@ -545,7 +607,7 @@ namespace
         stats.bSeekPenalty = pFile && pFile->SeekPenalty();
         stats.bSequentialRead = bSequential;
         // Fused single read (4.0, 4.2a) when the emit pass could not be served from the page cache
-        bool bFused = prog.iFusedRead > 0;
+        bool bFused = prog.iFusedRead > 0 || pReader;
         if ( prog.iFusedRead < 0 && bSequential )
         {
             MEMORYSTATUSEX ms = { sizeof( ms ) };
@@ -563,14 +625,35 @@ namespace
         prog.aTotal[LoadProgress::Reading] = llSize;
         if ( bSequential ) pFile->StartSequentialRead( &prog.bCancel );
         else if ( pFile ) pFile->PrefetchAll();
-        WaitBytes( std::min< uint64_t >( 14, llSize ) );
-        if ( llSize < 14 || memcmp( pData, "MThd", 4 ) != 0 ) { sError = L"Not a Standard MIDI File (no MThd header)."; return nullptr; }
         auto BE = []( const uint8_t *q, int n ) { uint64_t v = 0; for ( int i = 0; i < n; i++ ) v = ( v << 8 ) | q[i]; return v; };
-        uint64_t llHdr = std::max< uint64_t >( BE( pData + 4, 4 ), 6 );
+        uint64_t llHdr = 0;
+        uint8_t aStreamHdr[6] = {};
+        const uint8_t *pHdr = aStreamHdr;      // MThd's data
+        if ( pReader )
+        {
+            char aType[4];
+            uint64_t llLen = 0;
+            size_t got = 0;
+            if ( pReader->NextChunk( aType, llLen ) && memcmp( aType, "MThd", 4 ) == 0 )
+                while ( got < 6 && got < llLen )
+                {
+                    size_t n = pReader->ReadData( aStreamHdr + got, 6 - got );
+                    if ( !n ) break;
+                    got += n;
+                }
+            if ( got < 6 ) { sError = !pReader->sError.empty() ? pReader->sError : L"Not a Standard MIDI File (no MThd header)."; return nullptr; }
+        }
+        else
+        {
+            WaitBytes( std::min< uint64_t >( 14, llSize ) );
+            if ( llSize < 14 || memcmp( pData, "MThd", 4 ) != 0 ) { sError = L"Not a Standard MIDI File (no MThd header)."; return nullptr; }
+            llHdr = std::max< uint64_t >( BE( pData + 4, 4 ), 6 );
+            pHdr = pData + 8;
+        }
         auto song = std::make_unique< Song >();
         RefMidiInfo &info = song->info;
-        info.iFormatType = (int)BE( pData + 8, 2 );
-        info.iDivision = (int)BE( pData + 12, 2 );
+        info.iFormatType = (int)BE( pHdr, 2 );
+        info.iDivision = (int)BE( pHdr + 4, 2 );
         if ( info.iFormatType > 2 || info.iDivision == 0 ) { sError = L"Unsupported MIDI header (format or division)."; return nullptr; }
 
         // Phase 1+2: chunk discovery and count pass. Workers claim the next chunk under a lock; on an HDD
@@ -597,7 +680,7 @@ namespace
         // tracks parsed first, so a big track late in the file does not run on after the others
         std::vector< uint32_t > vOrder;
         std::atomic< size_t > iNextScan{ 0 };
-        if ( !bSequential )
+        if ( !bSequential && !pReader )
         {
             for ( uint64_t q = llNextChunk; q + 8 <= llSize; )
             {
@@ -612,7 +695,106 @@ namespace
                 return vScans[a]->llEnd - vScans[a]->llBegin > vScans[b]->llEnd - vScans[b]->llBegin; } );
             prog.llTracksFound = vScans.size();
         }
+        // An archive: the tracks as they come out of it, one thread reading at a time. A track up to
+        // StreamWhole is read whole and counted with the reader free for the next; a longer one is
+        // counted in windows as it is read (ScanTrack< Stream >)
+        const size_t StreamWhole = 16 << 20;
+        std::wstring sStreamError;
+        bool bStreamEnd = false;
+        uint64_t llStreamPos = 0;
+        auto StreamTrack = [&]( std::vector< uint8_t > &vBuf ) {
+            std::unique_lock< std::mutex > lock( mtx );
+            auto Fail = [&]() {
+                bStreamEnd = true;
+                if ( sStreamError.empty() ) sStreamError = pReader->sError;
+                return false;
+            };
+            auto Fill = [&]( uint8_t *p, size_t n ) {
+                size_t got = 0;
+                while ( got < n )
+                {
+                    size_t r = pReader->ReadData( p + got, n - got );
+                    if ( !r ) break;
+                    got += r;
+                }
+                return got;
+            };
+            auto Progress = [&]() {
+                prog.aDone[LoadProgress::Reading] = pReader->Done();
+                prog.aDone[LoadProgress::Counting] = pReader->Done();
+            };
+            TrackScan *pScan = nullptr;
+            int iTrack = -1;
+            uint64_t llLen = 0;
+            while ( !pScan )
+            {
+                if ( bStreamEnd || Cancelled() ) return false;
+                char aType[4];
+                if ( !pReader->NextChunk( aType, llLen ) ) return Fail();
+                llStreamPos += 8;
+                if ( memcmp( aType, "MTrk", 4 ) != 0 ) { llStreamPos += llLen; continue; }  // unknown chunk: skipped
+                iTrack = (int)vScans.size();
+                pScan = NewScan( llStreamPos, llStreamPos + llLen );
+                llStreamPos += llLen;
+                prog.llTracksFound = vScans.size();
+            }
+            if ( llLen <= StreamWhole )
+            {
+                vBuf.resize( (size_t)llLen );
+                size_t got = Fill( vBuf.data(), vBuf.size() );
+                if ( !pReader->sError.empty() ) return Fail();
+                Progress();
+                lock.unlock();
+                ScanTrack< Fused >( vBuf.data(), vBuf.data() + got, Checkpoint{ 0, 0, 0, 0 }, UINT64_MAX, iTrack, pScan, nullptr, nullptr );
+            }
+            else
+            {
+                StreamState st( pScan->llLongTicks );
+                std::vector< uint8_t > vWin( StreamWhole );
+                size_t iHave = 0;
+                uint64_t llLeft = llLen;
+                for ( ;; )
+                {
+                    if ( Cancelled() ) return false;
+                    size_t iWant = (size_t)std::min< uint64_t >( vWin.size() - iHave, llLeft ), n = Fill( vWin.data() + iHave, iWant );
+                    if ( !pReader->sError.empty() ) return Fail();
+                    iHave += n;
+                    llLeft = n < iWant ? 0 : llLeft - n;   // short: the file ended inside the track
+                    ScanTrack< Stream >( vWin.data(), vWin.data() + iHave, Checkpoint{ 0, 0, 0, 0 }, UINT64_MAX, iTrack, pScan, nullptr, nullptr,
+                                         0, nullptr, &st, llLeft == 0 );
+                    Progress();
+                    if ( st.bDone ) break;
+                    memmove( vWin.data(), vWin.data() + st.iUsed, iHave - st.iUsed );
+                    iHave -= st.iUsed;
+                    if ( iHave == vWin.size() ) vWin.resize( vWin.size() * 2 );   // an event longer than the window
+                }
+                // What follows the track's end
+                while ( llLeft )
+                {
+                    size_t n = Fill( vWin.data(), (size_t)std::min< uint64_t >( vWin.size(), llLeft ) );
+                    if ( !n ) break;
+                    llLeft -= n;
+                }
+                if ( !pReader->sError.empty() ) return Fail();
+                Progress();
+            }
+            prog.llEvents += pScan->llChannelEvents;
+            prog.llNotes += pScan->info.llNoteCount;
+            prog.llTracksDone++;
+            return true;
+        };
+        if ( pReader )
+        {
+            prog.aTotal[LoadProgress::Reading] = pReader->Total();
+            prog.aTotal[LoadProgress::Counting] = pReader->Total();
+        }
         Parallel::For( iThreads, (size_t)iThreads, [&]( size_t, int ) {
+            if ( pReader )
+            {
+                std::vector< uint8_t > vBuf;
+                while ( StreamTrack( vBuf ) ) {}
+                return;
+            }
             for ( ;; )
             {
                 TrackScan *pScan = nullptr;
@@ -658,6 +840,7 @@ namespace
         prog.aDone[LoadProgress::Counting] = llSize;
         stats.adStageSeconds[LoadProgress::Counting] = Seconds( llPhase );
         if ( Cancelled() ) { sError = L"Cancelled."; return nullptr; }
+        if ( !sStreamError.empty() ) { sError = sStreamError; return nullptr; }
 
         // Track info aggregation (MIDIInfo::AddTrackInfo)
         song->vTracks.resize( vScans.size() );
@@ -1291,11 +1474,24 @@ std::unique_ptr< Song > Loader::LoadFile( const std::wstring &sPath, int iThread
     MemorySampler sampler( progress, stats );
     long long llStart = Timer::NowMicroSecs();
     stats.sFile = sPath;
-    MappedFile file;
-    progress.iStage = LoadProgress::Reading;
-    if ( !file.Open( sPath, sError ) ) return nullptr;
-    stats.adStageSeconds[LoadProgress::Reading] = ( Timer::NowMicroSecs() - llStart ) / 1e6;
-    std::unique_ptr< Song > song = LoadImpl( file.Data(), file.Size(), &file, iThreads, progress, stats, sError );
+    std::unique_ptr< Song > song;
+    if ( Archive::IsCompressed( sPath ) )
+    {
+        // A compressed file or archive: its MIDI read as it is decompressed, never expanded (song/Archive.h)
+        progress.iStage = LoadProgress::Reading;
+        std::unique_ptr< Archive::Reader > reader = Archive::Open( sPath, &progress.bCancel, sError );
+        if ( !reader ) return nullptr;
+        stats.adStageSeconds[LoadProgress::Reading] = ( Timer::NowMicroSecs() - llStart ) / 1e6;
+        song = LoadImpl( nullptr, reader->Total(), nullptr, iThreads, progress, stats, sError, reader.get() );
+        stats.sUnpacked = reader->Summary();
+    }
+    else
+    {
+        MappedFile file;
+        if ( !file.Open( sPath, sError ) ) return nullptr;
+        stats.adStageSeconds[LoadProgress::Reading] = ( Timer::NowMicroSecs() - llStart ) / 1e6;
+        song = LoadImpl( file.Data(), file.Size(), &file, iThreads, progress, stats, sError );
+    }
     if ( song ) song->info.sFilename = sPath;
     stats.dTotalSeconds = ( Timer::NowMicroSecs() - llStart ) / 1e6;
     return song;
@@ -1334,7 +1530,7 @@ std::wstring LoadStats::Format() const
     wchar_t sOutOfRange[64] = L"";
     if ( llOutOfRange ) swprintf( sOutOfRange, 64, L" (%llu past key/value 127, dropped)", (unsigned long long)llOutOfRange );
     swprintf( buf, 8192,
-        L"File: %ls\r\n"
+        L"File: %ls\r\n%ls"
         L"Size: %.1f MB, %ls%ls\r\n"
         L"Threads: %d\r\n\r\n"
         L"Tracks: %llu (%llu malformed)\r\n"
@@ -1353,7 +1549,7 @@ std::wstring LoadStats::Format() const
         L"  Metadata             %8.1f MB\r\n"
         L"  Notes (visual store) %8.1f MB  (%.3f bytes/note)\r\n"
         L"  Overall              %.3f bytes/event\r\n",
-        sFile.c_str(), MB( (double)llFileSize ),
+        sFile.c_str(), sUnpacked.empty() ? L"" : ( L"Unpacked: " + sUnpacked + L"\r\n" ).c_str(), MB( (double)llFileSize ),
         bSeekPenalty ? L"spinning disk" : L"SSD or cached",
         bFusedRead ? L" (one sequential read, fused parse)" : bSequentialRead ? L" (sequential reader)" : L"",
         iThreads,

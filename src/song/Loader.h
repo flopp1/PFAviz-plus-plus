@@ -41,6 +41,7 @@ struct LoadProgress
 struct LoadStats
 {
     std::wstring sFile;
+    std::wstring sUnpacked;             // a compressed file: what it was unpacked from (Archive::Reader::Summary)
     uint64_t llFileSize = 0;
     bool bSeekPenalty = false, bSequentialRead = false, bFusedRead = false;
     uint64_t llFusedBytes = 0;          // fused read: the packed per-track streams (freed after the build)

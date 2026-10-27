@@ -1,5 +1,6 @@
-# Build output
+# Build output, and the libraries build-deps.sh makes
 /build/
+/vendor/
 
 # Kept local, not published:
 #  - the original Piano From Above source, documents and sample songs (the reference for fidelity)

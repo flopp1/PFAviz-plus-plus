@@ -10,9 +10,13 @@ WINDRES  ?= windres
 # must round exactly as the original MSVC x64 SSE2 build did (DESIGN.md R6).
 CXXFLAGS := -std=c++20 -municode -DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -DNOMINMAX \
             -ffp-contract=off -fno-fast-math -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -Wno-cast-function-type \
-            -Isrc -Ires -MMD -MP
+            -Isrc -Ires -Ivendor/archive/include -MMD -MP
+# Compressed and archived MIDI files (song/Archive.cpp): static libarchive with zlib, bzip2, xz, zstd
+# and lz4 for MinGW-w64, headers and libraries in vendor/archive
+ARCHIVE_LIBS := -Lvendor/archive/lib -larchive -lzstd -llzma -llz4 -lbz2 -lzs -lbcrypt
+
 LDFLAGS  := -municode -mwindows -static
-LDLIBS   := -ld3d9 -lwinmm -lcomctl32 -lcomdlg32 -lshell32 -lole32 -luuid -lgdi32 -luser32 -lavrt -lwindowscodecs
+LDLIBS   := -ld3d9 -lwinmm -lcomctl32 -lcomdlg32 -lshell32 -lole32 -luuid -lgdi32 -luser32 -lavrt -lwindowscodecs $(ARCHIVE_LIBS)
 
 ifeq ($(debug),1)
     CXXFLAGS += -O0 -g

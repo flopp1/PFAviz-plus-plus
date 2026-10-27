@@ -69,6 +69,7 @@ FrameGlobals Scene::ComputeGlobals( const ViewInputs &in )
     g.llStartTime = in.llStartTime;
     g.llTimeSpan = in.llTimeSpan;
     g.uClean = in.uClean;
+    g.bLines = in.bLines;
 
     g.iStartNote = min( in.iFirstKey, in.iLastKey );
     g.iEndNote = max( in.iFirstKey, in.iLastKey );
@@ -205,6 +206,7 @@ void Scene::DrawBackground( Renderer *pRenderer, const FrameGlobals &g, const Sc
 {
     pRenderer->DrawRect( g.fNotesX, g.fNotesY, g.fNotesCX, g.fNotesCY, c.csBackground.iPrimaryRGB );
     if ( pRenderer->HasBackgroundImage() ) pRenderer->DrawBackgroundImage( g.fNotesX, g.fNotesY, g.fNotesCX, g.fNotesCY );
+    if ( !g.bLines ) return;
 
     // Vertical lines
     for ( int i = g.iStartNote + 1; i <= g.iEndNote; i++ )
@@ -560,7 +562,7 @@ long long MeterTracker::GetMetTick( long long iTick, long long iClocksPerMet, lo
 void MeterTracker::DrawMeasureLines( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c, long long iStartTick ) const
 {
     int iDivision = m_Info.iDivision;
-    if ( iDivision & 0x8000 ) return;
+    if ( ( iDivision & 0x8000 ) || !g.bLines ) return;
 
     // Copy time state vars
     long long iCurrTick = iStartTick - 1;

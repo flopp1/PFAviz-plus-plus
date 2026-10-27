@@ -48,7 +48,7 @@ size_t EventStream::MemoryBytes() const
 size_t Song::MemoryBytes() const
 {
     size_t n = stream.MemoryBytes() + vTracks.capacity() * sizeof( RefTrackInfo ) + vMeta.capacity() * sizeof( RefMetaEvent ) +
-               vChase.capacity() * sizeof( ChaseEvent ) + vTrackLastU.capacity() * 8 + visual.MemoryBytes() + noteStats.MemoryBytes() +
+               vChase.capacity() * sizeof( ChaseEvent ) + vTrackLastU.capacity() * 8 + visual.MemoryBytes() + noteStats.MemoryBytes() + ccCounts.MemoryBytes() +
                aSendOns[0].MemoryBytes() + aSendOns[1].MemoryBytes();
     for ( const auto &v : vTrackMeta ) n += v.capacity() * sizeof( RefMetaEvent );
     return n;
@@ -62,6 +62,7 @@ void Song::BuildSendCounts( int iThreads )
     const EventStream &es = stream;
     for ( VelocityBins &vb : aSendOns ) { vb.vOffset.clear(); vb.vData.clear(); }
     vChase.clear();
+    ccCounts = EventCounts();
     memset( aChaseUsed, 0, sizeof( aChaseUsed ) );
     uChaseItems = 0;
     size_t U = es.UniqueTicks(), S = es.vSeek.size();
@@ -71,7 +72,7 @@ void Song::BuildSendCounts( int iThreads )
     size_t iParts = std::min< size_t >( S, (size_t)Parallel::ThreadCount( iThreads ) * 8 );
     // A part's bins: from bFirst on, each with its entries in vData from vOffset
     // and its controller and program changes
-    struct Part { size_t bFirst = 0; std::vector< uint64_t > vOffset[2]; std::vector< uint8_t > vData[2]; std::vector< ChaseEvent > vChase; };
+    struct Part { size_t bFirst = 0; std::vector< uint64_t > vOffset[2]; std::vector< uint8_t > vData[2]; std::vector< ChaseEvent > vChase; std::vector< uint64_t > vCC; };
     std::vector< Part > vParts( iParts );
     auto Encode = []( std::vector< uint8_t > &v, uint64_t a[128] ) {
         for ( int vel = 1; vel < 128; vel++ )
@@ -90,6 +91,7 @@ void Song::BuildSendCounts( int iThreads )
         if ( u0 >= u1 ) return;
         Part &part = vParts[k];
         uint64_t aCount[2][128] = {};
+        uint64_t llCC = 0;                                  // controller events in the bin
         std::vector< size_t > vSeen( 2048, SIZE_MAX );     // per channel and key: the last tick with a note-on
         size_t b = part.bFirst = (size_t)( es.times.Get( u0 ) / B );
         auto Flush = [&]() {
@@ -98,6 +100,8 @@ void Song::BuildSendCounts( int iThreads )
                 part.vOffset[c].push_back( part.vData[c].size() );
                 Encode( part.vData[c], aCount[c] );
             }
+            part.vCC.push_back( llCC );
+            llCC = 0;
         };
         StreamBytes r;
         const EventStream::SeekPoint &sp = es.SeekPointFor( u0 );
@@ -130,6 +134,7 @@ void Song::BuildSendCounts( int iThreads )
                         uint32_t uMsg = ( 0x70u + ( op << 4 ) ) | ( h & 0x0F ) | ( (uint32_t)r.p[0] << 8 );
                         if ( aDataBytes[op] == 2 ) uMsg |= (uint32_t)r.p[1] << 16;
                         part.vChase.push_back( { llTime, uMsg } );
+                        if ( op == 4 ) llCC++;
                     }
                     r.p += aDataBytes[op];
                     continue;
@@ -176,6 +181,21 @@ void Song::BuildSendCounts( int iThreads )
         }
         Flush();
     } );
+    // The controller counts: parts that share a bin add up in it
+    ccCounts = EventCounts();
+    ccCounts.vCount.assign( iBins, 0 );
+    for ( auto &part : vParts )
+    {
+        for ( size_t i = 0; i < part.vCC.size() && part.bFirst + i < iBins; i++ )
+            ccCounts.vCount[part.bFirst + i] += part.vCC[i];
+        std::vector< uint64_t >().swap( part.vCC );
+    }
+    ccCounts.vCum.resize( ( ( iBins - 1 ) >> EventCounts::CumShift ) + 1 );
+    for ( size_t b = 0, llCum = 0; b < iBins; b++ )
+    {
+        if ( !( b & ( ( size_t( 1 ) << EventCounts::CumShift ) - 1 ) ) ) ccCounts.vCum[b >> EventCounts::CumShift] = llCum;
+        llCum += ccCounts.vCount[b];
+    }
     size_t iChase = 0;
     for ( auto &part : vParts ) iChase += part.vChase.size();
     vChase.reserve( iChase );
@@ -222,6 +242,15 @@ void Song::BuildSendCounts( int iThreads )
         while ( vb.vOffset.size() < iBins ) vb.vOffset.push_back( vb.vData.size() );
         vb.vOffset.push_back( vb.vData.size() );
     }
+}
+
+uint64_t EventCounts::Passed( long long llTime ) const
+{
+    if ( vCount.empty() || llTime < 0 ) return 0;
+    size_t b = std::min< size_t >( (size_t)( llTime / BinUs ), vCount.size() - 1 );
+    uint64_t n = vCum[b >> CumShift];
+    for ( size_t i = ( b >> CumShift ) << CumShift; i <= b; i++ ) n += vCount[i];
+    return n;
 }
 
 uint64_t NoteStats::Passed( long long llTime ) const

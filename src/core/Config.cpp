@@ -99,22 +99,22 @@ const int VisualSettings::StatSections[StatCount] = {
     SectionSynth, SectionSynth, SectionSynth, SectionSynth, SectionSynth,
     SectionFrame, SectionFrame, SectionFrame, SectionFrame,
     SectionPipeline, SectionPipeline, SectionPipeline, SectionPipeline, SectionPipeline,
-    SectionGeneral, SectionSynth, SectionSynth };
+    SectionGeneral, SectionSynth, SectionSynth, SectionNotes };
 const wchar_t *const VisualSettings::StatLabels[StatCount] = {
     L"Time:", L"FPS:", L"Score:", L"Notes:", L"NPS:", L"Polyphony:",
     L"Sent/s:", L"Skipped/s:", L"Collapsed/s:", L"Lag:", L"Skipping:",
     L"Other ms:", L"Notes ms:", L"Scene ms:", L"Present ms:",
     L"Decoded/s:", L"Decoder busy:", L"Sender busy:", L"Ring:", L"Send cost:",
-    L"Tempo:", L"Voices:", L"Synth CPU:" };
+    L"Tempo:", L"Voices:", L"Synth CPU:", L"CC events:" };
 const wchar_t *const VisualSettings::StatNames[StatCount] = {
     L"Time", L"Frame rate", L"Score", L"Notes passed", L"NPS", L"Polyphony",
     L"Messages sent", L"Skipped", L"Collapsed", L"Lag", L"Skipping threshold",
     L"Other (frame ms)", L"Notes (frame ms)", L"Scene (frame ms)", L"Present (frame ms)",
     L"Messages decoded", L"Decoder busy", L"Sender busy", L"Ring fill", L"Send cost",
-    L"Tempo (BPM)", L"Synth voices (KDMAPI)", L"Synth CPU (KDMAPI)" };
+    L"Tempo (BPM)", L"Synth voices (KDMAPI)", L"Synth CPU (KDMAPI)", L"CC events passed" };
 // The order the lines had before they could be moved: general, notes, synth, pipeline, frame time
 const unsigned char VisualSettings::DefaultStatOrder[StatCount] = {
-    StatTime, StatFPS, StatScore, StatTempo, StatNotes, StatNPS, StatPolyphony,
+    StatTime, StatFPS, StatScore, StatTempo, StatNotes, StatNPS, StatPolyphony, StatCC,
     StatSent, StatSkipped, StatCollapsed, StatLag, StatSkipping, StatVoices, StatSynthCpu,
     StatDecoded, StatDecoderBusy, StatSenderBusy, StatRing, StatSendCost,
     StatOtherMs, StatNotesMs, StatSceneMs, StatPresentMs };
@@ -129,10 +129,13 @@ void VisualSettings::LoadDefaultValues()
     iLastKey = Notes::C8;
 
     iBkgColor = 0x00303030;
+    bBkgImage = false;
     sBkgImage.clear();
-    iBkgFit = 0;
+    iBkgFit = 2;    // Renderer::FitStretch: the whole image in the notes area
     iBkgOpacity = 100;
     uClean = 0;
+    bHideLines = false;
+    bHideSpeedBoxes = false;
     int R, G, B, S = 80, V = 100;
     int iColors = sizeof( colors ) / sizeof( colors[0] );
     for ( int i = 10, count = 0; count < iColors; i = ( i + 7 ) % iColors, count++ )
@@ -191,9 +194,12 @@ void VisualSettings::Load( const IniFile &ini )
         colors[i] = ParseRGB( ini.GetString( "Visual", "Color" + std::to_string( i ) ), colors[i] );
     iBkgColor = ParseRGB( ini.GetString( "Visual", "BkgColor" ), iBkgColor );
     sBkgImage = Util::Utf8ToWide( ini.GetString( "Visual", "BkgImage" ) );
+    bBkgImage = ini.GetBool( "Visual", "BkgImageOn", !sBkgImage.empty() );   // a file chosen before the switch: on
     iBkgFit = std::clamp( ini.GetInt( "Visual", "BkgImageFit", iBkgFit ), 0, 4 );
     iBkgOpacity = std::clamp( ini.GetInt( "Visual", "BkgImageOpacity", iBkgOpacity ), 0, 100 );
     uClean = (unsigned)ini.GetInt( "Visual", "CleanDrawing", (int)uClean ) & 7;
+    bHideLines = ini.GetBool( "Visual", "HideLines", bHideLines );
+    bHideSpeedBoxes = ini.GetBool( "Visual", "HideSpeedBoxes", bHideSpeedBoxes );
 }
 
 void VisualSettings::Save( IniFile &ini ) const
@@ -209,10 +215,13 @@ void VisualSettings::Save( IniFile &ini ) const
     for ( int i = 0; i < 16; i++ )
         ini.Set( "Visual", "Color" + std::to_string( i ), FormatRGB( colors[i] ) );
     ini.Set( "Visual", "BkgColor", FormatRGB( iBkgColor ) );
+    ini.SetInt( "Visual", "BkgImageOn", bBkgImage );
     ini.Set( "Visual", "BkgImage", Util::WideToUtf8( sBkgImage ) );
     ini.SetInt( "Visual", "BkgImageFit", iBkgFit );
     ini.SetInt( "Visual", "BkgImageOpacity", iBkgOpacity );
     ini.SetInt( "Visual", "CleanDrawing", uClean );
+    ini.SetInt( "Visual", "HideLines", bHideLines );
+    ini.SetInt( "Visual", "HideSpeedBoxes", bHideSpeedBoxes );
 }
 
 //-----------------------------------------------------------------------------

@@ -6,6 +6,7 @@
 #include <map>
 
 #include "core/ThreadPool.h"
+#include "visual/Scene.h"
 
 namespace
 {
@@ -216,6 +217,7 @@ std::shared_ptr< LodCache::Segment > LodCache::Build( long long llIndex, int iTh
         return k * R + (long long)( std::upper_bound( vRes.begin(), vRes.end(), m ) - vRes.begin() );
     };
     auto LowerBoundTime = [&]( long long t ) { return t <= 0 ? (uint64_t)0 : pTimes->LowerBound( (uint64_t)t ); };
+    const bool bMinHeight = ( S.uClean & Clean::MinHeight ) != 0, bEdgeRound = ( S.uClean & Clean::EdgeRound ) != 0;
 
     auto pSeg = std::make_shared< Segment >();
     pSeg->llIndex = llIndex;
@@ -284,8 +286,11 @@ std::shared_ptr< LodCache::Segment > LodCache::Build( long long llIndex, int iTh
                 if ( n.bUnpaired ) continue;
                 long long s = (long long)pTimes->Get( n.llStartU ), e = (long long)pTimes->Get( n.llEndU );
                 int h = Height( e - s );
-                if ( h <= 0 ) continue;                 // the bucket sweep never selects a note of height 0
                 long long c = Cell( s );
+                // Clean drawing (see the header): with EdgeRound one height for all, the end alone deciding
+                if ( bEdgeRound ) h = bMinHeight || Cell( e ) != c ? 1 : 0;
+                else if ( bMinHeight ) h = std::max( h, 1 );
+                if ( h <= 0 ) continue;                 // the bucket sweep never selects a note of height 0
                 if ( c != llCell ) { FlushCell(); llCell = c; }
                 vCell.push_back( { (uint64_t)i, n.bWeird, s, e, n.uSlot, h } );
             }

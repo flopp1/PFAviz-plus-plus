@@ -2,6 +2,9 @@
 
 #include <mmsystem.h>
 
+#include <algorithm>
+#include <climits>
+
 #include "core/Config.h"
 
 void MidiOutput::AllNotesOff()
@@ -51,7 +54,7 @@ namespace
         typedef BOOL ( WINAPI *PFN_BOOL )();
         typedef VOID ( WINAPI *PFN_SEND )( DWORD );
         typedef BOOL ( WINAPI *PFN_VER )( DWORD *, DWORD *, DWORD *, DWORD * );
-        typedef unsigned int ( WINAPI *PFN_VOICES )();
+        typedef unsigned long long ( WINAPI *PFN_VOICES )();     // 64 bits: Maestro returns one (OmniMIDI's 32 are the low half)
         typedef float ( WINAPI *PFN_RENDERTIME )();
         HMODULE hMod = nullptr;
         PFN_BOOL pIsAvailable = nullptr, pInit = nullptr, pTerminate = nullptr;
@@ -80,7 +83,8 @@ namespace
                 k.pTerminate = ( PFN_BOOL )GetProcAddress( k.hMod, "TerminateKDMAPIStream" );
                 k.pSend = ( PFN_SEND )GetProcAddress( k.hMod, "SendDirectData" );
                 k.pVersion = ( PFN_VER )GetProcAddress( k.hMod, "ReturnKDMAPIVer" );
-                k.pActiveVoices = ( PFN_VOICES )GetProcAddress( k.hMod, "GetActiveVoices" );
+                k.pActiveVoices = ( PFN_VOICES )GetProcAddress( k.hMod, "GetVoiceCount" );
+                if ( !k.pActiveVoices ) k.pActiveVoices = ( PFN_VOICES )GetProcAddress( k.hMod, "GetActiveVoices" );
                 k.pRenderingTime = ( PFN_RENDERTIME )GetProcAddress( k.hMod, "GetRenderingTime" );
                 k.bAvailable = k.pInit && k.pTerminate && k.pSend && ( !k.pIsAvailable || k.pIsAvailable() );
             }
@@ -125,7 +129,7 @@ bool MidiOutputs::KdmapiActiveVoices( unsigned &uVoices )
 {
     Kdmapi &k = Kdmapi::Get();
     if ( !k.bAvailable || !k.pActiveVoices ) return false;
-    uVoices = k.pActiveVoices();
+    uVoices = (unsigned)std::min< unsigned long long >( k.pActiveVoices(), UINT_MAX );
     return true;
 }
 

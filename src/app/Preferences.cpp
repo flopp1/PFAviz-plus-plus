@@ -201,6 +201,13 @@ namespace
         return FALSE;
     }
 
+    // The image's controls only while it is shown
+    VOID EnableBackground( HWND hWnd )
+    {
+        BOOL bOn = IsDlgButtonChecked( hWnd, IDC_BKGON ) == BST_CHECKED;
+        for ( int iId : { IDC_BKGIMAGE, IDC_BKGBROWSE, IDC_BKGFIT, IDC_BKGOPACITY } ) EnableWindow( GetDlgItem( hWnd, iId ), bOn );
+    }
+
     // Sets the values in the visual settings page. Used at init and when restoring defaults
     VOID SetVisualProc( HWND hWnd, const VisualSettings &cVisual )
     {
@@ -216,11 +223,15 @@ namespace
         for ( int i = 0; i < IDC_COLOR6 - IDC_COLOR1 + 1; i++ )
             SetWindowLongPtrW( GetDlgItem( hWnd, IDC_COLOR1 + i ), GWLP_USERDATA, cVisual.colors[i] );
         SetWindowLongPtrW( GetDlgItem( hWnd, IDC_BKGCOLOR ), GWLP_USERDATA, cVisual.iBkgColor );
+        CheckDlgButton( hWnd, IDC_BKGON, cVisual.bBkgImage ? BST_CHECKED : BST_UNCHECKED );
+        CheckDlgButton( hWnd, IDC_HIDELINES, cVisual.bHideLines ? BST_CHECKED : BST_UNCHECKED );
+        CheckDlgButton( hWnd, IDC_HIDESPEEDBOXES, cVisual.bHideSpeedBoxes ? BST_CHECKED : BST_UNCHECKED );
         SetDlgItemTextW( hWnd, IDC_BKGIMAGE, cVisual.sBkgImage.c_str() );
         SendDlgItemMessageW( hWnd, IDC_BKGFIT, CB_SETCURSEL, cVisual.iBkgFit, 0 );
         SetDlgItemInt( hWnd, IDC_BKGOPACITY, (UINT)cVisual.iBkgOpacity, FALSE );
         for ( int i = 0; i < 3; i++ )
             CheckDlgButton( hWnd, IDC_CLEAN_MINHEIGHT + i, ( cVisual.uClean >> i ) & 1 ? BST_CHECKED : BST_UNCHECKED );
+        EnableBackground( hWnd );
     }
 
     // The main window's size when the page opened, or when it was last applied (applied again only
@@ -324,6 +335,9 @@ namespace
                         InvalidateRect( hWndBtn, nullptr, FALSE );
                         return TRUE;
                     }
+                    case IDC_BKGON:
+                        EnableBackground( hWnd );
+                        return TRUE;
                     case IDC_BKGBROWSE:
                     {
                         wchar_t sFile[1024] = {};
@@ -362,7 +376,9 @@ namespace
                     int iWidth = (int)g_szWindow.cx, iHeight = (int)g_szWindow.cy;
                     BOOL bOk = FALSE;
                     UINT uOpacity = GetDlgItemInt( hWnd, IDC_BKGOPACITY, &bOk, FALSE );
-                    if ( !bOk || uOpacity > 100 )
+                    bool bBkgOn = IsDlgButtonChecked( hWnd, IDC_BKGON ) == BST_CHECKED;
+                    if ( !bOk && !bBkgOn ) uOpacity = (UINT)config.GetVisualSettings().iBkgOpacity;    // not checked while the image is off
+                    else if ( bBkgOn && ( !bOk || uOpacity > 100 ) )
                     {
                         MessageBoxW( hWnd, L"Please specify a background image opacity between 0 and 100 percent", L"Error", MB_OK | MB_ICONEXCLAMATION );
                         PostMessageW( hWnd, WM_NEXTDLGCTL, ( WPARAM )GetDlgItem( hWnd, IDC_BKGOPACITY ), TRUE );
@@ -371,7 +387,14 @@ namespace
                     }
                     wchar_t sImage[1024] = {};
                     GetDlgItemTextW( hWnd, IDC_BKGIMAGE, sImage, 1024 );
-                    if ( sImage[0] && GetFileAttributesW( sImage ) == INVALID_FILE_ATTRIBUTES )
+                    if ( bBkgOn && !sImage[0] )
+                    {
+                        MessageBoxW( hWnd, L"Please choose a background image file, or uncheck the background image.", L"Error", MB_OK | MB_ICONEXCLAMATION );
+                        PostMessageW( hWnd, WM_NEXTDLGCTL, ( WPARAM )GetDlgItem( hWnd, IDC_BKGIMAGE ), TRUE );
+                        SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_INVALID );
+                        return TRUE;
+                    }
+                    if ( bBkgOn && GetFileAttributesW( sImage ) == INVALID_FILE_ATTRIBUTES )
                     {
                         MessageBoxW( hWnd, L"The background image file was not found. Please choose an existing file, or leave the box empty for no image.", L"Error", MB_OK | MB_ICONEXCLAMATION );
                         PostMessageW( hWnd, WM_NEXTDLGCTL, ( WPARAM )GetDlgItem( hWnd, IDC_BKGIMAGE ), TRUE );
@@ -397,14 +420,19 @@ namespace
                     for ( int i = 0; i < IDC_COLOR6 - IDC_COLOR1 + 1; i++ )
                         cVisual.colors[i] = ( unsigned )GetWindowLongPtrW( GetDlgItem( hWnd, IDC_COLOR1 + i ), GWLP_USERDATA );
                     cVisual.iBkgColor = ( unsigned )GetWindowLongPtrW( GetDlgItem( hWnd, IDC_BKGCOLOR ), GWLP_USERDATA );
+                    cVisual.bBkgImage = bBkgOn;
                     cVisual.sBkgImage = sImage;
+                    cVisual.iBkgOpacity = std::min( 100, (int)uOpacity );
+                    cVisual.bHideLines = IsDlgButtonChecked( hWnd, IDC_HIDELINES ) == BST_CHECKED;
+                    bool bOldHideBoxes = cVisual.bHideSpeedBoxes;
+                    cVisual.bHideSpeedBoxes = IsDlgButtonChecked( hWnd, IDC_HIDESPEEDBOXES ) == BST_CHECKED;
                     cVisual.iBkgFit = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_BKGFIT, CB_GETCURSEL, 0, 0 ) );
-                    cVisual.iBkgOpacity = (int)uOpacity;
                     cVisual.uClean = 0;
                     for ( int i = 0; i < 3; i++ )
                         if ( IsDlgButtonChecked( hWnd, IDC_CLEAN_MINHEIGHT + i ) == BST_CHECKED ) cVisual.uClean |= 1u << i;
 
                     config.SetVisualSettings( cVisual );
+                    if ( bOldHideBoxes != cVisual.bHideSpeedBoxes ) ShowSpeedBoxes( !cVisual.bHideSpeedBoxes );
                     if ( cView.GetFullScreen() && bAlwaysShowControls != cVisual.bAlwaysShowControls )
                         cView.SetControls( cView.GetControls(), true );
                     if ( iWidth != g_szWindow.cx || iHeight != g_szWindow.cy )
