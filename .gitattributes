@@ -1,0 +1,2 @@
+# Shell scripts keep LF endings on Windows checkouts (sh rejects CRLF)
+*.sh text eol=lf
