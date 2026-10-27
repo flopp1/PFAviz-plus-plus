@@ -28,6 +28,22 @@ struct SceneColors
 };
 
 // Inputs and outputs of MainScreen::RenderGlobals
+// Clean drawing (Visual tab): each flag leaves one of the original's rounding quirks out
+namespace Clean
+{
+    enum : unsigned
+    {
+        MinHeight = 1,      // a note rounding to 0 rows is drawn 1 row tall (the original skips it)
+        KeepBottom = 2,     // the frame's start is rounded up, not down, to whole rows, so a note leaves
+                            // the hit line no later than it stops sounding (the original rounds down, so a
+                            // note can be gone while its last row would still show above the keyboard)
+        EdgeRound = 4,      // a note's top and bottom rows are each rounded from its end and start time
+                            // (the original rounds its start and its length, so two notes ending
+                            // together can have tops a row apart and the lower layer peeks out)
+        All = 7,
+    };
+}
+
 struct ViewInputs
 {
     int iBufferWidth = 0, iBufferHeight = 0;
@@ -37,6 +53,7 @@ struct ViewInputs
     float fOffsetX = 0.0f, fOffsetY = 0.0f, fZoomX = 1.0f;   // already include the temporary move/zoom
     bool bShowKB = true;
     long long llStartTime = 0, llTimeSpan = 3000000;
+    unsigned uClean = 0;              // Clean flags (0: the original's drawing)
 };
 
 struct FrameGlobals
@@ -47,6 +64,7 @@ struct FrameGlobals
     float fWhiteCX;
     long long llStartTime, llTimeSpan, llRndStartTime;
     int iBufferWidth, iBufferHeight;
+    unsigned uClean;
 };
 
 namespace Scene

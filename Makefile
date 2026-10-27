@@ -12,7 +12,7 @@ CXXFLAGS := -std=c++20 -municode -DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -DNO
             -ffp-contract=off -fno-fast-math -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -Wno-cast-function-type \
             -Isrc -Ires -MMD -MP
 LDFLAGS  := -municode -mwindows -static
-LDLIBS   := -ld3d9 -lwinmm -lcomctl32 -lcomdlg32 -lshell32 -lole32 -luuid -lgdi32 -luser32 -lavrt
+LDLIBS   := -ld3d9 -lwinmm -lcomctl32 -lcomdlg32 -lshell32 -lole32 -luuid -lgdi32 -luser32 -lavrt -lwindowscodecs
 
 ifeq ($(debug),1)
     CXXFLAGS += -O0 -g

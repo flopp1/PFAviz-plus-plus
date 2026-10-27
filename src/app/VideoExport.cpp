@@ -4,6 +4,8 @@
 #include <algorithm>
 #include <commctrl.h>
 #include <commdlg.h>
+#include <cmath>
+#include <cstdarg>
 #include <cstdio>
 #include <shlobj.h>
 
@@ -83,8 +85,178 @@ FfmpegPipe::~FfmpegPipe()
     if ( m_hProcess ) CloseHandle( m_hProcess );
 }
 
+namespace
+{
+    std::wstring Quoted( const std::wstring &s ) { return L"\"" + s + L"\""; }
+
+    std::wstring Format( const wchar_t *sFormat, ... )
+    {
+        wchar_t buf[1024];
+        va_list va;
+        va_start( va, sFormat );
+        vswprintf( buf, 1024, sFormat, va );
+        va_end( va );
+        return buf;
+    }
+
+    // The last lines of ffmpeg's output (its own progress and the SVT encoder's notes left out)
+    std::wstring LastLines( const std::string &s, size_t iLines )
+    {
+        std::vector< std::string > v;
+        for ( size_t i = 0; i < s.size(); )
+        {
+            size_t j = std::min( s.find_first_of( "\r\n", i ), s.size() );
+            std::string sLine = s.substr( i, j - i );
+            if ( !sLine.empty() && sLine.rfind( "Svt[info]", 0 ) != 0 ) v.push_back( sLine );
+            i = j + 1;
+        }
+        std::string sOut;
+        for ( size_t i = v.size() > iLines ? v.size() - iLines : 0; i < v.size(); i++ ) sOut += v[i] + "\n";
+        return Util::Utf8ToWide( sOut );
+    }
+}
+
+std::wstring FfmpegPipe::EncoderArgs( const VideoJob &job )
+{
+    typedef ExportSettings ES;
+    // The preset (x264's ultrafast ... veryslow) onto each encoder's speed levels, and the quality
+    // (x264's CRF scale) onto each one's own
+    int iP = std::clamp( job.iPreset, 0, ES::PresetCount - 1 ), iLast = ES::PresetCount - 1;
+    const wchar_t *sPreset = ES::Presets[iP];
+    const wchar_t *sAmf = iP < 3 ? L"speed" : iP < 6 ? L"balanced" : L"quality";
+    const wchar_t *sQsv = ES::Presets[std::max( iP, 2 )];   // QSV has no ultrafast or superfast
+    int q = std::clamp( job.iCRF, 0, 51 );
+    const wchar_t *sEnc = ES::EncoderName( job.iCodec, job.iBackend );
+    // HEVC in MP4 and MOV: the tag Apple's players need
+    const wchar_t *sTag = job.iCodec == ES::Hevc && ( job.iContainer == ES::Mp4 || job.iContainer == ES::Mov ) ? L" -tag:v hvc1" : L"";
+    switch ( job.iCodec )
+    {
+        case ES::ProRes: return L"-c:v prores_ks -profile:v 3 -vendor apl0 -pix_fmt yuv422p10le";
+        case ES::Ffv1: return L"-c:v ffv1 -level 3 -g 1 -slices 16 -slicecrc 1 -pix_fmt bgr0";
+    }
+    switch ( job.iBackend )
+    {
+        case ES::Nvenc:
+            return Format( L"-c:v %ls -preset p%d -tune hq -rc vbr -cq %d -b:v 0 -pix_fmt yuv420p%ls", sEnc, 1 + iP * 6 / iLast, std::max( q, 1 ), sTag );
+        case ES::Amf:
+        {
+            int qp = job.iCodec == ES::Av1 ? q * 255 / 51 : q;     // AV1's QP goes to 255
+            return Format( L"-c:v %ls -quality %ls -rc cqp -qp_i %d -qp_p %d -pix_fmt yuv420p%ls", sEnc, sAmf, qp, qp, sTag );
+        }
+        case ES::Qsv:
+            return Format( L"-c:v %ls -preset %ls -global_quality %d -pix_fmt nv12%ls", sEnc, sQsv, std::max( q, 1 ), sTag );
+    }
+    switch ( job.iCodec )
+    {
+        case ES::Hevc:
+            return Format( L"-c:v libx265 -preset %ls %ls -pix_fmt yuv420p%ls", sPreset,
+                           q ? Format( L"-crf %d -x265-params log-level=error", q ).c_str() : L"-x265-params lossless=1:log-level=error", sTag );
+        case ES::Av1:   // SVT-AV1: presets 12 (fastest here) down to 4, CRF 1-63
+            return Format( L"-c:v libsvtav1 -preset %d -crf %d -pix_fmt yuv420p", 12 - iP, std::max( 1, q * 63 / 51 ) );
+        default:        // x264: quality 0 is lossless
+            return q ? Format( L"-c:v libx264 -preset %ls -crf %d -pix_fmt yuv420p", sPreset, q )
+                     : Format( L"-c:v libx264 -preset %ls -qp 0 -pix_fmt yuv420p", sPreset );
+    }
+}
+
+int FfmpegPipe::Run( const std::wstring &sFfmpeg, const std::wstring &sArgs, std::string &sOutput, DWORD dwTimeoutMs )
+{
+    sOutput.clear();
+    SECURITY_ATTRIBUTES sa = { sizeof( sa ), nullptr, TRUE };
+    HANDLE hRead = nullptr, hWrite = nullptr;
+    if ( !CreatePipe( &hRead, &hWrite, &sa, 1 << 16 ) ) return NotRun;
+    SetHandleInformation( hRead, HANDLE_FLAG_INHERIT, 0 );
+    HANDLE hNul = CreateFileW( L"NUL", GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, OPEN_EXISTING, 0, nullptr );
+    std::wstring sCmd = Quoted( sFfmpeg ) + L" " + sArgs;
+    std::vector< wchar_t > vCmd( sCmd.begin(), sCmd.end() );
+    vCmd.push_back( 0 );
+    STARTUPINFOW si = {};
+    si.cb = sizeof( si );
+    si.dwFlags = STARTF_USESTDHANDLES;
+    si.hStdInput = hNul;
+    si.hStdOutput = si.hStdError = hWrite;
+    PROCESS_INFORMATION pi = {};
+    BOOL bStarted = CreateProcessW( sFfmpeg.c_str(), vCmd.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi );
+    CloseHandle( hWrite );
+    if ( hNul != INVALID_HANDLE_VALUE ) CloseHandle( hNul );
+    if ( !bStarted ) { CloseHandle( hRead ); return NotRun; }
+    CloseHandle( pi.hThread );
+    // Read until ffmpeg closes its end (it exits), stopping it at the time limit
+    ULONGLONG llEnd = GetTickCount64() + dwTimeoutMs;
+    bool bTimedOut = false;
+    char buf[4096];
+    for ( ;; )
+    {
+        DWORD dwAvail = 0;
+        if ( !PeekNamedPipe( hRead, nullptr, 0, nullptr, &dwAvail, nullptr ) ) break;     // closed: done
+        if ( dwAvail )
+        {
+            DWORD dwRead = 0;
+            if ( !ReadFile( hRead, buf, std::min< DWORD >( dwAvail, sizeof( buf ) ), &dwRead, nullptr ) ) break;
+            if ( sOutput.size() < ( 1u << 20 ) ) sOutput.append( buf, dwRead );
+            continue;
+        }
+        if ( GetTickCount64() > llEnd ) { bTimedOut = true; TerminateProcess( pi.hProcess, 1 ); break; }
+        Sleep( 5 );
+    }
+    WaitForSingleObject( pi.hProcess, 5000 );
+    DWORD dwExit = 1;
+    GetExitCodeProcess( pi.hProcess, &dwExit );
+    CloseHandle( pi.hProcess );
+    CloseHandle( hRead );
+    return bTimedOut ? NotRun : (int)dwExit;
+}
+
+bool FfmpegPipe::TryEncoder( const VideoJob &job, std::wstring &sError )
+{
+    std::wstring sArgs = Format( L"-hide_banner -nostats -loglevel error -f lavfi -i color=c=black:s=%dx%d:r=%d:d=1 -frames:v 1 ",
+                                 job.iWidth, job.iHeight, job.iFPS ) + EncoderArgs( job ) + L" -f null -";
+    std::string sOut;
+    int iExit = Run( job.sFfmpeg, sArgs, sOut, 60000 );
+    if ( iExit == 0 ) return true;
+    sError = Format( L"The %ls encoder (%ls in ffmpeg) cannot encode %d x %d video with these settings", ExportSettings::Codecs[job.iCodec],
+                     ExportSettings::EncoderName( job.iCodec, job.iBackend ), job.iWidth, job.iHeight );
+    if ( iExit == NotRun ) sError += L": ffmpeg did not answer.";
+    else
+    {
+        sError += L".\n\nffmpeg said:\n" + LastLines( sOut, 6 );
+        if ( job.iBackend != ExportSettings::Software )
+            sError += L"\nHardware encoders need a graphics card and driver that have them (NVENC on NVIDIA, AMF on AMD, Quick Sync on "
+                      L"Intel; AV1 only on recent ones), and have smaller size limits than the software encoders.";
+    }
+    return false;
+}
+
+double FfmpegPipe::FirstSound( const std::wstring &sFfmpeg, const std::wstring &sAudio, std::wstring &sError )
+{
+    std::string sOut;
+    int iExit = Run( sFfmpeg, L"-hide_banner -nostats -t 600 -i " + Quoted( sAudio ) +
+                     L" -map 0:a:0 -af silencedetect=noise=-60dB:duration=0.01 -f null -", sOut, 120000 );
+    if ( iExit != 0 )
+    {
+        sError = L"The audio file could not be read";
+        sError += iExit == NotRun ? L": ffmpeg did not answer." : L".\n\nffmpeg said:\n" + LastLines( sOut, 6 );
+        return -1.0;
+    }
+    // Silence from the start: the sound starts where it ends (all silent: at 0)
+    size_t i = sOut.find( "silence_start: " );
+    if ( i == std::string::npos || atof( sOut.c_str() + i + 15 ) > 0.001 ) return 0.0;
+    size_t j = sOut.find( "silence_end: ", i );
+    return j == std::string::npos ? 0.0 : std::max( 0.0, atof( sOut.c_str() + j + 13 ) );
+}
+
 bool FfmpegPipe::Start( const VideoJob &job, std::wstring &sError )
 {
+    typedef ExportSettings ES;
+    // The audio's place: its first sound at the first note's, then the offset (late: delayed; early: cut)
+    double dAudioDelay = job.iAudioOffsetMs / 1000.0;
+    if ( !job.sAudioFile.empty() && job.bAudioAlign )
+    {
+        double dFirst = FirstSound( job.sFfmpeg, job.sAudioFile, sError );
+        if ( dFirst < 0.0 ) return false;
+        dAudioDelay += job.dFirstNoteSecs - dFirst;
+    }
+
     SECURITY_ATTRIBUTES sa = { sizeof( sa ), nullptr, TRUE };
     HANDLE hRead = nullptr;
     if ( !CreatePipe( &hRead, &m_hStdin, &sa, 1 << 20 ) )
@@ -99,46 +271,40 @@ bool FfmpegPipe::Start( const VideoJob &job, std::wstring &sError )
     m_sLog = std::wstring( sTemp ) + L"PFAviz++ ffmpeg.log";
     HANDLE hLog = CreateFileW( m_sLog.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr );
 
-    // Raw frames in: YUV 4:2:0 already converted (BT.709, limited range), or BGRX that ffmpeg converts.
-    // 4:2:0 with BT.709 colours out (what players assume for HD video), from the chosen encoder
-    wchar_t sIn[256], sEnc[256];
-    // (the frames carry the colour description: ffmpeg takes it from them, not from the output options)
-    const wchar_t *sTags = L"setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv";
-    if ( job.bYuv )
-        swprintf( sIn, 256, L"-f rawvideo -pix_fmt yuv420p -video_size %dx%d -framerate %d -i - -an -vf %ls", job.iWidth, job.iHeight, job.iFPS, sTags );
-    else
-        swprintf( sIn, 256, L"-f rawvideo -pix_fmt bgr0 -video_size %dx%d -framerate %d -i - -an -vf scale=out_color_matrix=bt709:out_range=tv,%ls",
-                  job.iWidth, job.iHeight, job.iFPS, sTags );
-    // The x264 preset onto the hardware encoders' speed levels (ultrafast ... veryslow)
-    int iP = std::clamp( job.iPreset, 0, ExportSettings::PresetCount - 1 ), iLast = ExportSettings::PresetCount - 1;
-    const wchar_t *sAmf = iP < 3 ? L"speed" : iP < 6 ? L"balanced" : L"quality";
-    const wchar_t *sQsv = ExportSettings::Presets[std::max( iP, 2 )];   // QSV has no ultrafast or superfast
-    int q = job.iCRF;
-    switch ( job.iEncoder )
+    // Raw frames in: YUV 4:2:0 already converted (BT.709, limited range), or BGRX that ffmpeg converts
+    // (to BT.709 limited-range YUV; FFV1 keeps it RGB). The frames carry the colour description: ffmpeg
+    // takes it from them, not from the output options.
+    bool bRgb = job.iCodec == ES::Ffv1;
+    std::wstring sArgs = Format( L"-hide_banner -loglevel warning -f rawvideo -pix_fmt %ls -video_size %dx%d -framerate %d -i -",
+                                 job.bYuv ? L"yuv420p" : L"bgr0", job.iWidth, job.iHeight, job.iFPS );
+    bool bAudio = !job.sAudioFile.empty();
+    if ( bAudio )
     {
-        case ExportSettings::NvencH264: case ExportSettings::NvencHevc:
-            swprintf( sEnc, 256, L"-c:v %ls -preset p%d -tune hq -rc vbr -cq %d -b:v 0 -pix_fmt yuv420p%ls",
-                      job.iEncoder == ExportSettings::NvencH264 ? L"h264_nvenc" : L"hevc_nvenc", 1 + iP * 6 / iLast, std::max( q, 1 ),
-                      job.iEncoder == ExportSettings::NvencHevc ? L" -tag:v hvc1" : L"" );
-            break;
-        case ExportSettings::AmfH264: case ExportSettings::AmfHevc:
-            swprintf( sEnc, 256, L"-c:v %ls -quality %ls -rc cqp -qp_i %d -qp_p %d -pix_fmt yuv420p%ls",
-                      job.iEncoder == ExportSettings::AmfH264 ? L"h264_amf" : L"hevc_amf", sAmf, q, q,
-                      job.iEncoder == ExportSettings::AmfHevc ? L" -tag:v hvc1" : L"" );
-            break;
-        case ExportSettings::QsvH264: case ExportSettings::QsvHevc:
-            swprintf( sEnc, 256, L"-c:v %ls -preset %ls -global_quality %d -pix_fmt nv12%ls",
-                      job.iEncoder == ExportSettings::QsvH264 ? L"h264_qsv" : L"hevc_qsv", sQsv, std::max( q, 1 ),
-                      job.iEncoder == ExportSettings::QsvHevc ? L" -tag:v hvc1" : L"" );
-            break;
-        default:
-            swprintf( sEnc, 256, L"-c:v libx264 -preset %ls -crf %d -pix_fmt yuv420p", ExportSettings::Presets[iP], q );
-            break;
+        if ( dAudioDelay < 0.0 ) sArgs += Format( L" -ss %.6f", -dAudioDelay );
+        sArgs += L" -i " + Quoted( job.sAudioFile ) + L" -map 0:v:0 -map 1:a:0";
     }
-    wchar_t sArgs[1024];
-    swprintf( sArgs, 1024, L"-hide_banner -loglevel warning %ls %ls -colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv -movflags +faststart -y",
-              sIn, sEnc );
-    std::wstring sCmd = L"\"" + job.sFfmpeg + L"\" " + sArgs + L" \"" + job.sOutFile + L"\"";
+    const wchar_t *sTags = L"setparams=color_primaries=bt709:color_trc=bt709:colorspace=bt709:range=tv";
+    if ( job.bYuv ) sArgs += Format( L" -vf %ls", sTags );
+    else if ( !bRgb ) sArgs += Format( L" -vf scale=out_color_matrix=bt709:out_range=tv,%ls", sTags );
+    sArgs += L" " + EncoderArgs( job );
+    if ( !bRgb ) sArgs += L" -colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv";
+    if ( bAudio )
+    {
+        // Each format's usual audio: AAC in MP4 (and MOV, but for ProRes), FLAC (up to 24-bit) in MKV, PCM in AVI
+        if ( dAudioDelay > 0.0 ) sArgs += Format( L" -af adelay=delays=%lld:all=1", (long long)std::llround( dAudioDelay * 1000.0 ) );
+        switch ( job.iContainer )
+        {
+            case ES::Mkv: sArgs += L" -c:a flac -sample_fmt s32"; break;
+            case ES::Avi: sArgs += L" -c:a pcm_s24le"; break;
+            case ES::Mov: sArgs += job.iCodec == ES::ProRes ? L" -c:a pcm_s24le" : L" -c:a aac -b:a 320k"; break;
+            default: sArgs += L" -c:a aac -b:a 320k"; break;
+        }
+        // No longer than the video
+        sArgs += Format( L" -t %.6f", job.dDurationSecs );
+    }
+    else sArgs += L" -an";
+    if ( job.iContainer == ES::Mp4 || job.iContainer == ES::Mov ) sArgs += L" -movflags +faststart";
+    std::wstring sCmd = Quoted( job.sFfmpeg ) + L" " + sArgs + L" -y " + Quoted( job.sOutFile );
     std::vector< wchar_t > vCmd( sCmd.begin(), sCmd.end() );
     vCmd.push_back( 0 );
 
@@ -307,8 +473,16 @@ namespace
         iHeight = std::max( 16, (int)( rc.bottom - rc.top ) & ~1 );
     }
 
+    // The file name with the format's extension in place of its own
+    std::wstring WithExtension( const std::wstring &sFile, int iContainer )
+    {
+        size_t iSlash = sFile.find_last_of( L"\\/" ), iDot = sFile.find_last_of( L'.' );
+        std::wstring sBase = iDot != std::wstring::npos && ( iSlash == std::wstring::npos || iDot > iSlash ) ? sFile.substr( 0, iDot ) : sFile;
+        return sBase + L"." + ExportSettings::Extensions[iContainer];
+    }
+
     // The saved file's folder (or the Videos folder) and the open song's name
-    std::wstring DefaultOutFile( const std::wstring &sSaved )
+    std::wstring DefaultOutFile( const std::wstring &sSaved, int iContainer )
     {
         std::wstring sDir, sName = L"PFAviz++.mp4";
         size_t iSlash = sSaved.find_last_of( L"\\/" );
@@ -329,7 +503,25 @@ namespace
             sName = sSong.substr( sSong.find_last_of( L"\\/" ) + 1 );
             sName = sName.substr( 0, sName.find_last_of( L'.' ) ) + L".mp4";
         }
+        sName = WithExtension( sName, iContainer );
         return sDir.empty() ? sName : InFolder( sDir, sName.c_str() );
+    }
+
+    // The encoder list for the codec: the hardware encoders only for H.264, HEVC and AV1
+    void UpdateEncoderControls( HWND hWnd )
+    {
+        int iCodec = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_VID_CODEC, CB_GETCURSEL, 0, 0 ) );
+        int iBackend = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_VID_ENCODER, CB_GETCURSEL, 0, 0 ) );
+        bool bAny = ExportSettings::HasBackend( iCodec, ExportSettings::Nvenc );
+        if ( !bAny )
+        {
+            SendDlgItemMessageW( hWnd, IDC_VID_ENCODER, CB_SETCURSEL, ExportSettings::Software, 0 );
+            iBackend = ExportSettings::Software;
+        }
+        EnableWindow( GetDlgItem( hWnd, IDC_VID_ENCODER ), bAny );
+        std::wstring sNote = std::wstring( L"ffmpeg's " ) + ExportSettings::EncoderName( iCodec, iBackend );
+        if ( iCodec == ExportSettings::ProRes || iCodec == ExportSettings::Ffv1 ) sNote += L" (no quality or preset)";
+        SetDlgItemTextW( hWnd, IDC_VID_ENCNOTE, sNote.c_str() );
     }
 
     void UpdateSizeControls( HWND hWnd )
@@ -357,7 +549,14 @@ namespace
         s.bUseWindowSize = IsDlgButtonChecked( hWnd, IDC_VID_WINDOWSIZE ) == BST_CHECKED;
         s.bShowStats = IsDlgButtonChecked( hWnd, IDC_VID_STATS ) == BST_CHECKED;
         s.iPreset = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_VID_PRESET, CB_GETCURSEL, 0, 0 ) );
-        s.iEncoder = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_VID_ENCODER, CB_GETCURSEL, 0, 0 ) );
+        s.iCodec = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_VID_CODEC, CB_GETCURSEL, 0, 0 ) );
+        s.iBackend = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_VID_ENCODER, CB_GETCURSEL, 0, 0 ) );
+        s.iContainer = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_VID_CONTAINER, CB_GETCURSEL, 0, 0 ) );
+        if ( !ExportSettings::HasBackend( s.iCodec, s.iBackend ) ) s.iBackend = ExportSettings::Software;
+        wchar_t sAudio[MAX_PATH * 4] = {};
+        GetDlgItemTextW( hWnd, IDC_VID_AUDIO, sAudio, MAX_PATH * 4 );
+        s.sAudioFile = sAudio;
+        s.bAudioAlign = IsDlgButtonChecked( hWnd, IDC_VID_AUDIOALIGN ) == BST_CHECKED;
 
         auto Bad = [&]( int iId, const wchar_t *sError ) {
             if ( bValidate )
@@ -369,13 +568,26 @@ namespace
         };
         BOOL bOk = FALSE;
         UINT u;
+        if ( !ExportSettings::Holds( s.iContainer, s.iCodec ) )
+        {
+            wchar_t buf[256];
+            swprintf( buf, 256, L"%ls cannot be stored in %ls files. MKV holds every codec; MP4 holds H.264, HEVC and AV1; MOV holds H.264, "
+                      L"HEVC and ProRes; AVI holds H.264 and FFV1.", ExportSettings::Codecs[s.iCodec], ExportSettings::Extensions[s.iContainer] );
+            return Bad( IDC_VID_CODEC, buf );
+        }
         if ( !s.bUseWindowSize )
         {
+            // Any size ffmpeg takes (each encoder's own limit is checked when rendering starts); 4:2:0
+            // and 4:2:2 video needs even sizes, FFV1's RGB does not
+            bool bEven = s.iCodec != ExportSettings::Ffv1;
+            wchar_t buf[128];
+            swprintf( buf, 128, L"Please specify %ls width between 16 and %d pixels.", bEven ? L"an even" : L"a", ExportSettings::MaxSide );
             u = GetDlgItemInt( hWnd, IDC_VID_WIDTH, &bOk, FALSE );
-            if ( !bOk || u < 16 || u > 16384 || ( u & 1 ) ) return Bad( IDC_VID_WIDTH, L"Please specify an even width between 16 and 16384 pixels." );
+            if ( !bOk || u < 16 || u > (UINT)ExportSettings::MaxSide || ( bEven && ( u & 1 ) ) ) return Bad( IDC_VID_WIDTH, buf );
             s.iWidth = (int)u;
+            swprintf( buf, 128, L"Please specify %ls height between 16 and %d pixels.", bEven ? L"an even" : L"a", ExportSettings::MaxSide );
             u = GetDlgItemInt( hWnd, IDC_VID_HEIGHT, &bOk, FALSE );
-            if ( !bOk || u < 16 || u > 16384 || ( u & 1 ) ) return Bad( IDC_VID_HEIGHT, L"Please specify an even height between 16 and 16384 pixels." );
+            if ( !bOk || u < 16 || u > (UINT)ExportSettings::MaxSide || ( bEven && ( u & 1 ) ) ) return Bad( IDC_VID_HEIGHT, buf );
             s.iHeight = (int)u;
         }
         u = GetDlgItemInt( hWnd, IDC_VID_FPS, &bOk, FALSE );
@@ -384,6 +596,10 @@ namespace
         u = GetDlgItemInt( hWnd, IDC_VID_CRF, &bOk, FALSE );
         if ( !bOk || u > 51 ) return Bad( IDC_VID_CRF, L"Please specify a quality between 0 and 51." );
         s.iCRF = (int)u;
+        int iOffset = (int)GetDlgItemInt( hWnd, IDC_VID_AUDIOOFFSET, &bOk, TRUE );
+        if ( !bOk || iOffset < -3600000 || iOffset > 3600000 ) return Bad( IDC_VID_AUDIOOFFSET, L"Please specify the audio's move in milliseconds (negative: earlier)." );
+        s.iAudioOffsetMs = iOffset;
+        if ( !s.sAudioFile.empty() && !IsFile( s.sAudioFile ) ) return Bad( IDC_VID_AUDIO, L"The audio file was not found. Leave the box empty for a silent video." );
         return true;
     }
 
@@ -456,8 +672,9 @@ namespace
                         if ( const char *sLog = getenv( "PFAVIZ_FRAMELOG" ) )
                             if ( FILE *f = fopen( sLog, "a" ) )
                             {
-                                fprintf( f, "render %s: %s | %lld frames in %.2f s (%.1f fps), %s frames, encoder %d\n", bOk ? "ok" : "FAILED",
-                                         Util::WideToUtf8( sResult ).c_str(), llFrame, dElapsed, dFps, pJob->bYuv ? "YUV" : "BGRX", pJob->iEncoder );
+                                fprintf( f, "render %s: %s | %lld frames in %.2f s (%.1f fps), %s frames, encoder %s\n", bOk ? "ok" : "FAILED",
+                                         Util::WideToUtf8( sResult ).c_str(), llFrame, dElapsed, dFps, pJob->bYuv ? "YUV" : "BGRX",
+                                         Util::WideToUtf8( ExportSettings::EncoderName( pJob->iCodec, pJob->iBackend ) ).c_str() );
                                 fclose( f );
                             }
                         g_pProgress = nullptr;
@@ -537,7 +754,12 @@ namespace
         pJob->sFfmpeg = sFfmpeg;
         pJob->sOutFile = sOut;
         pJob->iPreset = s.iPreset;
-        pJob->iEncoder = s.iEncoder;
+        pJob->iCodec = s.iCodec;
+        pJob->iBackend = s.iBackend;
+        pJob->iContainer = s.iContainer;
+        pJob->sAudioFile = s.sAudioFile;
+        pJob->bAudioAlign = s.bAudioAlign;
+        pJob->iAudioOffsetMs = s.iAudioOffsetMs;
         if ( s.bUseWindowSize ) WindowSize( pJob->iWidth, pJob->iHeight );
         else { pJob->iWidth = s.iWidth; pJob->iHeight = s.iHeight; }
         pJob->iFPS = s.iFPS;
@@ -597,7 +819,18 @@ namespace
              MessageBoxW( hWnd, ( sOut + L" already exists.\nDo you want to replace it?" ).c_str(), L"Render Video", MB_YESNO | MB_ICONWARNING ) != IDYES )
             return false;
 
-        RunJob( hWnd, MakeJob( s, sFfmpeg, sOut ) );
+        // The encoder tried at this size first, so its own limits (and a missing GPU) show now
+        std::shared_ptr< VideoJob > pJob = MakeJob( s, sFfmpeg, sOut );
+        std::wstring sError;
+        HCURSOR hOld = SetCursor( LoadCursorW( nullptr, IDC_WAIT ) );
+        bool bEncodes = FfmpegPipe::TryEncoder( *pJob, sError );
+        SetCursor( hOld );
+        if ( !bEncodes )
+        {
+            MessageBoxW( hWnd, sError.c_str(), L"Render Video", MB_OK | MB_ICONEXCLAMATION );
+            return false;
+        }
+        RunJob( hWnd, pJob );
         return true;
     }
 
@@ -608,7 +841,7 @@ namespace
             case WM_INITDIALOG:
             {
                 const ExportSettings &s = Config::GetConfig().GetExportSettings();
-                SetDlgItemTextW( hWnd, IDC_VID_FILE, DefaultOutFile( s.sOutFile ).c_str() );
+                SetDlgItemTextW( hWnd, IDC_VID_FILE, DefaultOutFile( s.sOutFile, s.iContainer ).c_str() );
                 g_sBrowsed.clear();
                 CheckDlgButton( hWnd, IDC_VID_WINDOWSIZE, s.bUseWindowSize ? BST_CHECKED : BST_UNCHECKED );
                 int iSel = ResolutionCount;
@@ -626,11 +859,21 @@ namespace
                 for ( int i = 0; i < ExportSettings::PresetCount; i++ )
                     SendDlgItemMessageW( hWnd, IDC_VID_PRESET, CB_ADDSTRING, 0, ( LPARAM )ExportSettings::Presets[i] );
                 SendDlgItemMessageW( hWnd, IDC_VID_PRESET, CB_SETCURSEL, s.iPreset, 0 );
-                for ( int i = 0; i < ExportSettings::EncoderCount; i++ )
-                    SendDlgItemMessageW( hWnd, IDC_VID_ENCODER, CB_ADDSTRING, 0, ( LPARAM )ExportSettings::Encoders[i] );
-                SendDlgItemMessageW( hWnd, IDC_VID_ENCODER, CB_SETCURSEL, s.iEncoder, 0 );
+                for ( int i = 0; i < ExportSettings::ContainerCount; i++ )
+                    SendDlgItemMessageW( hWnd, IDC_VID_CONTAINER, CB_ADDSTRING, 0, ( LPARAM )ExportSettings::Containers[i] );
+                SendDlgItemMessageW( hWnd, IDC_VID_CONTAINER, CB_SETCURSEL, s.iContainer, 0 );
+                for ( int i = 0; i < ExportSettings::CodecCount; i++ )
+                    SendDlgItemMessageW( hWnd, IDC_VID_CODEC, CB_ADDSTRING, 0, ( LPARAM )ExportSettings::Codecs[i] );
+                SendDlgItemMessageW( hWnd, IDC_VID_CODEC, CB_SETCURSEL, s.iCodec, 0 );
+                for ( int i = 0; i < ExportSettings::BackendCount; i++ )
+                    SendDlgItemMessageW( hWnd, IDC_VID_ENCODER, CB_ADDSTRING, 0, ( LPARAM )ExportSettings::Backends[i] );
+                SendDlgItemMessageW( hWnd, IDC_VID_ENCODER, CB_SETCURSEL, s.iBackend, 0 );
                 CheckDlgButton( hWnd, IDC_VID_STATS, s.bShowStats ? BST_CHECKED : BST_UNCHECKED );
+                SetDlgItemTextW( hWnd, IDC_VID_AUDIO, s.sAudioFile.c_str() );
+                CheckDlgButton( hWnd, IDC_VID_AUDIOALIGN, s.bAudioAlign ? BST_CHECKED : BST_UNCHECKED );
+                SetDlgItemInt( hWnd, IDC_VID_AUDIOOFFSET, (UINT)s.iAudioOffsetMs, TRUE );
                 UpdateSizeControls( hWnd );
+                UpdateEncoderControls( hWnd );
                 return TRUE;
             }
             case WM_COMMAND:
@@ -642,6 +885,35 @@ namespace
                     case IDC_VID_RES:
                         if ( HIWORD( wParam ) == CBN_SELCHANGE ) UpdateSizeControls( hWnd );
                         return TRUE;
+                    case IDC_VID_CODEC: case IDC_VID_ENCODER:
+                        if ( HIWORD( wParam ) == CBN_SELCHANGE ) UpdateEncoderControls( hWnd );
+                        return TRUE;
+                    case IDC_VID_CONTAINER:
+                        // The file name follows the format
+                        if ( HIWORD( wParam ) == CBN_SELCHANGE )
+                        {
+                            int iContainer = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_VID_CONTAINER, CB_GETCURSEL, 0, 0 ) );
+                            wchar_t sFile[MAX_PATH * 4] = {};
+                            GetDlgItemTextW( hWnd, IDC_VID_FILE, sFile, MAX_PATH * 4 );
+                            if ( sFile[0] ) SetDlgItemTextW( hWnd, IDC_VID_FILE, WithExtension( sFile, iContainer ).c_str() );
+                            g_sBrowsed.clear();
+                        }
+                        return TRUE;
+                    case IDC_VID_AUDIOBROWSE:
+                    {
+                        wchar_t sFile[MAX_PATH * 4] = {};
+                        GetDlgItemTextW( hWnd, IDC_VID_AUDIO, sFile, MAX_PATH * 4 );
+                        OPENFILENAMEW ofn = {};
+                        ofn.lStructSize = sizeof( ofn );
+                        ofn.hwndOwner = hWnd;
+                        ofn.lpstrFilter = L"Audio (*.wav;*.flac;*.mp3;*.ogg;*.opus;*.m4a;*.aac;*.aiff;*.w64)\0*.wav;*.flac;*.mp3;*.ogg;*.opus;*.m4a;*.aac;*.aif;*.aiff;*.w64\0All files (*.*)\0*.*\0";
+                        ofn.lpstrFile = sFile;
+                        ofn.nMaxFile = MAX_PATH * 4;
+                        ofn.lpstrTitle = L"Choose the audio for the video";
+                        ofn.Flags = OFN_EXPLORER | OFN_HIDEREADONLY | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+                        if ( GetOpenFileNameW( &ofn ) ) SetDlgItemTextW( hWnd, IDC_VID_AUDIO, sFile );
+                        return TRUE;
+                    }
                     case IDC_VID_BROWSE:
                     {
                         wchar_t sFile[MAX_PATH * 4] = {};
@@ -649,16 +921,22 @@ namespace
                         OPENFILENAMEW ofn = {};
                         ofn.lStructSize = sizeof( ofn );
                         ofn.hwndOwner = hWnd;
-                        ofn.lpstrFilter = L"MP4 video (*.mp4)\0*.mp4\0Matroska video (*.mkv)\0*.mkv\0All files (*.*)\0*.*\0";
+                        // The filter of the chosen format, whose extension a typed name gets
+                        int iContainer = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_VID_CONTAINER, CB_GETCURSEL, 0, 0 ) );
+                        ofn.lpstrFilter = L"MP4 video (*.mp4)\0*.mp4\0Matroska video (*.mkv)\0*.mkv\0QuickTime video (*.mov)\0*.mov\0AVI video (*.avi)\0*.avi\0";
+                        ofn.nFilterIndex = iContainer + 1;
                         ofn.lpstrFile = sFile;
                         ofn.nMaxFile = MAX_PATH * 4;
-                        ofn.lpstrDefExt = L"mp4";
+                        ofn.lpstrDefExt = ExportSettings::Extensions[iContainer];
                         // No change of folder: ffmpeg is looked for in the current one
                         ofn.Flags = OFN_EXPLORER | OFN_HIDEREADONLY | OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
                         if ( GetSaveFileNameW( &ofn ) )
                         {
-                            SetDlgItemTextW( hWnd, IDC_VID_FILE, sFile );
-                            g_sBrowsed = sFile;
+                            // The format follows the filter the file was saved with
+                            SendDlgItemMessageW( hWnd, IDC_VID_CONTAINER, CB_SETCURSEL, std::clamp( (int)ofn.nFilterIndex - 1, 0, ExportSettings::ContainerCount - 1 ), 0 );
+                            std::wstring sChosen = WithExtension( sFile, std::clamp( (int)ofn.nFilterIndex - 1, 0, ExportSettings::ContainerCount - 1 ) );
+                            SetDlgItemTextW( hWnd, IDC_VID_FILE, sChosen.c_str() );
+                            g_sBrowsed = sChosen;
                         }
                         return TRUE;
                     }
@@ -678,7 +956,11 @@ namespace
                             s.bUseWindowSize = sRead.bUseWindowSize;
                             s.bShowStats = sRead.bShowStats;
                             s.iPreset = sRead.iPreset;
-                            s.iEncoder = sRead.iEncoder;
+                            s.iCodec = sRead.iCodec;
+                            s.iBackend = sRead.iBackend;
+                            s.iContainer = sRead.iContainer;
+                            s.sAudioFile = sRead.sAudioFile;
+                            s.bAudioAlign = sRead.bAudioAlign;
                         }
                         config.SetExportSettings( s );
                         EndDialog( hWnd, IDCANCEL );
@@ -697,9 +979,14 @@ VOID RenderVideoUnattended( const std::wstring &sOutFile )
     wchar_t sFull[MAX_PATH * 4];
     DWORD dwLen = GetFullPathNameW( sOutFile.c_str(), MAX_PATH * 4, sFull, nullptr );
     g_bUnattended = true;
-    // PFAVIZ_ENCODER=n: ExportSettings::Encoders[n] instead of the saved encoder
+    // PFAVIZ_CODEC=n, PFAVIZ_BACKEND=n: ExportSettings::Codec and Backend instead of the saved ones (the
+    // format follows the file's extension)
     ExportSettings s = Config::GetConfig().GetExportSettings();
-    if ( const char *sEnc = getenv( "PFAVIZ_ENCODER" ) ) s.iEncoder = std::clamp( atoi( sEnc ), 0, ExportSettings::EncoderCount - 1 );
+    if ( const char *sCodec = getenv( "PFAVIZ_CODEC" ) ) s.iCodec = std::clamp( atoi( sCodec ), 0, ExportSettings::CodecCount - 1 );
+    if ( const char *sBackend = getenv( "PFAVIZ_BACKEND" ) ) s.iBackend = std::clamp( atoi( sBackend ), 0, ExportSettings::BackendCount - 1 );
+    if ( !ExportSettings::HasBackend( s.iCodec, s.iBackend ) ) s.iBackend = ExportSettings::Software;
+    for ( int i = 0; i < ExportSettings::ContainerCount; i++ )
+        if ( WithExtension( sOutFile, i ) == sOutFile ) s.iContainer = i;
     if ( !sFfmpeg.empty() && dwLen > 0 && dwLen < MAX_PATH * 4 )
         RunJob( g_hWnd, MakeJob( s, sFfmpeg, sFull ) );
     PostMessageW( g_hWnd, WM_CLOSE, 0, 0 );

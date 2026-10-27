@@ -28,7 +28,7 @@ BEGIN
     DEFPUSHBUTTON   "OK",IDOK,177,151,50,14
 END
 
-IDD_PP1_VISUAL DIALOGEX 0, 0, 302, 212
+IDD_PP1_VISUAL DIALOGEX 0, 0, 302, 284
 STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_DISABLED | WS_BORDER
 FONT 8, "MS Shell Dlg", 400, 0, 0x0
 BEGIN
@@ -59,7 +59,19 @@ BEGIN
     LTEXT           "x",IDC_STATIC,91,135,8,8
     EDITTEXT        IDC_WINHEIGHT,101,133,34,14,ES_AUTOHSCROLL | ES_NUMBER
     LTEXT           "",IDC_WINSIZEMAX,141,135,155,8
-    PUSHBUTTON      "&Restore Defaults",IDC_RESTOREDEFAULTS,226,191,69,14
+    GROUPBOX        "Background image (drawn over the background color)",IDC_STATIC,7,153,288,48
+    EDITTEXT        IDC_BKGIMAGE,13,165,222,14,ES_AUTOHSCROLL
+    PUSHBUTTON      "Br&owse...",IDC_BKGBROWSE,239,165,50,14
+    LTEXT           "&Fit:",IDC_STATIC,13,184,14,8
+    COMBOBOX        IDC_BKGFIT,30,182,74,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "O&pacity:",IDC_STATIC,114,184,30,8
+    EDITTEXT        IDC_BKGOPACITY,146,182,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "%   (no file: no image)",IDC_STATIC,178,184,110,8
+    GROUPBOX        "Clean drawing (leaves out quirks of the original's note drawing)",IDC_STATIC,7,206,288,52
+    CONTROL         "Draw every note at least one pixel t&all",IDC_CLEAN_MINHEIGHT,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,218,276,10
+    CONTROL         "Keep short notes on screen until they reach the key&board",IDC_CLEAN_KEEPBOTTOM,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,230,276,10
+    CONTROL         "Round note &edges evenly, so lower layers never show past notes above",IDC_CLEAN_EDGES,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,242,276,10
+    PUSHBUTTON      "&Restore Defaults",IDC_RESTOREDEFAULTS,226,263,69,14
 END
 
 IDD_PP2_AUDIO DIALOGEX 0, 0, 300, 212
@@ -78,7 +90,7 @@ STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_DISABLED | WS_CAPTION
 CAPTION "Property Page"
 FONT 8, "MS Shell Dlg", 400, 0, 0x0
 BEGIN
-    GROUPBOX        "General",IDC_STATIC,7,7,288,53
+    GROUPBOX        "General",IDC_STATIC,7,7,288,74
     LTEXT           "&Left and right arrows advance by:",IDC_STATIC,13,20,110,8
     EDITTEXT        IDC_LRARROWS,125,18,40,14,ES_AUTOHSCROLL
     CONTROL         "",IDC_LRARROWSSPIN,"msctls_updown32",UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_ARROWKEYS,153,18,11,14
@@ -87,19 +99,23 @@ BEGIN
     EDITTEXT        IDC_UDARROWS,125,39,40,14,ES_AUTOHSCROLL
     CONTROL         "",IDC_UDARROWSSPIN,"msctls_updown32",UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_ARROWKEYS,153,39,11,14
     LTEXT           "percent",IDC_STATIC,168,41,26,8
-    GROUPBOX        "Playback",IDC_STATIC,7,66,288,30
-    CONTROL         "Start songs &paused after loading",IDC_STARTPAUSED,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,79,200,10
+    LTEXT           "Shift+up/down change &notes by:",IDC_STATIC,13,62,111,8
+    EDITTEXT        IDC_NSARROWS,125,60,40,14,ES_AUTOHSCROLL
+    CONTROL         "",IDC_NSARROWSSPIN,"msctls_updown32",UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_ARROWKEYS,153,60,11,14
+    LTEXT           "percent",IDC_STATIC,168,62,26,8
+    GROUPBOX        "Playback",IDC_STATIC,7,87,288,30
+    CONTROL         "Start songs &paused after loading",IDC_STARTPAUSED,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,100,200,10
 END
 
-IDD_PP5_PERFORMANCE DIALOGEX 0, 0, 300, 284
+IDD_PP5_PERFORMANCE DIALOGEX 0, 0, 300, 300
 STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_DISABLED | WS_CAPTION
 CAPTION "Property Page"
 FONT 8, "MS Shell Dlg", 400, 0, 0x0
 BEGIN
     GROUPBOX        "Loading and drawing",IDC_STATIC,7,7,286,116
-    LTEXT           "&Worker threads:",IDC_STATIC,13,21,60,8
-    COMBOBOX        IDC_PERF_THREADS,80,19,60,120,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    LTEXT           "Takes effect when the next file is opened.",IDC_STATIC,146,21,142,8
+    LTEXT           "&Threads:",IDC_STATIC,13,21,60,8
+    EDITTEXT        IDC_PERF_THREADS,80,19,30,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "",IDC_PERF_THREADSNOTE,114,21,174,8
     CONTROL         "Show loading &statistics after a file is loaded",IDC_PERF_LOADSTATS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,37,200,10
     CONTROL         "C&ompact visual store (less memory, slightly slower drawing)",IDC_PERF_COMPACT,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,51,270,10
     LTEXT           "&Block cache:",IDC_STATIC,13,67,60,8
@@ -108,90 +124,93 @@ BEGIN
     CONTROL         "LOD c&ache (faster drawing of dense songs, built in the background)",IDC_PERF_LOD,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,82,270,10
     CONTROL         "End weird notes at their &first note-off (keep the first pairing)",IDC_PERF_IGNOREWEIRD,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,96,270,10
     CONTROL         "&GPU instancing for notes (less CPU work per note; not pixel-exact)",IDC_PERF_INSTANCING,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,110,270,10
-    GROUPBOX        "Playback",IDC_STATIC,7,128,286,118
-    CONTROL         "Prefer &KDMAPI (OmniMIDI) when it is available",IDC_PERF_KDMAPI,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,141,200,10
-    CONTROL         "S&kip quiet notes while the synth lags (by velocity; off sends every event)",IDC_PERF_SKIPPING,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,156,275,10
-    LTEXT           "Start a&bove:",IDC_STATIC,25,174,50,8
-    EDITTEXT        IDC_PERF_MAXLAG,80,172,40,14,ES_AUTOHSCROLL | ES_NUMBER
-    CONTROL         "",IDC_PERF_MAXLAGSPIN,"msctls_updown32",UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_ARROWKEYS | UDS_SETBUDDYINT | UDS_NOTHOUSANDS,108,172,11,14
-    LTEXT           "ms of lag (all notes skipped at 4 times this lag)",IDC_STATIC,124,174,164,8
-    CONTROL         "Always skip notes &quieter than velocity",IDC_PERF_VELFLOOR,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,192,143,10
-    EDITTEXT        IDC_PERF_MINVEL,158,190,30,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "(1-128; their offs too)",IDC_STATIC,192,192,96,8
-    CONTROL         "Collaps&e stacked notes (one voice per channel, key and tick)",IDC_PERF_COLLAPSE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,208,275,10
-    CONTROL         "Li&mit sending to",IDC_PERF_SENDLIMIT,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,226,66,10
-    EDITTEXT        IDC_PERF_MAXSENDS,80,224,50,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "messages/s (quietest notes skipped first)",IDC_STATIC,134,226,154,8
-    GROUPBOX        "Display",IDC_STATIC,7,251,286,28
-    CONTROL         "&Limit frame rate",IDC_LIMITFPS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,264,100,10
-    PUSHBUTTON      "Render &video...",IDC_PERF_VIDEO,120,261,80,14
+    GROUPBOX        "Playback",IDC_STATIC,7,128,286,134
+    LTEXT           "&Decoding threads:",IDC_STATIC,13,142,64,8
+    EDITTEXT        IDC_PERF_PLAYTHREADS,80,140,30,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "",IDC_PERF_PLAYTHREADSNOTE,114,142,174,8
+    CONTROL         "Prefer &KDMAPI (OmniMIDI) when it is available",IDC_PERF_KDMAPI,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,157,200,10
+    CONTROL         "S&kip quiet notes while the synth lags (by velocity; off sends every event)",IDC_PERF_SKIPPING,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,172,275,10
+    LTEXT           "Start a&bove:",IDC_STATIC,25,190,50,8
+    EDITTEXT        IDC_PERF_MAXLAG,80,188,40,14,ES_AUTOHSCROLL | ES_NUMBER
+    CONTROL         "",IDC_PERF_MAXLAGSPIN,"msctls_updown32",UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_ARROWKEYS | UDS_SETBUDDYINT | UDS_NOTHOUSANDS,108,188,11,14
+    LTEXT           "ms of lag (all notes skipped at 4 times this lag)",IDC_STATIC,124,190,164,8
+    CONTROL         "Always skip notes &quieter than velocity",IDC_PERF_VELFLOOR,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,208,143,10
+    EDITTEXT        IDC_PERF_MINVEL,158,206,30,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "(1-128; their offs too)",IDC_STATIC,192,208,96,8
+    CONTROL         "Collaps&e stacked notes (one voice per channel, key and tick)",IDC_PERF_COLLAPSE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,224,275,10
+    CONTROL         "Li&mit sending to",IDC_PERF_SENDLIMIT,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,242,66,10
+    EDITTEXT        IDC_PERF_MAXSENDS,80,240,50,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "messages/s (quietest notes skipped first)",IDC_STATIC,134,242,154,8
+    GROUPBOX        "Display",IDC_STATIC,7,267,286,28
+    CONTROL         "&Limit frame rate",IDC_LIMITFPS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,280,100,10
+    PUSHBUTTON      "Render &video...",IDC_PERF_VIDEO,120,277,80,14
 END
 
-IDD_STATS DIALOGEX 0, 0, 252, 242
+IDD_STATS DIALOGEX 0, 0, 300, 252
 STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Statistics"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
-    GROUPBOX        "General",IDC_STATIC,7,7,238,27
-    CONTROL         "T&ime",IDC_STAT_FIRST,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,19,70,10
-    CONTROL         "&Frame rate",1401,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,90,19,70,10
-    CONTROL         "Sco&re",1402,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,167,19,70,10
-    GROUPBOX        "Notes (counted at load: reopen a song after enabling)",IDC_STATIC,7,39,238,27
-    CONTROL         "Notes passe&d",1403,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,51,70,10
-    CONTROL         "&NPS",1404,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,90,51,70,10
-    CONTROL         "Pol&yphony",1405,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,167,51,70,10
-    GROUPBOX        "Synth (needs a MIDI output)",IDC_STATIC,7,71,238,41
-    CONTROL         "Messages &sent",1406,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,83,70,10
-    CONTROL         "S&kipped",1407,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,90,83,70,10
-    CONTROL         "&Collapsed",1408,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,167,83,70,10
-    CONTROL         "&Lag",1409,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,97,70,10
-    CONTROL         "Skipping &threshold",1410,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,90,97,75,10
-    GROUPBOX        "Playback pipeline (needs a MIDI output)",IDC_STATIC,7,117,238,41
-    CONTROL         "&Messages decoded",1415,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,129,70,10
-    CONTROL         "Decoder &busy",1416,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,90,129,70,10
-    CONTROL         "Sender b&usy",1417,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,167,129,70,10
-    CONTROL         "Rin&g fill",1418,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,143,70,10
-    CONTROL         "Send cost",1419,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,90,143,70,10
-    GROUPBOX        "Frame time (average / maximum ms)",IDC_STATIC,7,163,238,41
-    CONTROL         "Ot&her",1411,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,175,70,10
-    CONTROL         "N&otes",1412,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,90,175,70,10
-    CONTROL         "Sc&ene",1413,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,167,175,70,10
-    CONTROL         "&Present",1414,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,189,70,10
-    PUSHBUTTON      "&All",IDC_STATS_ALL,7,221,40,14
-    PUSHBUTTON      "None",IDC_STATS_NONE,51,221,40,14
-    DEFPUSHBUTTON   "OK",IDOK,141,221,50,14
-    PUSHBUTTON      "Cancel",IDCANCEL,195,221,50,14
+    LTEXT           "&Lines, top to bottom (checked lines are shown):",IDC_STATIC,7,7,180,8
+    CONTROL         "",IDC_STATS_LIST,"SysListView32",LVS_REPORT | LVS_SINGLESEL | LVS_SHOWSELALWAYS | LVS_NOSORTHEADER | WS_BORDER | WS_TABSTOP,7,18,182,206
+    PUSHBUTTON      "Move &up",IDC_STATS_UP,195,18,98,14
+    PUSHBUTTON      "Move &down",IDC_STATS_DOWN,195,35,98,14
+    PUSHBUTTON      "&Reset order",IDC_STATS_RESETORDER,195,52,98,14
+    GROUPBOX        "Whole sections",IDC_STATIC,195,72,98,86
+    CONTROL         "&General",IDC_STATS_SECTION0,"Button",BS_3STATE | WS_TABSTOP,201,84,88,10
+    CONTROL         "&Notes",1431,"Button",BS_3STATE | WS_TABSTOP,201,98,88,10
+    CONTROL         "&Synth",1432,"Button",BS_3STATE | WS_TABSTOP,201,112,88,10
+    CONTROL         "&Playback pipeline",1433,"Button",BS_3STATE | WS_TABSTOP,201,126,88,10
+    CONTROL         "&Frame time",1434,"Button",BS_3STATE | WS_TABSTOP,201,140,88,10
+    PUSHBUTTON      "&All",IDC_STATS_ALL,195,164,47,14
+    PUSHBUTTON      "N&one",IDC_STATS_NONE,246,164,47,14
+    LTEXT           "Notes lines are counted at load (reopen the song). Synth and pipeline lines need a MIDI output; voices and synth CPU need KDMAPI.",IDC_STATIC,195,183,98,46
+    DEFPUSHBUTTON   "OK",IDOK,189,231,50,14
+    PUSHBUTTON      "Cancel",IDCANCEL,243,231,50,14
 END
 
-IDD_VIDEOEXPORT DIALOGEX 0, 0, 300, 206
+IDD_VIDEOEXPORT DIALOGEX 0, 0, 300, 292
 STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Render Video"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
-    GROUPBOX        "Offline MP4 rendering",IDC_STATIC,7,7,286,172
+    GROUPBOX        "Video",IDC_STATIC,7,7,286,190
     LTEXT           "&Output file:",IDC_STATIC,13,20,60,8
     EDITTEXT        IDC_VID_FILE,13,31,218,14,ES_AUTOHSCROLL
     PUSHBUTTON      "&Browse...",IDC_VID_BROWSE,236,31,50,14
-    CONTROL         "Use &window size",IDC_VID_WINDOWSIZE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,55,70,10
-    LTEXT           "&Resolution:",IDC_STATIC,88,56,38,8
-    COMBOBOX        IDC_VID_RES,128,53,90,120,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    EDITTEXT        IDC_VID_WIDTH,222,53,28,14,ES_AUTOHSCROLL | ES_NUMBER
-    CTEXT           "x",IDC_STATIC,250,56,8,8
-    EDITTEXT        IDC_VID_HEIGHT,258,53,28,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "&Frame rate:",IDC_STATIC,13,77,64,8
-    EDITTEXT        IDC_VID_FPS,80,75,32,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "fps (1-240)",IDC_STATIC,117,77,80,8
-    LTEXT           "&Quality:",IDC_STATIC,13,96,66,8
-    EDITTEXT        IDC_VID_CRF,80,94,32,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "0-51, lower is better (CRF, CQ or QP)",IDC_STATIC,117,96,170,8
-    LTEXT           "Encoder &preset:",IDC_STATIC,13,115,64,8
-    COMBOBOX        IDC_VID_PRESET,80,113,72,120,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    LTEXT           "E&ncoder:",IDC_STATIC,160,115,30,8
-    COMBOBOX        IDC_VID_ENCODER,192,113,94,120,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    CONTROL         "Show the &stats area (top-right corner)",IDC_VID_STATS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,132,200,10
-    LTEXT           "The whole song is rendered off-screen at the selected resolution (keyboard and notes, with the current view and note speed; no sound) and encoded by ffmpeg, from the PATH or the current folder.",IDC_STATIC,13,146,274,26
-    DEFPUSHBUTTON   "&Start rendering",IDOK,7,185,80,14
-    PUSHBUTTON      "Close",IDCANCEL,243,185,50,14
+    LTEXT           "Forma&t:",IDC_STATIC,13,53,40,8
+    COMBOBOX        IDC_VID_CONTAINER,56,51,70,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Codec:",IDC_STATIC,134,53,26,8
+    COMBOBOX        IDC_VID_CODEC,162,51,124,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "E&ncoder:",IDC_STATIC,13,72,40,8
+    COMBOBOX        IDC_VID_ENCODER,56,70,90,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "",IDC_VID_ENCNOTE,152,72,134,8
+    CONTROL         "Use &window size",IDC_VID_WINDOWSIZE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,92,70,10
+    LTEXT           "&Resolution:",IDC_STATIC,88,93,38,8
+    COMBOBOX        IDC_VID_RES,128,90,90,120,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    EDITTEXT        IDC_VID_WIDTH,222,90,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    CTEXT           "x",IDC_STATIC,250,93,8,8
+    EDITTEXT        IDC_VID_HEIGHT,258,90,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "&Frame rate:",IDC_STATIC,13,113,64,8
+    EDITTEXT        IDC_VID_FPS,80,111,32,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "fps (1-240)",IDC_STATIC,117,113,80,8
+    LTEXT           "&Quality:",IDC_STATIC,13,132,66,8
+    EDITTEXT        IDC_VID_CRF,80,130,32,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "0-51, lower is better (0: lossless in software)",IDC_STATIC,117,132,170,8
+    LTEXT           "Encoder &preset:",IDC_STATIC,13,151,64,8
+    COMBOBOX        IDC_VID_PRESET,80,149,72,120,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    CONTROL         "Show the &stats area (top right)",IDC_VID_STATS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,160,151,126,10
+    LTEXT           "The whole song is rendered off-screen at this size (with the current view and note speed) and encoded by ffmpeg, from the PATH or the current folder. The encoder is tried at this size first, so its own limits apply.",IDC_STATIC,13,167,274,26
+    GROUPBOX        "Audio (optional)",IDC_STATIC,7,201,286,64
+    LTEXT           "A&udio file (WAV, FLAC, ...; empty: a silent video):",IDC_STATIC,13,213,220,8
+    EDITTEXT        IDC_VID_AUDIO,13,224,218,14,ES_AUTOHSCROLL
+    PUSHBUTTON      "Bro&wse...",IDC_VID_AUDIOBROWSE,236,224,50,14
+    CONTROL         "&Align its first sound with the first note",IDC_VID_AUDIOALIGN,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,246,150,10
+    LTEXT           "Then &move by:",IDC_STATIC,168,247,50,8
+    EDITTEXT        IDC_VID_AUDIOOFFSET,220,244,40,14,ES_AUTOHSCROLL
+    LTEXT           "ms",IDC_STATIC,264,247,20,8
+    DEFPUSHBUTTON   "&Start rendering",IDOK,7,271,80,14
+    PUSHBUTTON      "Close",IDCANCEL,243,271,50,14
 END
 
 IDD_VIDEOPROGRESS DIALOGEX 0, 0, 300, 236

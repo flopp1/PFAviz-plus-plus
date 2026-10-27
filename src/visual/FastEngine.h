@@ -18,6 +18,7 @@
 #include <thread>
 #include <vector>
 
+#include "core/ThreadPool.h"
 #include "render/Renderer.h"
 #include "song/Song.h"
 #include "visual/LodCache.h"
@@ -58,6 +59,8 @@ public:
     // The LOD cache (DESIGN.md 8.11): built in the background for the current display setting, used
     // where ready. bSync (tools): what a frame needs is built before it is drawn.
     void SetLod( bool bOn, bool bSync = false );
+    // Drawing threads from the next frame (0: one per logical processor)
+    void SetThreads( int iThreads ) { m_iThreads = Parallel::ThreadCount( iThreads ); }
     // FrameStats::dPixels is computed only when asked for (it costs about a third of building the vertices)
     void SetPixelStats( bool bOn ) { m_bPixelStats = bOn; }
     // Consecutive one-colour rects of a key that meet edge to edge are drawn as one (exact; on by default)
@@ -95,6 +98,7 @@ private:
     {
         long long R = 0, llSpan = 1, llUsPP = 1;
         float fNotesY = 0, fNotesCY = 1;
+        unsigned uClean = 0;            // Clean flags (Scene.h)
         float fDeflate = 1;             // the inner rect's inset, as Scene::GetNoteKey
         int iRowLo = 0, iRowHi = 0;     // composited rows
         int iThetaLo = 0;

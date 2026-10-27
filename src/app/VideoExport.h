@@ -1,11 +1,13 @@
-// Offline video rendering (Performance > Render video...). The UI thread collects the settings and
-// finds ffmpeg; the game thread renders every frame off-screen (MainScreen::RenderVideo, through
-// FrameCapture) and FfmpegPipe streams them to ffmpeg's stdin as raw YUV 4:2:0 or BGRX frames. The
-// progress popup polls the job.
+// Offline video rendering (Performance > Render video...). The UI thread collects the settings, finds
+// ffmpeg and checks that the chosen encoder takes the frame size; the game thread renders every frame
+// off-screen (MainScreen::RenderVideo, through FrameCapture) and FfmpegPipe streams them to ffmpeg's
+// stdin as raw YUV 4:2:0 or BGRX frames, with an audio file muxed in when one is chosen. The progress
+// popup polls the job.
 #pragma once
 
 #include <windows.h>
 #include <atomic>
+#include <climits>
 #include <condition_variable>
 #include <cstdint>
 #include <deque>
@@ -19,9 +21,16 @@ struct VideoJob
 {
     // Set by the UI before the job goes to the game thread
     std::wstring sFfmpeg, sOutFile;
-    int iWidth = 0, iHeight = 0, iFPS = 60, iCRF = 20, iPreset = 2, iEncoder = 0;
+    int iWidth = 0, iHeight = 0, iFPS = 60, iCRF = 20, iPreset = 2;
+    int iCodec = 0, iBackend = 0, iContainer = 0;     // ExportSettings::Codec, Backend, Container
     bool bShowStats = true;
-    bool bYuv = false;                  // set by the renderer: frames are YUV 4:2:0 (packed on the GPU), else BGRX
+    std::wstring sAudioFile;            // empty: no audio
+    bool bAudioAlign = true;
+    int iAudioOffsetMs = 0;
+    // Set by the renderer
+    bool bYuv = false;                  // frames are YUV 4:2:0 (packed on the GPU), else BGRX
+    double dFirstNoteSecs = 0.0;        // the video time the song's first note sounds at
+    double dDurationSecs = 0.0;         // the video's length
 
     // Progress, written by the game thread
     enum State { Starting, Rendering, Finishing, Done };
@@ -53,6 +62,17 @@ public:
     ~FfmpegPipe();
     // ffmpeg.exe in the current folder, next to PFAviz++.exe, or on the PATH (empty: not found)
     static std::wstring Find();
+    // Runs ffmpeg with sArgs, collecting what it writes; its exit code (ffmpeg's errors are negative), or
+    // NotRun when it did not start, or ran longer than dwTimeoutMs and was stopped
+    static const int NotRun = INT_MIN;
+    static int Run( const std::wstring &sFfmpeg, const std::wstring &sArgs, std::string &sOutput, DWORD dwTimeoutMs );
+    // Whether the job's encoder takes its frame size and settings, from it encoding one blank frame: so
+    // each encoder's own limits apply (NVENC's H.264 4096 x 4096, x265's 16384 x 8704 samples, ...).
+    // sError: why not, in ffmpeg's words.
+    static bool TryEncoder( const VideoJob &job, std::wstring &sError );
+    // Where an audio file's first sound starts, in seconds (its first moment above -60 dB; the
+    // first 10 minutes are looked at). Negative when the file could not be read (sError says why).
+    static double FirstSound( const std::wstring &sFfmpeg, const std::wstring &sAudio, std::wstring &sError );
 
     // Starts ffmpeg for the job's size, rate and encoder settings; its messages go to a log file
     bool Start( const VideoJob &job, std::wstring &sError );
@@ -67,6 +87,7 @@ public:
 private:
     void Writer();
     std::wstring LogTail() const;
+    static std::wstring EncoderArgs( const VideoJob &job );     // -c:v, its options and -pix_fmt
 
     HANDLE m_hProcess = nullptr, m_hStdin = nullptr;
     std::wstring m_sLog;

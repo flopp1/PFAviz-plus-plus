@@ -81,13 +81,14 @@ namespace
         double dSecs = ( llNow - g_pJob->llStart ) / 1e6;
         long long llCountEnd = p.llCountEndUs.load(); // the counting rate stops when counting does
         double dCountSecs = ( ( llCountEnd ? llCountEnd : llNow ) - g_pJob->llStart ) / 1e6;
-        wchar_t sTracks[32], sEvents[32], sNotes[32], sCounters[512];
+        wchar_t sTracks[32], sFound[32], sEvents[32], sNotes[32], sCounters[512];
         Util::CommaPrintf( sTracks, (long long)p.llTracksDone.load() );
+        Util::CommaPrintf( sFound, (long long)p.llTracksFound.load() );
         Util::CommaPrintf( sEvents, (long long)p.llEvents.load() );
         Util::CommaPrintf( sNotes, (long long)p.llNotes.load() );
         uint64_t llBytes = p.aDone[LoadProgress::Counting].load();
-        swprintf( sCounters, 512, L"Elapsed: %.1f s\nTracks counted: %ls of %llu found\nEvents: %ls    Notes: %ls\nCounted: %.1f of %.1f MB (%.0f MB/s)\nMemory: %.0f MB (peak %.0f MB)%ls",
-                  dSecs, sTracks, (unsigned long long)p.llTracksFound.load(), sEvents, sNotes,
+        swprintf( sCounters, 512, L"Elapsed: %.1f s\nTracks counted: %ls of %ls found\nEvents: %ls    Notes: %ls\nCounted: %.1f of %.1f MB (%.0f MB/s)\nMemory: %.0f MB (peak %.0f MB)%ls",
+                  dSecs, sTracks, sFound, sEvents, sNotes,
                   llBytes / 1048576.0, p.llFileSize.load() / 1048576.0, dCountSecs > 0 ? llBytes / 1048576.0 / dCountSecs : 0.0,
                   p.llPrivateNow.load() / 1048576.0, p.llPrivatePeak.load() / 1048576.0,
                   p.bWaitingOnDisk ? L"\nWaiting on the disk (I/O bound)" : L"" );

@@ -24,6 +24,9 @@ Config::Config()
 
 std::wstring Config::GetFolder()
 {
+    // Developer switch PFAVIZ_CONFIGDIR=DIR: the config in an existing folder of its own (test runs)
+    if ( const wchar_t *sDir = _wgetenv( L"PFAVIZ_CONFIGDIR" ) )
+        return GetFileAttributesW( sDir ) != INVALID_FILE_ATTRIBUTES ? std::wstring( sDir ) : std::wstring();
     PWSTR pPath = nullptr;
     if ( FAILED( SHGetKnownFolderPath( FOLDERID_RoamingAppData, KF_FLAG_CREATE, nullptr, &pPath ) ) )
         return std::wstring();
@@ -90,15 +93,46 @@ bool Config::SaveConfigValues()
 // Visual
 //-----------------------------------------------------------------------------
 
+const wchar_t *const VisualSettings::SectionNames[SectionCount] = { L"General", L"Notes", L"Synth", L"Playback pipeline", L"Frame time" };
+const int VisualSettings::StatSections[StatCount] = {
+    SectionGeneral, SectionGeneral, SectionGeneral, SectionNotes, SectionNotes, SectionNotes,
+    SectionSynth, SectionSynth, SectionSynth, SectionSynth, SectionSynth,
+    SectionFrame, SectionFrame, SectionFrame, SectionFrame,
+    SectionPipeline, SectionPipeline, SectionPipeline, SectionPipeline, SectionPipeline,
+    SectionGeneral, SectionSynth, SectionSynth };
+const wchar_t *const VisualSettings::StatLabels[StatCount] = {
+    L"Time:", L"FPS:", L"Score:", L"Notes:", L"NPS:", L"Polyphony:",
+    L"Sent/s:", L"Skipped/s:", L"Collapsed/s:", L"Lag:", L"Skipping:",
+    L"Other ms:", L"Notes ms:", L"Scene ms:", L"Present ms:",
+    L"Decoded/s:", L"Decoder busy:", L"Sender busy:", L"Ring:", L"Send cost:",
+    L"Tempo:", L"Voices:", L"Synth CPU:" };
+const wchar_t *const VisualSettings::StatNames[StatCount] = {
+    L"Time", L"Frame rate", L"Score", L"Notes passed", L"NPS", L"Polyphony",
+    L"Messages sent", L"Skipped", L"Collapsed", L"Lag", L"Skipping threshold",
+    L"Other (frame ms)", L"Notes (frame ms)", L"Scene (frame ms)", L"Present (frame ms)",
+    L"Messages decoded", L"Decoder busy", L"Sender busy", L"Ring fill", L"Send cost",
+    L"Tempo (BPM)", L"Synth voices (KDMAPI)", L"Synth CPU (KDMAPI)" };
+// The order the lines had before they could be moved: general, notes, synth, pipeline, frame time
+const unsigned char VisualSettings::DefaultStatOrder[StatCount] = {
+    StatTime, StatFPS, StatScore, StatTempo, StatNotes, StatNPS, StatPolyphony,
+    StatSent, StatSkipped, StatCollapsed, StatLag, StatSkipping, StatVoices, StatSynthCpu,
+    StatDecoded, StatDecoderBusy, StatSenderBusy, StatRing, StatSendCost,
+    StatOtherMs, StatNotesMs, StatSceneMs, StatPresentMs };
+
 void VisualSettings::LoadDefaultValues()
 {
     eKeysShown = All128;
     bAlwaysShowControls = false;
     uStats = ( 1u << StatTime ) | ( 1u << StatScore ) | NoteStats;
+    std::copy( DefaultStatOrder, DefaultStatOrder + StatCount, aStatOrder );
     iFirstKey = Notes::A0;
     iLastKey = Notes::C8;
 
     iBkgColor = 0x00303030;
+    sBkgImage.clear();
+    iBkgFit = 0;
+    iBkgOpacity = 100;
+    uClean = 0;
     int R, G, B, S = 80, V = 100;
     int iColors = sizeof( colors ) / sizeof( colors[0] );
     for ( int i = 10, count = 0; count < iColors; i = ( i + 7 ) % iColors, count++ )
@@ -133,13 +167,33 @@ void VisualSettings::Load( const IniFile &ini )
         // A config from before the Statistics dialog: its separate stats box switches
         uStats = ( ini.GetBool( "Visual", "ShowTime", true ) ? 1u << StatTime : 0 ) | ( ini.GetBool( "Video", "ShowFPS", false ) ? 1u << StatFPS : 0 ) |
                  ( ini.GetBool( "Visual", "ShowScore", true ) ? 1u << StatScore : 0 ) | ( ini.GetBool( "Performance", "ExtraStats", true ) ? NoteStats : 0 ) |
-                 ( ini.GetBool( "Performance", "ShowPlaybackStats", false ) ? SynthStats | FrameStats : 0 );
+                 ( ini.GetBool( "Performance", "ShowPlaybackStats", false ) ? ( SynthStats & ~VoiceStats ) | FrameStats : 0 );
+    }
+    // The order: the saved lines in their order, then any line it lacks in the default order
+    {
+        bool abSeen[StatCount] = {};
+        int n = 0;
+        std::string s = ini.GetString( "Visual", "StatOrder" );
+        for ( size_t i = 0; i < s.size(); )
+        {
+            size_t j = s.find( ',', i );
+            if ( j == std::string::npos ) j = s.size();
+            int iStat = atoi( s.substr( i, j - i ).c_str() );
+            if ( iStat >= 0 && iStat < StatCount && !abSeen[iStat] ) { abSeen[iStat] = true; aStatOrder[n++] = (unsigned char)iStat; }
+            i = j + 1;
+        }
+        for ( int i = 0; i < StatCount; i++ )
+            if ( !abSeen[DefaultStatOrder[i]] ) aStatOrder[n++] = DefaultStatOrder[i];
     }
     iFirstKey = std::clamp( ini.GetInt( "Visual", "FirstKey", iFirstKey ), 0, 127 );
     iLastKey = std::clamp( ini.GetInt( "Visual", "LastKey", iLastKey ), 0, 127 );
     for ( int i = 0; i < 16; i++ )
         colors[i] = ParseRGB( ini.GetString( "Visual", "Color" + std::to_string( i ) ), colors[i] );
     iBkgColor = ParseRGB( ini.GetString( "Visual", "BkgColor" ), iBkgColor );
+    sBkgImage = Util::Utf8ToWide( ini.GetString( "Visual", "BkgImage" ) );
+    iBkgFit = std::clamp( ini.GetInt( "Visual", "BkgImageFit", iBkgFit ), 0, 4 );
+    iBkgOpacity = std::clamp( ini.GetInt( "Visual", "BkgImageOpacity", iBkgOpacity ), 0, 100 );
+    uClean = (unsigned)ini.GetInt( "Visual", "CleanDrawing", (int)uClean ) & 7;
 }
 
 void VisualSettings::Save( IniFile &ini ) const
@@ -147,11 +201,18 @@ void VisualSettings::Save( IniFile &ini ) const
     ini.SetInt( "Visual", "KeysShown", eKeysShown );
     ini.SetInt( "Visual", "AlwaysShowControls", bAlwaysShowControls );
     ini.SetInt( "Visual", "Stats", (int)uStats );
+    std::string sOrder;
+    for ( int i = 0; i < StatCount; i++ ) sOrder += ( i ? "," : "" ) + std::to_string( aStatOrder[i] );
+    ini.Set( "Visual", "StatOrder", sOrder );
     ini.SetInt( "Visual", "FirstKey", iFirstKey );
     ini.SetInt( "Visual", "LastKey", iLastKey );
     for ( int i = 0; i < 16; i++ )
         ini.Set( "Visual", "Color" + std::to_string( i ), FormatRGB( colors[i] ) );
     ini.Set( "Visual", "BkgColor", FormatRGB( iBkgColor ) );
+    ini.Set( "Visual", "BkgImage", Util::WideToUtf8( sBkgImage ) );
+    ini.SetInt( "Visual", "BkgImageFit", iBkgFit );
+    ini.SetInt( "Visual", "BkgImageOpacity", iBkgOpacity );
+    ini.SetInt( "Visual", "CleanDrawing", uClean );
 }
 
 //-----------------------------------------------------------------------------
@@ -224,6 +285,7 @@ void ControlsSettings::LoadDefaultValues()
 {
     dFwdBackSecs = 3.0;
     dSpeedUpPct = 10.0;
+    dNSpeedUpPct = 10.0;
     bStartPaused = false;
 }
 
@@ -231,6 +293,7 @@ void ControlsSettings::Load( const IniFile &ini )
 {
     dFwdBackSecs = ini.GetDouble( "Controls", "FwdBackSecs", dFwdBackSecs );
     dSpeedUpPct = ini.GetDouble( "Controls", "SpeedUpPct", dSpeedUpPct );
+    dNSpeedUpPct = ini.GetDouble( "Controls", "NoteSpeedUpPct", dNSpeedUpPct );
     bStartPaused = ini.GetBool( "Controls", "StartPaused", bStartPaused );
 }
 
@@ -238,15 +301,44 @@ void ControlsSettings::Save( IniFile &ini ) const
 {
     ini.SetDouble( "Controls", "FwdBackSecs", dFwdBackSecs );
     ini.SetDouble( "Controls", "SpeedUpPct", dSpeedUpPct );
+    ini.SetDouble( "Controls", "NoteSpeedUpPct", dNSpeedUpPct );
     ini.SetInt( "Controls", "StartPaused", bStartPaused );
 }
 
 const wchar_t *const ExportSettings::Presets[] = { L"ultrafast", L"superfast", L"veryfast", L"faster", L"fast",
                                                    L"medium", L"slow", L"slower", L"veryslow" };
 const int ExportSettings::PresetCount = sizeof( Presets ) / sizeof( Presets[0] );
-const wchar_t *const ExportSettings::Encoders[] = { L"x264 (CPU)", L"NVIDIA NVENC H.264", L"NVIDIA NVENC HEVC", L"AMD AMF H.264",
-                                                    L"AMD AMF HEVC", L"Intel QSV H.264", L"Intel QSV HEVC" };
-const int ExportSettings::EncoderCount = sizeof( Encoders ) / sizeof( Encoders[0] );
+const wchar_t *const ExportSettings::Codecs[CodecCount] = { L"H.264", L"HEVC (H.265)", L"AV1", L"ProRes 422 HQ", L"FFV1 (lossless RGB)" };
+const wchar_t *const ExportSettings::Backends[BackendCount] = { L"Software (CPU)", L"NVIDIA NVENC", L"AMD AMF", L"Intel Quick Sync" };
+const wchar_t *const ExportSettings::Containers[ContainerCount] = { L"MP4", L"MKV (Matroska)", L"MOV (QuickTime)", L"AVI" };
+const wchar_t *const ExportSettings::Extensions[ContainerCount] = { L"mp4", L"mkv", L"mov", L"avi" };
+
+bool ExportSettings::HasBackend( int iCodec, int iBackend )
+{
+    return iBackend == Software || iCodec == H264 || iCodec == Hevc || iCodec == Av1;
+}
+
+bool ExportSettings::Holds( int iContainer, int iCodec )
+{
+    switch ( iContainer )
+    {
+        case Mp4: return iCodec == H264 || iCodec == Hevc || iCodec == Av1;
+        case Mov: return iCodec == H264 || iCodec == Hevc || iCodec == ProRes;
+        case Avi: return iCodec == H264 || iCodec == Ffv1;
+        default: return true;   // MKV
+    }
+}
+
+const wchar_t *ExportSettings::EncoderName( int iCodec, int iBackend )
+{
+    static const wchar_t *const aNames[3][BackendCount] = {
+        { L"libx264", L"h264_nvenc", L"h264_amf", L"h264_qsv" },
+        { L"libx265", L"hevc_nvenc", L"hevc_amf", L"hevc_qsv" },
+        { L"libsvtav1", L"av1_nvenc", L"av1_amf", L"av1_qsv" } };
+    if ( iCodec == ProRes ) return L"prores_ks";
+    if ( iCodec == Ffv1 ) return L"ffv1";
+    return aNames[std::clamp( iCodec, 0, 2 )][std::clamp( iBackend, 0, BackendCount - 1 )];
+}
 
 void ExportSettings::LoadDefaultValues()
 {
@@ -257,21 +349,44 @@ void ExportSettings::LoadDefaultValues()
     iFPS = 60;
     iCRF = 20;
     iPreset = 2;    // veryfast
-    iEncoder = X264;
+    iCodec = H264;
+    iBackend = Software;
+    iContainer = Mp4;
     bShowStats = true;
+    sAudioFile.clear();
+    bAudioAlign = true;
+    iAudioOffsetMs = 0;
 }
 
 void ExportSettings::Load( const IniFile &ini )
 {
     sOutFile = Util::Utf8ToWide( ini.GetString( "Export", "OutFile" ) );
     bUseWindowSize = ini.GetBool( "Export", "UseWindowSize", bUseWindowSize );
-    iWidth = std::clamp( ini.GetInt( "Export", "Width", iWidth ), 16, 8192 );
-    iHeight = std::clamp( ini.GetInt( "Export", "Height", iHeight ), 16, 8192 );
+    iWidth = std::clamp( ini.GetInt( "Export", "Width", iWidth ), 16, MaxSide );
+    iHeight = std::clamp( ini.GetInt( "Export", "Height", iHeight ), 16, MaxSide );
     iFPS = std::clamp( ini.GetInt( "Export", "FPS", iFPS ), 1, 240 );
     iCRF = std::clamp( ini.GetInt( "Export", "CRF", iCRF ), 0, 51 );
     iPreset = std::clamp( ini.GetInt( "Export", "Preset", iPreset ), 0, PresetCount - 1 );
-    iEncoder = std::clamp( ini.GetInt( "Export", "Encoder", iEncoder ), 0, EncoderCount - 1 );
+    if ( ini.Has( "Export", "Codec" ) )
+    {
+        iCodec = std::clamp( ini.GetInt( "Export", "Codec", iCodec ), 0, CodecCount - 1 );
+        iBackend = std::clamp( ini.GetInt( "Export", "Backend", iBackend ), 0, BackendCount - 1 );
+        iContainer = std::clamp( ini.GetInt( "Export", "Container", iContainer ), 0, ContainerCount - 1 );
+    }
+    else if ( ini.Has( "Export", "Encoder" ) )
+    {
+        // Before the codec, encoder and format were apart: x264, then NVENC, AMF and QSV, each H.264 then HEVC
+        int e = std::clamp( ini.GetInt( "Export", "Encoder", 0 ), 0, 6 );
+        iCodec = e && !( e & 1 ) ? Hevc : H264;
+        iBackend = ( e + 1 ) / 2;
+        size_t iDot = sOutFile.find_last_of( L'.' );
+        iContainer = iDot != std::wstring::npos && _wcsicmp( sOutFile.c_str() + iDot, L".mkv" ) == 0 ? Mkv : Mp4;
+    }
+    if ( !HasBackend( iCodec, iBackend ) ) iBackend = Software;
     bShowStats = ini.GetBool( "Export", "ShowStats", bShowStats );
+    sAudioFile = Util::Utf8ToWide( ini.GetString( "Export", "AudioFile" ) );
+    bAudioAlign = ini.GetBool( "Export", "AudioAlign", bAudioAlign );
+    iAudioOffsetMs = std::clamp( ini.GetInt( "Export", "AudioOffsetMs", iAudioOffsetMs ), -3600000, 3600000 );
 }
 
 void ExportSettings::Save( IniFile &ini ) const
@@ -283,13 +398,19 @@ void ExportSettings::Save( IniFile &ini ) const
     ini.SetInt( "Export", "FPS", iFPS );
     ini.SetInt( "Export", "CRF", iCRF );
     ini.SetInt( "Export", "Preset", iPreset );
-    ini.SetInt( "Export", "Encoder", iEncoder );
+    ini.SetInt( "Export", "Codec", iCodec );
+    ini.SetInt( "Export", "Backend", iBackend );
+    ini.SetInt( "Export", "Container", iContainer );
     ini.SetInt( "Export", "ShowStats", bShowStats );
+    ini.Set( "Export", "AudioFile", Util::WideToUtf8( sAudioFile ) );
+    ini.SetInt( "Export", "AudioAlign", bAudioAlign );
+    ini.SetInt( "Export", "AudioOffsetMs", iAudioOffsetMs );
 }
 
 void PerformanceSettings::LoadDefaultValues()
 {
     iWorkerThreads = 0;
+    iPlaybackThreads = 0;
     bPreferKDMAPI = true;
     bVelocitySkip = false;
     iSkipLagMs = 100;
@@ -309,6 +430,8 @@ void PerformanceSettings::LoadDefaultValues()
 void PerformanceSettings::Load( const IniFile &ini )
 {
     iWorkerThreads = std::clamp( ini.GetInt( "Performance", "WorkerThreads", iWorkerThreads ), 0, 256 );
+    // Playback used the worker threads setting before it had its own
+    iPlaybackThreads = std::clamp( ini.GetInt( "Performance", "PlaybackThreads", iWorkerThreads ), 0, 256 );
     bPreferKDMAPI = ini.GetBool( "Performance", "PreferKDMAPI", bPreferKDMAPI );
     bVelocitySkip = ini.GetBool( "Performance", "VelocitySkip", bVelocitySkip );
     iSkipLagMs = std::clamp( ini.GetInt( "Performance", "SkipLagMs", iSkipLagMs ), 1, 10000 );
@@ -328,6 +451,7 @@ void PerformanceSettings::Load( const IniFile &ini )
 void PerformanceSettings::Save( IniFile &ini ) const
 {
     ini.SetInt( "Performance", "WorkerThreads", iWorkerThreads );
+    ini.SetInt( "Performance", "PlaybackThreads", iPlaybackThreads );
     ini.SetInt( "Performance", "PreferKDMAPI", bPreferKDMAPI );
     ini.SetInt( "Performance", "VelocitySkip", bVelocitySkip );
     ini.SetInt( "Performance", "SkipLagMs", iSkipLagMs );

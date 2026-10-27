@@ -2,6 +2,7 @@
 // plus the Performance tab. Stored as UTF-8 INI in %APPDATA%\PFAviz++\config.ini.
 #pragma once
 
+#include <atomic>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -27,19 +28,31 @@ struct VisualSettings
     enum KeysShown { All, Song, Custom, All128 } eKeysShown;
     int iFirstKey, iLastKey;
     bool bAlwaysShowControls;
-    // The stats box's lines (Visual > Statistics...); uStats has bit 1 << Stat for each one shown. They are
-    // shown in this order, except that the playback pipeline's lines (added later, so the saved bits of
-    // the others stay put) follow the synth's.
+    // The stats box's lines (Visual > Statistics...); uStats has bit 1 << Stat for each one shown, and
+    // aStatOrder lists them all top to bottom. New lines are added at the end, so saved bits stay put.
     enum Stat { StatTime, StatFPS, StatScore, StatNotes, StatNPS, StatPolyphony, StatSent, StatSkipped, StatCollapsed, StatLag,
                 StatSkipping, StatOtherMs, StatNotesMs, StatSceneMs, StatPresentMs,
-                StatDecoded, StatDecoderBusy, StatSenderBusy, StatRing, StatSendCost, StatCount };
+                StatDecoded, StatDecoderBusy, StatSenderBusy, StatRing, StatSendCost, StatTempo, StatVoices, StatSynthCpu, StatCount };
     static constexpr unsigned NoteStats = 7u << StatNotes;      // counted while a song loads (Song::noteStats)
     static constexpr unsigned PipelineStats = 31u << StatDecoded;
-    static constexpr unsigned SynthStats = 31u << StatSent | PipelineStats;     // need a MIDI output
+    static constexpr unsigned VoiceStats = 3u << StatVoices;    // asked of the synth (KDMAPI only)
+    static constexpr unsigned SynthStats = 31u << StatSent | PipelineStats | VoiceStats;   // need a MIDI output
     static constexpr unsigned FrameStats = 15u << StatOtherMs;  // frame time parts, live only
     static constexpr unsigned AllStats = ( 1u << StatCount ) - 1;
+    // The Statistics dialog's sections, each line's section, its label in the stats box and its name
+    enum StatSection { SectionGeneral, SectionNotes, SectionSynth, SectionPipeline, SectionFrame, SectionCount };
+    static const wchar_t *const SectionNames[SectionCount];
+    static const int StatSections[StatCount];
+    static const wchar_t *const StatLabels[StatCount];
+    static const wchar_t *const StatNames[StatCount];
+    static const unsigned char DefaultStatOrder[StatCount];
     unsigned uStats;
+    unsigned char aStatOrder[StatCount];
     unsigned int colors[16], iBkgColor;
+    std::wstring sBkgImage;     // the background image's file (empty: none), drawn over iBkgColor
+    int iBkgFit;                // Renderer::ImageFit
+    int iBkgOpacity;            // percent
+    unsigned uClean;            // Clean flags (visual/Scene.h): the original's rounding quirks left out
 };
 
 struct AudioSettings
@@ -70,6 +83,7 @@ struct ControlsSettings
     void Save( IniFile &ini ) const;
 
     double dFwdBackSecs, dSpeedUpPct;
+    double dNSpeedUpPct;        // Shift+Up/Down: the note speed's step
     bool bStartPaused;          // a song is paused at its start once it has loaded
 };
 
@@ -84,15 +98,26 @@ struct ExportSettings
     bool bUseWindowSize;        // the graphics window's size instead of iWidth x iHeight
     int iWidth, iHeight;
     int iFPS;                   // 1-240
-    int iCRF;                   // quality, 0-51: x264's CRF, NVENC's CQ, AMF's QP, QSV's global quality
-    int iPreset;                // index into Presets (mapped onto the hardware encoders' own speed levels)
-    int iEncoder;               // index into Encoders
+    int iCRF;                   // quality, 0-51 (x264's CRF scale, mapped onto each encoder's own; 0: lossless in software H.264 and HEVC)
+    int iPreset;                // index into Presets (mapped onto each encoder's own speed levels)
+    int iCodec, iBackend, iContainer;   // what is encoded (Codec), by which encoder (Backend), into which file format
     bool bShowStats;            // the top-right stats area
+    std::wstring sAudioFile;    // muxed in when set (anything ffmpeg reads: WAV up to 64-bit float, FLAC up to 24-bit, ...)
+    bool bAudioAlign;           // its first sound is moved to where the song's first note sounds
+    int iAudioOffsetMs;         // and then by this much (positive: later)
     static const wchar_t *const Presets[];
     static const int PresetCount;
-    enum Encoder { X264, NvencH264, NvencHevc, AmfH264, AmfHevc, QsvH264, QsvHevc };
-    static const wchar_t *const Encoders[];
-    static const int EncoderCount;
+    enum Codec { H264, Hevc, Av1, ProRes, Ffv1, CodecCount };
+    enum Backend { Software, Nvenc, Amf, Qsv, BackendCount };
+    enum Container { Mp4, Mkv, Mov, Avi, ContainerCount };
+    static const wchar_t *const Codecs[CodecCount], *const Backends[BackendCount], *const Containers[ContainerCount], *const Extensions[ContainerCount];
+    static bool HasBackend( int iCodec, int iBackend );     // ProRes and FFV1 are software only
+    static bool Holds( int iContainer, int iCodec );        // the file format can store the codec
+    static const wchar_t *EncoderName( int iCodec, int iBackend );     // ffmpeg's name for the encoder
+    static bool Is420( int iCodec ) { return iCodec <= Av1; }   // encoded as 4:2:0 (the rest from RGB frames)
+    // A frame side's limits: 65536 is the most any ffmpeg encoder takes (each one's own limit is found by
+    // trying it, VideoExport.cpp); 4:2:0 and 4:2:2 need even sizes
+    static const int MaxSide = 65536;
 };
 
 struct PerformanceSettings
@@ -101,7 +126,8 @@ struct PerformanceSettings
     void Load( const IniFile &ini );
     void Save( IniFile &ini ) const;
 
-    int iWorkerThreads;         // 0 = auto
+    int iWorkerThreads;         // loading and drawing (and video rendering); 0 = auto
+    int iPlaybackThreads;       // the most threads decoding playback; 0 = auto
     bool bPreferKDMAPI;
     bool bVelocitySkip;         // skip quiet note-ons while the output lags (off: every event is sent)
     int iSkipLagMs;             // the lag above which velocity skipping starts
@@ -223,7 +249,11 @@ public:
     PlaybackSettings &GetPlaybackSettings() { return m_PlaybackSettings; }
     ViewSettings &GetViewSettings() { return m_ViewSettings; }
 
-    void SetVisualSettings( const VisualSettings &s ) { m_VisualSettings = s; }
+    // The game thread reads the visual settings every frame: their string (the background image's file)
+    // only through GetBkgImage, under the lock this takes, when VisualGen has changed
+    void SetVisualSettings( const VisualSettings &s ) { std::lock_guard< std::mutex > lock( m_mxVisual ); m_VisualSettings = s; m_uVisualGen++; }
+    std::wstring GetBkgImage() const { std::lock_guard< std::mutex > lock( m_mxVisual ); return m_VisualSettings.sBkgImage; }
+    unsigned VisualGen() const { return m_uVisualGen.load(); }
     void SetAudioSettings( const AudioSettings &s ) { std::lock_guard< std::mutex > lock( m_mxAudio ); m_AudioSettings = s; }
     void SetVideoSettings( const VideoSettings &s ) { m_VideoSettings = s; }
     void SetControlsSettings( const ControlsSettings &s ) { m_ControlsSettings = s; }
@@ -236,6 +266,8 @@ private:
     Config &operator=( const Config & ) = delete;
 
     VisualSettings m_VisualSettings;
+    mutable std::mutex m_mxVisual;
+    std::atomic< unsigned > m_uVisualGen{ 0 };
     std::mutex m_mxAudio;
     AudioSettings m_AudioSettings;
     VideoSettings m_VideoSettings;

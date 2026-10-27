@@ -68,6 +68,7 @@ FrameGlobals Scene::ComputeGlobals( const ViewInputs &in )
     g.iBufferHeight = in.iBufferHeight;
     g.llStartTime = in.llStartTime;
     g.llTimeSpan = in.llTimeSpan;
+    g.uClean = in.uClean;
 
     g.iStartNote = min( in.iFirstKey, in.iLastKey );
     g.iEndNote = max( in.iFirstKey, in.iLastKey );
@@ -115,6 +116,9 @@ FrameGlobals Scene::ComputeGlobals( const ViewInputs &in )
     if ( llMicroSecsPP < 1 ) llMicroSecsPP = 1;
     g.llRndStartTime = in.llStartTime - ( in.llStartTime < 0 ? llMicroSecsPP : 0 );
     g.llRndStartTime = ( g.llRndStartTime / llMicroSecsPP ) * llMicroSecsPP;
+    // Clean drawing: rounded up instead (division truncates towards 0, up for negative times)
+    if ( in.uClean & Clean::KeepBottom )
+        g.llRndStartTime = ( in.llStartTime >= 0 ? ( in.llStartTime + llMicroSecsPP - 1 ) / llMicroSecsPP : in.llStartTime / llMicroSecsPP ) * llMicroSecsPP;
     return g;
 }
 
@@ -167,6 +171,10 @@ void Scene::NoteVertices( const FrameGlobals &g, const NoteKey &nk, long long ll
     // Rounding to make everything consistent
     cy = floor( cy + 0.5f ); // constant cy across rendering
     y = floor( y + 0.5f );
+    // Clean drawing: the top from the end time, rounded as the bottom is (FastEngine::Coverage too)
+    if ( g.uClean & Clean::EdgeRound )
+        cy = y - floor( g.fNotesY + g.fNotesCY * ( 1.0f - static_cast< float >( llNoteEnd - g.llRndStartTime ) / g.llTimeSpan ) + 0.5f );
+    if ( ( g.uClean & Clean::MinHeight ) && cy < 1.0f ) cy = 1.0f;
 
     // Clipping :/
     float fMinY = g.fNotesY - 5.0f;
@@ -196,6 +204,7 @@ void Scene::NoteVertices( const FrameGlobals &g, const NoteKey &nk, long long ll
 void Scene::DrawBackground( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c )
 {
     pRenderer->DrawRect( g.fNotesX, g.fNotesY, g.fNotesCX, g.fNotesCY, c.csBackground.iPrimaryRGB );
+    if ( pRenderer->HasBackgroundImage() ) pRenderer->DrawBackgroundImage( g.fNotesX, g.fNotesY, g.fNotesCX, g.fNotesCY );
 
     // Vertical lines
     for ( int i = g.iStartNote + 1; i <= g.iEndNote; i++ )

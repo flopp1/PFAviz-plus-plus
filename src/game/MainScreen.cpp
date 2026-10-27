@@ -35,7 +35,7 @@ void MainScreen::InitSong()
     m_pEngine->SetLod( Config::GetConfig().GetPerformanceSettings().bLodCache );
     m_pMeter = new MeterTracker( m_pSong->vMeta, m_pSong->info );
     m_vTrackSettings.resize( m_pSong->info.iNumTracks );
-    if ( m_pSong ) m_pPlayback = std::make_unique< PlaybackEngine >( m_pSong, m_Clock, Config::GetConfig().GetPerformanceSettings().iWorkerThreads );
+    if ( m_pSong ) m_pPlayback = std::make_unique< PlaybackEngine >( m_pSong, m_Clock, Config::GetConfig().GetPerformanceSettings().iPlaybackThreads );
 
     std::vector< TextPath::TextPathVertex > vPath;
     vPath.push_back( { 0.0f, 0.0f, 0.0f, 0xFF } );
@@ -241,7 +241,7 @@ GameState::GameError MainScreen::MsgProc( HWND hWnd, UINT msg, WPARAM wParam, LP
                     if ( bAlt && !bCtrl )
                         cPlayback.SetVolume( min( cPlayback.GetVolume() + 0.1, 1.0 ), true );
                     else if ( bShift && !bCtrl )
-                        cPlayback.SetNSpeed( cPlayback.GetNSpeed() * ( 1.0 + cControls.dSpeedUpPct / 100.0 ), true );
+                        cPlayback.SetNSpeed( cPlayback.GetNSpeed() * ( 1.0 + cControls.dNSpeedUpPct / 100.0 ), true );
                     else if ( !bAlt && !bShift )
                         cPlayback.SetSpeed( cPlayback.GetSpeed() / ( 1.0 + cControls.dSpeedUpPct / 100.0 ), true );
                     return Success;
@@ -249,7 +249,7 @@ GameState::GameError MainScreen::MsgProc( HWND hWnd, UINT msg, WPARAM wParam, LP
                     if ( bAlt && !bShift && !bCtrl )
                         cPlayback.SetVolume( max( cPlayback.GetVolume() - 0.1, 0.0 ), true );
                     else if ( bShift && !bAlt && !bCtrl )
-                        cPlayback.SetNSpeed( cPlayback.GetNSpeed() / ( 1.0 + cControls.dSpeedUpPct / 100.0 ), true );
+                        cPlayback.SetNSpeed( cPlayback.GetNSpeed() / ( 1.0 + cControls.dNSpeedUpPct / 100.0 ), true );
                     else if ( !bAlt && !bShift )
                         cPlayback.SetSpeed( cPlayback.GetSpeed() * ( 1.0 + cControls.dSpeedUpPct / 100.0 ), true );
                     return Success;
@@ -390,6 +390,33 @@ GameState::GameError MainScreen::Logic()
     m_uStats = cVisual.uStats & ( m_pPlayback ? VisualSettings::AllStats : ~VisualSettings::SynthStats );
     m_pRenderer->SetLimitFPS( cVideo.bLimitFPS );
     m_Colors.SetBackground( cVisual.iBkgColor );
+    // The background image: read here when its file changes (a failure is said once, as a message)
+    bool bBkgChanged = !m_bBkgApplied;
+    if ( !m_bBkgApplied || config.VisualGen() != m_uVisualGen )
+    {
+        m_uVisualGen = config.VisualGen();
+        std::wstring sBkgImage = config.GetBkgImage();
+        bBkgChanged |= sBkgImage != m_sBkgImage;
+        m_sBkgImage.swap( sBkgImage );
+    }
+    if ( bBkgChanged )
+    {
+        m_bBkgApplied = true;
+        m_pBkgImage.reset();
+        if ( !m_sBkgImage.empty() )
+        {
+            auto pImage = std::make_shared< Image >();
+            std::wstring sError;
+            if ( LoadImageFile( m_sBkgImage, std::min( 8192, m_pRenderer->MaxTextureSide() ), *pImage, sError ) ) m_pBkgImage = pImage;
+            else
+            {
+                swprintf( m_sBuf, 128, L"Background image: %ls", sError.c_str() );
+                m_tpMessage.Reset( m_pRenderer->GetBufferWidth() / 2.0f, m_pRenderer->GetBufferHeight() * ( 1.0f - KBPercent ) / 2.0f - 35.0f / 2.0f, 0xFFFFFFFF, m_sBuf );
+            }
+        }
+        m_pRenderer->SetBackgroundImage( m_pBkgImage );
+    }
+    m_pRenderer->SetBackgroundStyle( cVisual.iBkgFit, cVisual.iBkgOpacity / 100.0f );
 
     double dMaxCorrect = ( mInfo.iMaxVolume > 0 ? 127.0 / mInfo.iMaxVolume : 1.0 );
     double dVolumeCorrect = ( mInfo.llVolumeSum > 0 ? ( m_dVolume * 127.0 * mInfo.llNoteCount ) / mInfo.llVolumeSum : 1.0 );
@@ -403,8 +430,10 @@ GameState::GameError MainScreen::Logic()
         m_pPlayback->SetSkipping( cPerf.bVelocitySkip, cPerf.iSkipLagMs );
         m_pPlayback->SetSendLimits( cPerf.bCollapseStacks, cPerf.bSendLimit ? cPerf.iMaxSendsPerSec : 0 );
         m_pPlayback->SetMinVelocity( cPerf.bVelocityFloor ? cPerf.iMinVelocity : 0 );
-        m_pPlayback->SetMaxThreads( cPerf.iWorkerThreads );
+        m_pPlayback->SetMaxThreads( cPerf.iPlaybackThreads );
     }
+    static const bool bEnvDrawThreads = getenv( "PFAVIZ_DRAWTHREADS" ) != nullptr;
+    if ( !bEnvDrawThreads ) m_pEngine->SetThreads( config.GetPerformanceSettings().iWorkerThreads );
     if ( m_pEngine->LodOn() != config.GetPerformanceSettings().bLodCache ) m_pEngine->SetLod( config.GetPerformanceSettings().bLodCache );
     m_pRenderer->SetInstancing( config.GetPerformanceSettings().bGpuInstancing );
 
@@ -436,6 +465,15 @@ GameState::GameError MainScreen::Logic()
             m_llStatCollapsed = m_Stats.llCollapsed;
             m_llStatSent = m_Stats.llSent;
             m_llStatSkipped = m_Stats.llSkipped;
+            m_iSynthVoices = -1;
+            m_dSynthCpu = -1.0;
+            if ( ( m_uStats & VisualSettings::VoiceStats ) && m_pPlayback->OutputName() == MidiOutputs::KdmapiName() )
+            {
+                unsigned uVoices = 0;
+                float fCpu = 0.0f;
+                if ( MidiOutputs::KdmapiActiveVoices( uVoices ) ) m_iSynthVoices = (int)uVoices;
+                if ( MidiOutputs::KdmapiRenderingTime( fCpu ) ) m_dSynthCpu = fCpu;
+            }
         }
         m_llFPSTime = m_iFPSCount = 0;
         for ( int i = 0; i < PartCount; i++ )
@@ -496,6 +534,10 @@ GameState::GameError MainScreen::Logic()
     long long llOldPos = ( ( llOldStartTime - llFirstTime ) * 1000 ) / ( llLastTime - llFirstTime );
     long long llNewPos = ( ( m_llStartTime - llFirstTime ) * 1000 ) / ( llLastTime - llFirstTime );
     if ( llOldPos != llNewPos ) cPlayback.SetPosition( static_cast< int >( llNewPos ) );
+
+    // At the end the clock stops, but the NPS window keeps sliding in real time so it falls to 0
+    if ( m_llStartTime >= llMaxTime ) m_llPastEndUs = std::min< long long >( m_llPastEndUs + llElapsed, 2000000 );
+    else m_llPastEndUs = 0;
 
     // Song's over
     if ( !m_bPaused && m_llStartTime >= llMaxTime )
@@ -592,6 +634,7 @@ ViewInputs MainScreen::GetViewInputs( int iWidth, int iHeight, long long llStart
     in.bShowKB = m_bShowKB;
     in.llStartTime = llStartTime;
     in.llTimeSpan = m_llTimeSpan;
+    in.uClean = cVisual.uClean;
     return in;
 }
 
@@ -615,7 +658,7 @@ void MainScreen::RenderText()
             static_cast< float >( rcMsg.right - rcMsg.left ), static_cast< float >( rcMsg.bottom - rcMsg.top ), iBkgColor );
 
     m_pRenderer->BeginText();
-    RenderStatus( m_pRenderer, &rcStatus, m_llStartTime, m_dFPS, m_uStats );
+    RenderStatus( m_pRenderer, &rcStatus, m_llStartTime, m_dFPS, m_uStats, m_llPastEndUs );
     if ( m_pEngine->DrawsPreviousMask() )
     {
         // Hidden channels change once their draw view is built (FastEngine::SetHidden)
@@ -636,45 +679,42 @@ int MainScreen::StatusLines( unsigned uStats )
     return __builtin_popcount( uStats & VisualSettings::AllStats );
 }
 
-// The top-right stats area's text (the video renderer passes its own renderer, time and frame rate)
-void MainScreen::RenderStatus( Renderer *pRenderer, LPRECT prcStatus, long long llTime, double dFPS, unsigned uStats )
+// The tempo in effect at llTime: the last tempo event at or before it. Before any, MIDI's default of
+// 500000 (120 BPM), but for the lead-in before the song starts, which shows a tempo set at its start.
+static long long TempoAt( const std::vector< RefMetaEvent > &vMeta, long long llTime )
 {
-    wchar_t sTime[128];
+    auto Tempo = []( const RefMetaEvent &e ) { return e.cType == RefMetaEvent::SetTempo && e.iDataLen == 3; };
+    auto Value = []( const RefMetaEvent &e ) { return std::max( 1, ( e.aData[0] << 16 ) | ( e.aData[1] << 8 ) | e.aData[2] ); };
+    auto it = std::upper_bound( vMeta.begin(), vMeta.end(), std::max( llTime, 0LL ), []( long long t, const RefMetaEvent &e ) { return t < e.llMicroSec; } );
+    while ( it != vMeta.begin() )
+        if ( Tempo( *--it ) ) return Value( *it );
+    return 500000;
+}
+
+// The top-right stats area's text (the video renderer passes its own renderer, time and frame rate):
+// every line's value, then the shown ones in the configured order
+void MainScreen::RenderStatus( Renderer *pRenderer, LPRECT prcStatus, long long llTime, double dFPS, unsigned uStats, long long llPastEnd )
+{
+    typedef VisualSettings VS;
+    static const VisualSettings &cVisual = Config::GetConfig().GetVisualSettings();
     const RefMidiInfo &mInfo = m_pSong->info;
+    auto Shown = [&]( int iStat ) { return ( uStats >> iStat ) & 1; };
+    wchar_t aValue[VS::StatCount][48] = {};
+
     if ( llTime >= 0 )
-        swprintf( sTime, 128, L"%lld:%04.1lf / %lld:%04.1lf",
+        swprintf( aValue[VS::StatTime], 48, L"%lld:%04.1lf / %lld:%04.1lf",
             llTime / 60000000, ( llTime % 60000000 ) / 1000000.0,
             mInfo.llTotalMicroSecs / 60000000, ( mInfo.llTotalMicroSecs % 60000000 ) / 1000000.0 );
     else
-        swprintf( sTime, 128, L"\t-%lld:%04.1lf / %lld:%04.1lf",
+        swprintf( aValue[VS::StatTime], 48, L"\t-%lld:%04.1lf / %lld:%04.1lf",
             -llTime / 60000000, ( -llTime % 60000000 ) / 1000000.0,
             mInfo.llTotalMicroSecs / 60000000, ( mInfo.llTotalMicroSecs % 60000000 ) / 1000000.0 );
-
-    wchar_t sFPS[128];
-    swprintf( sFPS, 128, L"%.1lf", dFPS );
-
+    swprintf( aValue[VS::StatFPS], 48, L"%.1lf", dFPS );
     // Scoring was removed; the line is kept as the original shows it with no input device
-    const wchar_t *sScore = L"N/A";
+    wcscpy( aValue[VS::StatScore], L"N/A" );
+    if ( Shown( VS::StatTempo ) ) swprintf( aValue[VS::StatTempo], 48, L"%.2f BPM", 60000000.0 / TempoAt( m_pSong->vMeta, llTime ) );
 
-    InflateRect( prcStatus, -6, -3 );
-
-    // A line: shadow, then text (the original's offsets: the first line at +1, each next 16 lower)
-    bool bFirst = true;
-    auto Line = [&]( const wchar_t *sLabel, const wchar_t *sValue ) {
-        OffsetRect( prcStatus, 2, bFirst ? 1 : 16 + 1 );
-        bFirst = false;
-        pRenderer->DrawText( sLabel, Renderer::Small, prcStatus, 0, 0xFF404040 );
-        pRenderer->DrawText( sValue, Renderer::Small, prcStatus, DT_RIGHT, 0xFF404040 );
-        OffsetRect( prcStatus, -2, -1 );
-        pRenderer->DrawText( sLabel, Renderer::Small, prcStatus, 0, 0xFFFFFFFF );
-        pRenderer->DrawText( sValue, Renderer::Small, prcStatus, DT_RIGHT, 0xFFFFFFFF );
-    };
-    auto Shown = [&]( int iStat ) { return ( uStats >> iStat ) & 1; };
-    if ( Shown( VisualSettings::StatTime ) ) Line( L"Time:", sTime );
-    if ( Shown( VisualSettings::StatFPS ) ) Line( L"FPS:", sFPS );
-    if ( Shown( VisualSettings::StatScore ) ) Line( L"Score:", sScore );
-
-    if ( uStats & VisualSettings::NoteStats )
+    if ( uStats & VS::NoteStats )
     {
         // From the tables counted while loading (n/a: the song was loaded with them off)
         const NoteStats &ns = m_pSong->noteStats;
@@ -688,54 +728,66 @@ void MainScreen::RenderStatus( Renderer *pRenderer, LPRECT prcStatus, long long 
             }
             s[j] = 0;
         };
-        wchar_t aValues[3][40];
-        if ( ns.Empty() ) for ( auto &v : aValues ) wcscpy( v, L"n/a" );
+        if ( ns.Empty() ) for ( int i = 0; i < 3; i++ ) wcscpy( aValue[VS::StatNotes + i], L"n/a" );
         else
         {
-            Count( aValues[0], ns.Passed( llTime ) );
-            Count( aValues[1], ns.NPS( llTime ) );
-            Count( aValues[2], ns.Polyphony( llTime ) );
+            Count( aValue[VS::StatNotes], ns.Passed( llTime ) );
+            Count( aValue[VS::StatNPS], ns.NPS( llTime + llPastEnd ) );
+            Count( aValue[VS::StatPolyphony], ns.Polyphony( llTime ) );
         }
-        const wchar_t *aLabels[3] = { L"Notes:", L"NPS:", L"Polyphony:" };
-        for ( int i = 0; i < 3; i++ ) if ( Shown( VisualSettings::StatNotes + i ) ) Line( aLabels[i], aValues[i] );
     }
 
-    if ( uStats & ( VisualSettings::SynthStats | VisualSettings::FrameStats ) )
+    if ( uStats & ( VS::SynthStats | VS::FrameStats ) )
     {
         auto Rate = []( wchar_t *s, double d ) {
-            if ( d >= 1e6 ) swprintf( s, 32, L"%.2lfM", d / 1e6 );
-            else if ( d >= 1e3 ) swprintf( s, 32, L"%.1lfK", d / 1e3 );
-            else swprintf( s, 32, L"%.0lf", d );
+            if ( d >= 1e6 ) swprintf( s, 48, L"%.2lfM", d / 1e6 );
+            else if ( d >= 1e3 ) swprintf( s, 48, L"%.1lfK", d / 1e3 );
+            else swprintf( s, 48, L"%.0lf", d );
         };
-        wchar_t aValues[10 + PartCount][32];
-        Rate( aValues[0], m_dSentPerSec );
-        Rate( aValues[1], m_dSkippedPerSec );
-        Rate( aValues[2], m_dCollapsedPerSec );
-        swprintf( aValues[3], 32, L"%.1lf ms", std::max< long long >( 0, m_Stats.llLagUs ) / 1000.0 );
+        Rate( aValue[VS::StatSent], m_dSentPerSec );
+        Rate( aValue[VS::StatSkipped], m_dSkippedPerSec );
+        Rate( aValue[VS::StatCollapsed], m_dCollapsedPerSec );
+        swprintf( aValue[VS::StatLag], 48, L"%.1lf ms", std::max< long long >( 0, m_Stats.llLagUs ) / 1000.0 );
         // The lag's threshold, or the send budget's cut when that is higher ("v at k%": part of velocity v kept)
         const PlaybackDecoder::BudgetCut &cut = m_Stats.budget;
-        if ( m_Stats.iSkipVelocity > 127 ) swprintf( aValues[4], 32, L"all" );
+        wchar_t *sSkipping = aValue[VS::StatSkipping];
+        if ( m_Stats.iSkipVelocity > 127 ) swprintf( sSkipping, 48, L"all" );
         else if ( cut.iVelocity > 0 && cut.iVelocity >= m_Stats.iSkipVelocity )
-            swprintf( aValues[4], 32, L"< %d, %d at %.0f%%", cut.iVelocity, cut.iVelocity, cut.dKeep * 100.0 );
-        else if ( m_Stats.iSkipVelocity > 0 ) swprintf( aValues[4], 32, L"vel < %d", m_Stats.iSkipVelocity );
-        else swprintf( aValues[4], 32, L"none" );
+            swprintf( sSkipping, 48, L"< %d, %d at %.0f%%", cut.iVelocity, cut.iVelocity, cut.dKeep * 100.0 );
+        else if ( m_Stats.iSkipVelocity > 0 ) swprintf( sSkipping, 48, L"vel < %d", m_Stats.iSkipVelocity );
+        else swprintf( sSkipping, 48, L"none" );
         // Frame time parts, average / maximum over the last half second, in ms
-        for ( int i = 0; i < PartCount; i++ ) swprintf( aValues[5 + i], 32, L"%.2f / %.2f", m_adPartAvgShown[i], m_adPartMaxShown[i] );
+        for ( int i = 0; i < PartCount; i++ ) swprintf( aValue[VS::StatOtherMs + i], 48, L"%.2f / %.2f", m_adPartAvgShown[i], m_adPartMaxShown[i] );
         // The playback pipeline: a busy decoder with an empty ring is the decoder's limit; a full ring with
         // a busy sender is the output's (a rising send cost: the synth pushing back)
-        const int P = 5 + PartCount;
-        Rate( aValues[P], m_dDecodedPerSec );
-        if ( m_Stats.iLanes > 1 ) swprintf( aValues[P + 1], 32, L"%.0f%% ×%d", m_dDecoderBusy * 100.0, m_Stats.iLanes );    // x threads
-        else swprintf( aValues[P + 1], 32, L"%.0f%%", m_dDecoderBusy * 100.0 );
-        swprintf( aValues[P + 2], 32, L"%.0f%%", m_dSenderBusy * 100.0 );
-        swprintf( aValues[P + 3], 32, L"%.0f%% avg, %.0f%% max", m_dRingAvg * 100.0, m_dRingMax * 100.0 );
-        swprintf( aValues[P + 4], 32, L"%.1f ns/msg", m_Stats.dNsPerMsg );
-        const wchar_t *aLabels[10 + PartCount] = { L"Sent/s:", L"Skipped/s:", L"Collapsed/s:", L"Lag:", L"Skipping:",
-                                                   L"Other ms:", L"Notes ms:", L"Scene ms:", L"Present ms:",
-                                                   L"Decoded/s:", L"Decoder busy:", L"Sender busy:", L"Ring:", L"Send cost:" };
-        // The synth's lines, then the pipeline's, then the frame time parts
-        static const int aOrder[10 + PartCount] = { 0, 1, 2, 3, 4, P, P + 1, P + 2, P + 3, P + 4, 5, 6, 7, 8 };
-        for ( int i : aOrder ) if ( Shown( VisualSettings::StatSent + i ) ) Line( aLabels[i], aValues[i] );
+        Rate( aValue[VS::StatDecoded], m_dDecodedPerSec );
+        if ( m_Stats.iLanes > 1 ) swprintf( aValue[VS::StatDecoderBusy], 48, L"%.0f%% ×%d", m_dDecoderBusy * 100.0, m_Stats.iLanes );    // x threads
+        else swprintf( aValue[VS::StatDecoderBusy], 48, L"%.0f%%", m_dDecoderBusy * 100.0 );
+        swprintf( aValue[VS::StatSenderBusy], 48, L"%.0f%%", m_dSenderBusy * 100.0 );
+        swprintf( aValue[VS::StatRing], 48, L"%.0f%% avg, %.0f%% max", m_dRingAvg * 100.0, m_dRingMax * 100.0 );
+        swprintf( aValue[VS::StatSendCost], 48, L"%.1f ns/msg", m_Stats.dNsPerMsg );
+        // The synth's own counts, when it is KDMAPI and its version has them
+        if ( m_iSynthVoices >= 0 ) swprintf( aValue[VS::StatVoices], 48, L"%d", m_iSynthVoices );
+        else wcscpy( aValue[VS::StatVoices], L"N/A" );
+        if ( m_dSynthCpu >= 0.0 ) swprintf( aValue[VS::StatSynthCpu], 48, L"%.1f%%", m_dSynthCpu );
+        else wcscpy( aValue[VS::StatSynthCpu], L"N/A" );
+    }
+
+    InflateRect( prcStatus, -6, -3 );
+
+    // A line: shadow, then text (the original's offsets: the first line at +1, each next 16 lower)
+    bool bFirst = true;
+    for ( int i = 0; i < VS::StatCount; i++ )
+    {
+        int iStat = cVisual.aStatOrder[i];
+        if ( !Shown( iStat ) ) continue;
+        OffsetRect( prcStatus, 2, bFirst ? 1 : 16 + 1 );
+        bFirst = false;
+        pRenderer->DrawText( VS::StatLabels[iStat], Renderer::Small, prcStatus, 0, 0xFF404040 );
+        pRenderer->DrawText( aValue[iStat], Renderer::Small, prcStatus, DT_RIGHT, 0xFF404040 );
+        OffsetRect( prcStatus, -2, -1 );
+        pRenderer->DrawText( VS::StatLabels[iStat], Renderer::Small, prcStatus, 0, 0xFFFFFFFF );
+        pRenderer->DrawText( aValue[iStat], Renderer::Small, prcStatus, DT_RIGHT, 0xFFFFFFFF );
     }
 }
 

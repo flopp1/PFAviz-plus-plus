@@ -51,9 +51,10 @@ void FastEngine::SetHidden( const std::vector< uint8_t > &vHiddenSlot, bool bSyn
         return;
     }
     std::vector< uint8_t > vMask = m_vMask;
-    m_Builder = std::thread( [this, vMask]() {
+    int iThreads = m_iThreads;
+    m_Builder = std::thread( [this, vMask, iThreads]() {
         auto p = std::make_shared< VisualStore >();
-        if ( BuildFilteredStore( m_Song, vMask, *p, m_iThreads, &m_bCancelBuild ) )
+        if ( BuildFilteredStore( m_Song, vMask, *p, iThreads, &m_bCancelBuild ) )
         {
             std::lock_guard< std::mutex > lock( m_mxReady );
             m_pReady = p;
@@ -194,6 +195,9 @@ bool FastEngine::Coverage( long long s, long long e, int &a, int &b, int iBottom
     cy = floor( cy + 0.5f );
     // Beta's expression rounded the same way: the row (a whole float, exact well within 2^24)
     float y = iBottom != INT_MIN ? (float)iBottom : floor( m_F.fNotesY + m_F.fNotesCY * ( 1.0f - static_cast< float >( s - m_F.R ) / m_F.llSpan ) + 0.5f );
+    // Clean drawing, as Scene::NoteVertices
+    if ( m_F.uClean & Clean::EdgeRound ) cy = y - floor( m_F.fNotesY + m_F.fNotesCY * ( 1.0f - static_cast< float >( e - m_F.R ) / m_F.llSpan ) + 0.5f );
+    if ( ( m_F.uClean & Clean::MinHeight ) && cy < 1.0f ) cy = 1.0f;
     float fMinY = m_F.fNotesY - 5.0f;
     float fMaxY = m_F.fNotesY + m_F.fNotesCY + 5.0f;
     if ( y > fMaxY )
@@ -223,6 +227,7 @@ void FastEngine::PrepareFrame( const FrameGlobals &g )
     F.llUsPP = std::max( 1LL, static_cast< long long >( g.llTimeSpan / g.fNotesCY + 0.5f ) );   // as Scene::ComputeGlobals
     F.fNotesY = g.fNotesY;
     F.fNotesCY = g.fNotesCY;
+    F.uClean = g.uClean;
     float fDeflate = g.fWhiteCX * 0.15f / 2.0f;
     fDeflate = floor( fDeflate + 0.5f );
     F.fDeflate = std::max( std::min( fDeflate, 3.0f ), 1.0f );
@@ -450,7 +455,11 @@ void FastEngine::SweepKey( const VisualStore &S, const uint64_t *pCpos, int k, c
         int u = MaxUnpainted( iBeta );
         while ( u != INT_MIN && hi > lo )
         {
-            int64_t j = ks.RightmostDur( lo, hi, (uint64_t)F.vG[iBeta - u], m_Times );
+            // Clean drawing: a note at least a row tall reaches the bucket's last row whatever its
+            // length; one whose top is rounded from its end reaches row u when its end maps at or above u
+            bool bAny = ( F.uClean & Clean::MinHeight ) && iBeta - u <= 1;
+            int64_t j = ( F.uClean & Clean::EdgeRound ) ? ks.RightmostEnd( lo, hi, bAny ? 0 : F.URow( u ) )
+                                                        : ks.RightmostDur( lo, hi, bAny ? 0 : (uint64_t)F.vG[iBeta - u], m_Times );
             iQueries++;
             if ( j < 0 ) break;
             ks.Get( (size_t)j, n );
@@ -541,7 +550,7 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
     // The LOD cache for this setting and store (not while hidden notes are skipped one by one: a
     // note it dropped could be visible while the one covering it is hidden)
     m_bLodFrame = false;
-    if ( m_bLod && m_pLod && !m_bSkipHidden )
+    if ( m_bLod && m_pLod && !m_bSkipHidden && !( m_F.uClean & ( Clean::MinHeight | Clean::EdgeRound ) ) )
     {
         LodCache::Setting &ls = m_LodSetting;
         ls.fNotesY = m_F.fNotesY;

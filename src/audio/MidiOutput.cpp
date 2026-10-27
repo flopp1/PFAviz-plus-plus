@@ -51,10 +51,14 @@ namespace
         typedef BOOL ( WINAPI *PFN_BOOL )();
         typedef VOID ( WINAPI *PFN_SEND )( DWORD );
         typedef BOOL ( WINAPI *PFN_VER )( DWORD *, DWORD *, DWORD *, DWORD * );
+        typedef unsigned int ( WINAPI *PFN_VOICES )();
+        typedef float ( WINAPI *PFN_RENDERTIME )();
         HMODULE hMod = nullptr;
         PFN_BOOL pIsAvailable = nullptr, pInit = nullptr, pTerminate = nullptr;
         PFN_SEND pSend = nullptr;
         PFN_VER pVersion = nullptr;
+        PFN_VOICES pActiveVoices = nullptr;
+        PFN_RENDERTIME pRenderingTime = nullptr;
         bool bAvailable = false;
 
         // Loaded once, on first use from any thread (thread-safe static initialisation)
@@ -76,6 +80,8 @@ namespace
                 k.pTerminate = ( PFN_BOOL )GetProcAddress( k.hMod, "TerminateKDMAPIStream" );
                 k.pSend = ( PFN_SEND )GetProcAddress( k.hMod, "SendDirectData" );
                 k.pVersion = ( PFN_VER )GetProcAddress( k.hMod, "ReturnKDMAPIVer" );
+                k.pActiveVoices = ( PFN_VOICES )GetProcAddress( k.hMod, "GetActiveVoices" );
+                k.pRenderingTime = ( PFN_RENDERTIME )GetProcAddress( k.hMod, "GetRenderingTime" );
                 k.bAvailable = k.pInit && k.pTerminate && k.pSend && ( !k.pIsAvailable || k.pIsAvailable() );
             }
             return k;
@@ -114,6 +120,22 @@ namespace
 
 bool MidiOutputs::KdmapiAvailable() { return Kdmapi::Get().bAvailable; }
 std::wstring MidiOutputs::KdmapiName() { return L"KDMAPI (OmniMIDI)"; }
+
+bool MidiOutputs::KdmapiActiveVoices( unsigned &uVoices )
+{
+    Kdmapi &k = Kdmapi::Get();
+    if ( !k.bAvailable || !k.pActiveVoices ) return false;
+    uVoices = k.pActiveVoices();
+    return true;
+}
+
+bool MidiOutputs::KdmapiRenderingTime( float &fPercent )
+{
+    Kdmapi &k = Kdmapi::Get();
+    if ( !k.bAvailable || !k.pRenderingTime ) return false;
+    fPercent = k.pRenderingTime();
+    return true;
+}
 
 std::wstring MidiOutputs::KdmapiStatus()
 {

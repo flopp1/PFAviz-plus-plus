@@ -36,52 +36,166 @@ namespace
         EnableWindow( GetDlgItem( hWnd, IDC_LASTKEY ), bEnable );
     }
 
-    // The stats box lines chosen in the Statistics dialog, saved with the Visual page
-    unsigned g_uStats = 0;
+    // The stats box lines chosen in the Statistics dialog, and their order, saved with the Visual page
+    struct StatsChoice
+    {
+        unsigned uStats = 0;
+        unsigned char aOrder[VisualSettings::StatCount] = {};
+    };
+    StatsChoice g_Stats;
 
     VOID ShowStatsCount( HWND hWnd )
     {
         wchar_t buf[64];
-        int iShown = __builtin_popcount( g_uStats );
+        int iShown = __builtin_popcount( g_Stats.uStats );
         if ( !iShown ) swprintf( buf, 64, L"Hidden (no lines)" );
         else swprintf( buf, 64, L"%d of %d lines", iShown, VisualSettings::StatCount );
         SetDlgItemTextW( hWnd, IDC_STATSCOUNT, buf );
     }
 
-    // Statistics...: a checkbox per stats box line (IDC_STAT_FIRST + VisualSettings::Stat), on the
-    // mask passed in lParam
+    // Statistics...: a checked list of every line in its order (moved with the buttons), and a
+    // three-state box per section that shows or hides all of its lines
+    struct StatsDialog
+    {
+        StatsChoice *pOut;
+        StatsChoice c;
+        bool bFilling = false;
+
+        HWND List( HWND hWnd ) const { return GetDlgItem( hWnd, IDC_STATS_LIST ); }
+
+        // The list from c, with item iSel selected
+        void Fill( HWND hWnd, int iSel )
+        {
+            HWND hList = List( hWnd );
+            bFilling = true;
+            SendMessageW( hList, WM_SETREDRAW, FALSE, 0 );
+            ListView_DeleteAllItems( hList );
+            for ( int i = 0; i < VisualSettings::StatCount; i++ )
+            {
+                int iStat = c.aOrder[i];
+                LVITEMW lvi = {};
+                lvi.mask = LVIF_TEXT | LVIF_PARAM;
+                lvi.iItem = i;
+                lvi.pszText = const_cast< LPWSTR >( VisualSettings::StatNames[iStat] );
+                lvi.lParam = iStat;
+                ListView_InsertItem( hList, &lvi );
+                ListView_SetItemText( hList, i, 1, const_cast< LPWSTR >( VisualSettings::SectionNames[VisualSettings::StatSections[iStat]] ) );
+                ListView_SetCheckState( hList, i, ( c.uStats >> iStat ) & 1 );
+            }
+            if ( iSel >= 0 )
+            {
+                ListView_SetItemState( hList, iSel, LVIS_SELECTED | LVIS_FOCUSED, LVIS_SELECTED | LVIS_FOCUSED );
+                ListView_EnsureVisible( hList, iSel, FALSE );
+            }
+            SendMessageW( hList, WM_SETREDRAW, TRUE, 0 );
+            bFilling = false;
+            ShowSections( hWnd );
+        }
+
+        // Each section's box: checked when all its lines are shown, unchecked when none, else mixed
+        void ShowSections( HWND hWnd ) const
+        {
+            for ( int iSec = 0; iSec < VisualSettings::SectionCount; iSec++ )
+            {
+                int iOn = 0, iAll = 0;
+                for ( int i = 0; i < VisualSettings::StatCount; i++ )
+                    if ( VisualSettings::StatSections[i] == iSec ) { iAll++; iOn += ( c.uStats >> i ) & 1; }
+                CheckDlgButton( hWnd, IDC_STATS_SECTION0 + iSec, iOn == 0 ? BST_UNCHECKED : iOn == iAll ? BST_CHECKED : BST_INDETERMINATE );
+            }
+        }
+
+        void Move( HWND hWnd, int iDelta )
+        {
+            int i = ListView_GetNextItem( List( hWnd ), -1, LVNI_SELECTED );
+            int j = i + iDelta;
+            if ( i < 0 || j < 0 || j >= VisualSettings::StatCount ) return;
+            std::swap( c.aOrder[i], c.aOrder[j] );
+            Fill( hWnd, j );
+        }
+    };
+
     INT_PTR CALLBACK StatsProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
     {
+        StatsDialog *pDlg = reinterpret_cast< StatsDialog * >( GetWindowLongPtrW( hWnd, GWLP_USERDATA ) );
         switch ( msg )
         {
             case WM_INITDIALOG:
             {
-                SetWindowLongPtrW( hWnd, GWLP_USERDATA, lParam );
-                unsigned uStats = *reinterpret_cast< unsigned * >( lParam );
-                for ( int i = 0; i < VisualSettings::StatCount; i++ )
-                    CheckDlgButton( hWnd, IDC_STAT_FIRST + i, ( uStats >> i ) & 1 ? BST_CHECKED : BST_UNCHECKED );
+                pDlg = new StatsDialog;
+                pDlg->pOut = reinterpret_cast< StatsChoice * >( lParam );
+                pDlg->c = *pDlg->pOut;
+                SetWindowLongPtrW( hWnd, GWLP_USERDATA, ( LONG_PTR )pDlg );
+                HWND hList = pDlg->List( hWnd );
+                ListView_SetExtendedListViewStyle( hList, LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT );
+                RECT rc;
+                GetClientRect( hList, &rc );
+                int iScroll = GetSystemMetrics( SM_CXVSCROLL );
+                LVCOLUMNW col = {};
+                col.mask = LVCF_TEXT | LVCF_WIDTH;
+                col.pszText = const_cast< LPWSTR >( L"Line" );
+                col.cx = ( rc.right - iScroll ) * 3 / 5;
+                ListView_InsertColumn( hList, 0, &col );
+                col.pszText = const_cast< LPWSTR >( L"Section" );
+                col.cx = rc.right - iScroll - col.cx;
+                ListView_InsertColumn( hList, 1, &col );
+                pDlg->Fill( hWnd, 0 );
+                return TRUE;
+            }
+            case WM_NOTIFY:
+            {
+                LPNMHDR pnm = ( LPNMHDR )lParam;
+                if ( !pDlg || pnm->idFrom != IDC_STATS_LIST || pnm->code != LVN_ITEMCHANGED || pDlg->bFilling ) break;
+                // A checkbox clicked (its state image changed)
+                LPNMLISTVIEW pnlv = ( LPNMLISTVIEW )lParam;
+                if ( !( pnlv->uChanged & LVIF_STATE ) || ( ( pnlv->uNewState ^ pnlv->uOldState ) & LVIS_STATEIMAGEMASK ) == 0 ) break;
+                int iStat = pDlg->c.aOrder[pnlv->iItem];
+                if ( ListView_GetCheckState( pnm->hwndFrom, pnlv->iItem ) ) pDlg->c.uStats |= 1u << iStat;
+                else pDlg->c.uStats &= ~( 1u << iStat );
+                pDlg->ShowSections( hWnd );
                 return TRUE;
             }
             case WM_COMMAND:
-                switch ( LOWORD( wParam ) )
+            {
+                int iId = LOWORD( wParam );
+                if ( iId >= IDC_STATS_SECTION0 && iId < IDC_STATS_SECTION0 + VisualSettings::SectionCount )
                 {
+                    // All of the section's lines shown: hide them; otherwise show them all
+                    int iSec = iId - IDC_STATS_SECTION0;
+                    bool bShow = IsDlgButtonChecked( hWnd, iId ) != BST_CHECKED;
+                    for ( int i = 0; i < VisualSettings::StatCount; i++ )
+                        if ( VisualSettings::StatSections[i] == iSec )
+                        {
+                            if ( bShow ) pDlg->c.uStats |= 1u << i;
+                            else pDlg->c.uStats &= ~( 1u << i );
+                        }
+                    pDlg->Fill( hWnd, ListView_GetNextItem( pDlg->List( hWnd ), -1, LVNI_SELECTED ) );
+                    return TRUE;
+                }
+                switch ( iId )
+                {
+                    case IDC_STATS_UP: pDlg->Move( hWnd, -1 ); return TRUE;
+                    case IDC_STATS_DOWN: pDlg->Move( hWnd, 1 ); return TRUE;
+                    case IDC_STATS_RESETORDER:
+                        std::copy( VisualSettings::DefaultStatOrder, VisualSettings::DefaultStatOrder + VisualSettings::StatCount, pDlg->c.aOrder );
+                        pDlg->Fill( hWnd, 0 );
+                        return TRUE;
                     case IDC_STATS_ALL: case IDC_STATS_NONE:
-                        for ( int i = 0; i < VisualSettings::StatCount; i++ )
-                            CheckDlgButton( hWnd, IDC_STAT_FIRST + i, LOWORD( wParam ) == IDC_STATS_ALL ? BST_CHECKED : BST_UNCHECKED );
+                        pDlg->c.uStats = iId == IDC_STATS_ALL ? VisualSettings::AllStats : 0;
+                        pDlg->Fill( hWnd, ListView_GetNextItem( pDlg->List( hWnd ), -1, LVNI_SELECTED ) );
                         return TRUE;
                     case IDOK:
-                    {
-                        unsigned &uStats = *reinterpret_cast< unsigned * >( GetWindowLongPtrW( hWnd, GWLP_USERDATA ) );
-                        uStats = 0;
-                        for ( int i = 0; i < VisualSettings::StatCount; i++ )
-                            if ( IsDlgButtonChecked( hWnd, IDC_STAT_FIRST + i ) == BST_CHECKED ) uStats |= 1u << i;
+                        *pDlg->pOut = pDlg->c;
                         EndDialog( hWnd, IDOK );
                         return TRUE;
-                    }
                     case IDCANCEL:
                         EndDialog( hWnd, IDCANCEL );
                         return TRUE;
                 }
+                break;
+            }
+            case WM_DESTROY:
+                delete pDlg;
+                SetWindowLongPtrW( hWnd, GWLP_USERDATA, 0 );
                 break;
         }
         return FALSE;
@@ -90,7 +204,8 @@ namespace
     // Sets the values in the visual settings page. Used at init and when restoring defaults
     VOID SetVisualProc( HWND hWnd, const VisualSettings &cVisual )
     {
-        g_uStats = cVisual.uStats;
+        g_Stats.uStats = cVisual.uStats;
+        std::copy( cVisual.aStatOrder, cVisual.aStatOrder + VisualSettings::StatCount, g_Stats.aOrder );
         ShowStatsCount( hWnd );
         for ( int i = 0; i < 4; i++ )
             CheckDlgButton( hWnd, aKeyModeIds[i], i == cVisual.eKeysShown ? BST_CHECKED : BST_UNCHECKED );
@@ -101,6 +216,11 @@ namespace
         for ( int i = 0; i < IDC_COLOR6 - IDC_COLOR1 + 1; i++ )
             SetWindowLongPtrW( GetDlgItem( hWnd, IDC_COLOR1 + i ), GWLP_USERDATA, cVisual.colors[i] );
         SetWindowLongPtrW( GetDlgItem( hWnd, IDC_BKGCOLOR ), GWLP_USERDATA, cVisual.iBkgColor );
+        SetDlgItemTextW( hWnd, IDC_BKGIMAGE, cVisual.sBkgImage.c_str() );
+        SendDlgItemMessageW( hWnd, IDC_BKGFIT, CB_SETCURSEL, cVisual.iBkgFit, 0 );
+        SetDlgItemInt( hWnd, IDC_BKGOPACITY, (UINT)cVisual.iBkgOpacity, FALSE );
+        for ( int i = 0; i < 3; i++ )
+            CheckDlgButton( hWnd, IDC_CLEAN_MINHEIGHT + i, ( cVisual.uClean >> i ) & 1 ? BST_CHECKED : BST_UNCHECKED );
     }
 
     // The main window's size when the page opened, or when it was last applied (applied again only
@@ -146,6 +266,9 @@ namespace
                     SendDlgItemMessageW( hWnd, IDC_FIRSTKEY, CB_ADDSTRING, 0, ( LPARAM )Notes::NoteName( i ) );
                     SendDlgItemMessageW( hWnd, IDC_LASTKEY, CB_ADDSTRING, 0, ( LPARAM )Notes::NoteName( i ) );
                 }
+                // By Renderer::ImageFit
+                for ( const wchar_t *s : { L"Fill (cropped)", L"Fit (whole image)", L"Stretch", L"Center", L"Tile" } )
+                    SendDlgItemMessageW( hWnd, IDC_BKGFIT, CB_ADDSTRING, 0, ( LPARAM )s );
                 SetVisualProc( hWnd, Config::GetConfig().GetVisualSettings() );
                 SetWindowSizeEdits( hWnd );
                 return TRUE;
@@ -173,11 +296,11 @@ namespace
                         return TRUE;
                     case IDC_STATSBOX:
                     {
-                        unsigned uStats = g_uStats;
+                        StatsChoice c = g_Stats;
                         if ( DialogBoxParamW( GetModuleHandleW( nullptr ), MAKEINTRESOURCEW( IDD_STATS ), GetParent( hWnd ), StatsProc,
-                                              ( LPARAM )&uStats ) == IDOK )
+                                              ( LPARAM )&c ) == IDOK )
                         {
-                            g_uStats = uStats;
+                            g_Stats = c;
                             ShowStatsCount( hWnd );
                         }
                         return TRUE;
@@ -201,6 +324,21 @@ namespace
                         InvalidateRect( hWndBtn, nullptr, FALSE );
                         return TRUE;
                     }
+                    case IDC_BKGBROWSE:
+                    {
+                        wchar_t sFile[1024] = {};
+                        GetDlgItemTextW( hWnd, IDC_BKGIMAGE, sFile, 1024 );
+                        OPENFILENAMEW ofn = {};
+                        ofn.lStructSize = sizeof( ofn );
+                        ofn.hwndOwner = hWnd;
+                        ofn.lpstrFilter = L"Images\0*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff;*.webp;*.heic;*.heif;*.jxr;*.ico\0All files (*.*)\0*.*\0";
+                        ofn.lpstrFile = sFile;
+                        ofn.nMaxFile = 1024;
+                        ofn.lpstrTitle = L"Choose a background image";
+                        ofn.Flags = OFN_EXPLORER | OFN_HIDEREADONLY | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+                        if ( GetOpenFileNameW( &ofn ) ) SetDlgItemTextW( hWnd, IDC_BKGIMAGE, sFile );
+                        return TRUE;
+                    }
                     case IDC_RESTOREDEFAULTS:
                     {
                         VisualSettings cVisual;
@@ -222,6 +360,24 @@ namespace
                     ViewSettings &cView = config.GetViewSettings();
                     bool bAlwaysShowControls = cVisual.bAlwaysShowControls;
                     int iWidth = (int)g_szWindow.cx, iHeight = (int)g_szWindow.cy;
+                    BOOL bOk = FALSE;
+                    UINT uOpacity = GetDlgItemInt( hWnd, IDC_BKGOPACITY, &bOk, FALSE );
+                    if ( !bOk || uOpacity > 100 )
+                    {
+                        MessageBoxW( hWnd, L"Please specify a background image opacity between 0 and 100 percent", L"Error", MB_OK | MB_ICONEXCLAMATION );
+                        PostMessageW( hWnd, WM_NEXTDLGCTL, ( WPARAM )GetDlgItem( hWnd, IDC_BKGOPACITY ), TRUE );
+                        SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_INVALID );
+                        return TRUE;
+                    }
+                    wchar_t sImage[1024] = {};
+                    GetDlgItemTextW( hWnd, IDC_BKGIMAGE, sImage, 1024 );
+                    if ( sImage[0] && GetFileAttributesW( sImage ) == INVALID_FILE_ATTRIBUTES )
+                    {
+                        MessageBoxW( hWnd, L"The background image file was not found. Please choose an existing file, or leave the box empty for no image.", L"Error", MB_OK | MB_ICONEXCLAMATION );
+                        PostMessageW( hWnd, WM_NEXTDLGCTL, ( WPARAM )GetDlgItem( hWnd, IDC_BKGIMAGE ), TRUE );
+                        SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_INVALID );
+                        return TRUE;
+                    }
                     if ( !cView.GetFullScreen() )
                     {
                         SIZE szMax = MainWindowMaxSize();
@@ -234,12 +390,19 @@ namespace
                         if ( IsDlgButtonChecked( hWnd, aKeyModeIds[i] ) == BST_CHECKED )
                             cVisual.eKeysShown = static_cast< VisualSettings::KeysShown >( i );
                     cVisual.bAlwaysShowControls = IsDlgButtonChecked( hWnd, IDC_SHOWCONTROLS ) == BST_CHECKED;
-                    cVisual.uStats = g_uStats;
+                    cVisual.uStats = g_Stats.uStats;
+                    std::copy( g_Stats.aOrder, g_Stats.aOrder + VisualSettings::StatCount, cVisual.aStatOrder );
                     cVisual.iFirstKey = (int)SendDlgItemMessageW( hWnd, IDC_FIRSTKEY, CB_GETCURSEL, 0, 0 );
                     cVisual.iLastKey = (int)SendDlgItemMessageW( hWnd, IDC_LASTKEY, CB_GETCURSEL, 0, 0 );
                     for ( int i = 0; i < IDC_COLOR6 - IDC_COLOR1 + 1; i++ )
                         cVisual.colors[i] = ( unsigned )GetWindowLongPtrW( GetDlgItem( hWnd, IDC_COLOR1 + i ), GWLP_USERDATA );
                     cVisual.iBkgColor = ( unsigned )GetWindowLongPtrW( GetDlgItem( hWnd, IDC_BKGCOLOR ), GWLP_USERDATA );
+                    cVisual.sBkgImage = sImage;
+                    cVisual.iBkgFit = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_BKGFIT, CB_GETCURSEL, 0, 0 ) );
+                    cVisual.iBkgOpacity = (int)uOpacity;
+                    cVisual.uClean = 0;
+                    for ( int i = 0; i < 3; i++ )
+                        if ( IsDlgButtonChecked( hWnd, IDC_CLEAN_MINHEIGHT + i ) == BST_CHECKED ) cVisual.uClean |= 1u << i;
 
                     config.SetVisualSettings( cVisual );
                     if ( cView.GetFullScreen() && bAlwaysShowControls != cVisual.bAlwaysShowControls )
@@ -345,6 +508,8 @@ namespace
                 SetDlgItemTextW( hWnd, IDC_LRARROWS, buf );
                 swprintf( buf, 32, L"%g", cControls.dSpeedUpPct );
                 SetDlgItemTextW( hWnd, IDC_UDARROWS, buf );
+                swprintf( buf, 32, L"%g", cControls.dNSpeedUpPct );
+                SetDlgItemTextW( hWnd, IDC_NSARROWS, buf );
                 CheckDlgButton( hWnd, IDC_STARTPAUSED, cControls.bStartPaused ? BST_CHECKED : BST_UNCHECKED );
                 return TRUE;
             }
@@ -359,6 +524,7 @@ namespace
                     LPNMUPDOWN lpnmud = ( LPNMUPDOWN )lParam;
                     if ( lpnmhdr->idFrom == IDC_LRARROWSSPIN ) StepEdit( GetDlgItem( hWnd, IDC_LRARROWS ), lpnmud->iDelta, 0.1 );
                     else if ( lpnmhdr->idFrom == IDC_UDARROWSSPIN ) StepEdit( GetDlgItem( hWnd, IDC_UDARROWS ), lpnmud->iDelta, 1.0 );
+                    else if ( lpnmhdr->idFrom == IDC_NSARROWSSPIN ) StepEdit( GetDlgItem( hWnd, IDC_NSARROWS ), lpnmud->iDelta, 1.0 );
                     return TRUE;
                 }
                 if ( lpnmhdr->code == PSN_APPLY )
@@ -367,6 +533,7 @@ namespace
                     ControlsSettings cControls = config.GetControlsSettings();
                     if ( !ReadEdit( hWnd, IDC_LRARROWS, cControls.dFwdBackSecs, L"Please specify a numeric value for the left and right arrows" ) ) return TRUE;
                     if ( !ReadEdit( hWnd, IDC_UDARROWS, cControls.dSpeedUpPct, L"Please specify a numeric value for the up and down arrows" ) ) return TRUE;
+                    if ( !ReadEdit( hWnd, IDC_NSARROWS, cControls.dNSpeedUpPct, L"Please specify a numeric value for Shift+up and down" ) ) return TRUE;
                     cControls.bStartPaused = IsDlgButtonChecked( hWnd, IDC_STARTPAUSED ) == BST_CHECKED;
                     config.SetControlsSettings( cControls );
                     SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_NOERROR );
@@ -382,10 +549,20 @@ namespace
     // Performance (new)
     //-------------------------------------------------------------------------
 
-    int MaxThreadChoice()
+    // A thread count edit: 0 is auto (one per logical processor)
+    const int MaxThreads = 256;
+
+    bool ReadThreads( HWND hWnd, int iId, const wchar_t *sWhat, int &iValue )
     {
-        unsigned n = std::thread::hardware_concurrency();
-        return (int)std::max( 64u, n ? n : 4 );
+        BOOL bOk = FALSE;
+        UINT u = GetDlgItemInt( hWnd, iId, &bOk, FALSE );
+        if ( bOk && (int)u <= MaxThreads ) { iValue = (int)u; return true; }
+        wchar_t buf[128];
+        swprintf( buf, 128, L"Please specify %ls between 0 (auto) and %d", sWhat, MaxThreads );
+        MessageBoxW( hWnd, buf, L"Error", MB_OK | MB_ICONEXCLAMATION );
+        PostMessageW( hWnd, WM_NEXTDLGCTL, ( WPARAM )GetDlgItem( hWnd, iId ), TRUE );
+        SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_INVALID );
+        return false;
     }
 
     INT_PTR CALLBACK PerformanceProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
@@ -398,17 +575,14 @@ namespace
                 const PerformanceSettings &cPerf = config.GetPerformanceSettings();
                 const VideoSettings &cVideo = config.GetVideoSettings();
 
-                HWND hWndThreads = GetDlgItem( hWnd, IDC_PERF_THREADS );
-                wchar_t buf[64];
+                wchar_t buf[128];
                 unsigned n = std::thread::hardware_concurrency();
-                swprintf( buf, 64, L"Auto (%u)", n ? n : 4 );
-                SendMessageW( hWndThreads, CB_ADDSTRING, 0, ( LPARAM )buf );
-                for ( int i = 1; i <= MaxThreadChoice(); i++ )
-                {
-                    swprintf( buf, 64, L"%d", i );
-                    SendMessageW( hWndThreads, CB_ADDSTRING, 0, ( LPARAM )buf );
-                }
-                SendMessageW( hWndThreads, CB_SETCURSEL, std::min( cPerf.iWorkerThreads, MaxThreadChoice() ), 0 );
+                SetDlgItemInt( hWnd, IDC_PERF_THREADS, (UINT)cPerf.iWorkerThreads, FALSE );
+                SetDlgItemInt( hWnd, IDC_PERF_PLAYTHREADS, (UINT)cPerf.iPlaybackThreads, FALSE );
+                swprintf( buf, 128, L"(0 = auto: %u) drawing at once, loading next file", n ? n : 4 );
+                SetDlgItemTextW( hWnd, IDC_PERF_THREADSNOTE, buf );
+                swprintf( buf, 128, L"(0 = auto: %u) takes effect at once", n ? n : 4 );
+                SetDlgItemTextW( hWnd, IDC_PERF_PLAYTHREADSNOTE, buf );
 
                 CheckDlgButton( hWnd, IDC_PERF_SKIPPING, cPerf.bVelocitySkip ? BST_CHECKED : BST_UNCHECKED );
                 SendDlgItemMessageW( hWnd, IDC_PERF_MAXLAGSPIN, UDM_SETRANGE32, 1, 10000 );
@@ -449,6 +623,9 @@ namespace
                     VideoSettings cVideo = config.GetVideoSettings();
                     bool bOldKdmapi = cPerf.bPreferKDMAPI;
 
+                    int iThreads = 0, iPlayThreads = 0;
+                    if ( !ReadThreads( hWnd, IDC_PERF_THREADS, L"a thread count for loading and drawing", iThreads ) ) return TRUE;
+                    if ( !ReadThreads( hWnd, IDC_PERF_PLAYTHREADS, L"a thread count for playback decoding", iPlayThreads ) ) return TRUE;
                     BOOL bOk = FALSE;
                     UINT uLag = GetDlgItemInt( hWnd, IDC_PERF_MAXLAG, &bOk, FALSE );
                     if ( !bOk || uLag < 1 || uLag > 10000 )
@@ -483,7 +660,8 @@ namespace
                         return TRUE;
                     }
 
-                    cPerf.iWorkerThreads = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_PERF_THREADS, CB_GETCURSEL, 0, 0 ) );
+                    cPerf.iWorkerThreads = iThreads;
+                    cPerf.iPlaybackThreads = iPlayThreads;
                     cPerf.bVelocitySkip = IsDlgButtonChecked( hWnd, IDC_PERF_SKIPPING ) == BST_CHECKED;
                     cPerf.iSkipLagMs = (int)uLag;
                     cPerf.bCollapseStacks = IsDlgButtonChecked( hWnd, IDC_PERF_COLLAPSE ) == BST_CHECKED;

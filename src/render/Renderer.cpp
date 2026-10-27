@@ -1,10 +1,12 @@
 #include "render/Renderer.h"
 
+#include "render/Image.h"
 #include "render/Text.h"
 
 #include <d3dcompiler.h>
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 namespace
@@ -234,6 +236,7 @@ void Renderer::DestroyDeviceObjects()
     if ( m_pTmplVB ) { m_pTmplVB->Release(); m_pTmplVB = nullptr; }
     if ( m_pTmplIB ) { m_pTmplIB->Release(); m_pTmplIB = nullptr; }
     if ( m_pInstVB ) { m_pInstVB->Release(); m_pInstVB = nullptr; }
+    if ( m_pBkgTex ) { m_pBkgTex->Release(); m_pBkgTex = nullptr; }
     m_bIsDeviceValid = false;
 }
 
@@ -650,5 +653,139 @@ void Renderer::SubmitInstances( const NoteInstance *pInst, size_t iCount )
     m_pDevice->SetStreamSource( 1, nullptr, 0, 0 );
     m_pDevice->SetVertexShader( nullptr );
     m_pDevice->SetPixelShader( nullptr );
+    m_pDevice->SetFVF( SCREEN_VERTEX::FVF );
+}
+
+//-----------------------------------------------------------------------------
+// Background image
+//-----------------------------------------------------------------------------
+
+void Renderer::SetBackgroundImage( std::shared_ptr< const Image > pImage )
+{
+    if ( pImage == m_pBkgImage ) return;
+    if ( m_pBkgTex ) { m_pBkgTex->Release(); m_pBkgTex = nullptr; }
+    m_pBkgImage = std::move( pImage );
+    m_bBkgFailed = false;
+}
+
+int Renderer::MaxTextureSide() const
+{
+    D3DCAPS9 caps;
+    if ( !m_pDevice || FAILED( m_pDevice->GetDeviceCaps( &caps ) ) ) return 4096;
+    return (int)std::max< DWORD >( 256, std::min( caps.MaxTextureWidth, caps.MaxTextureHeight ) );
+}
+
+// The image with its mipmaps (each level a 2 x 2 box average of the one above), so a large image
+// drawn small is smooth. The alpha is stored inverted, for DrawBackgroundImage's alpha stage.
+bool Renderer::CreateBackgroundTexture()
+{
+    const Image &img = *m_pBkgImage;
+    IDirect3DTexture9 *pSys = nullptr;
+    if ( FAILED( m_pDevice->CreateTexture( img.iWidth, img.iHeight, 0, 0, D3DFMT_A8R8G8B8, D3DPOOL_SYSTEMMEM, &pSys, nullptr ) ) ) return false;
+    std::vector< uint32_t > vLevel( img.vPixels );
+    int w = img.iWidth, h = img.iHeight;
+    bool bOk = true;
+    for ( DWORD l = 0; l < pSys->GetLevelCount() && bOk; l++ )
+    {
+        D3DLOCKED_RECT lr;
+        if ( FAILED( pSys->LockRect( l, &lr, nullptr, 0 ) ) ) { bOk = false; break; }
+        for ( int y = 0; y < h; y++ )
+        {
+            uint32_t *pRow = (uint32_t *)( (BYTE *)lr.pBits + (size_t)y * lr.Pitch );
+            for ( int x = 0; x < w; x++ ) pRow[x] = vLevel[(size_t)y * w + x] ^ 0xFF000000u;
+        }
+        pSys->UnlockRect( l );
+        // The next level down
+        int w2 = std::max( 1, w / 2 ), h2 = std::max( 1, h / 2 );
+        std::vector< uint32_t > vNext( (size_t)w2 * h2 );
+        for ( int y = 0; y < h2; y++ )
+            for ( int x = 0; x < w2; x++ )
+            {
+                int x0 = std::min( 2 * x, w - 1 ), x1 = std::min( 2 * x + 1, w - 1 ), y0 = std::min( 2 * y, h - 1 ), y1 = std::min( 2 * y + 1, h - 1 );
+                uint32_t a[4] = { vLevel[(size_t)y0 * w + x0], vLevel[(size_t)y0 * w + x1], vLevel[(size_t)y1 * w + x0], vLevel[(size_t)y1 * w + x1] };
+                uint32_t v = 0;
+                for ( int c = 0; c < 32; c += 8 )
+                    v |= ( ( ( ( a[0] >> c ) & 0xFF ) + ( ( a[1] >> c ) & 0xFF ) + ( ( a[2] >> c ) & 0xFF ) + ( ( a[3] >> c ) & 0xFF ) + 2 ) / 4 ) << c;
+                vNext[(size_t)y * w2 + x] = v;
+            }
+        vLevel.swap( vNext );
+        w = w2;
+        h = h2;
+    }
+    IDirect3DTexture9 *pTex = nullptr;
+    bOk = bOk && SUCCEEDED( m_pDevice->CreateTexture( img.iWidth, img.iHeight, pSys->GetLevelCount(), 0, D3DFMT_A8R8G8B8, D3DPOOL_DEFAULT, &pTex, nullptr ) ) &&
+          SUCCEEDED( m_pDevice->UpdateTexture( pSys, pTex ) );
+    pSys->Release();
+    if ( !bOk ) { if ( pTex ) pTex->Release(); return false; }
+    m_pBkgTex = pTex;
+    return true;
+}
+
+void Renderer::DrawBackgroundImage( float x, float y, float cx, float cy )
+{
+    if ( !m_pBkgImage || m_bBkgFailed || cx <= 0.0f || cy <= 0.0f || m_fBkgOpacity <= 0.0f ) return;
+    if ( !m_pBkgTex && !CreateBackgroundTexture() ) { m_bBkgFailed = true; return; }
+    FlushBuffer();
+
+    // Where it goes and which part of it: u, v in image widths and heights
+    const float iw = (float)m_pBkgImage->iWidth, ih = (float)m_pBkgImage->iHeight;
+    float x0 = x, y0 = y, x1 = x + cx, y1 = y + cy, u0 = 0.0f, v0 = 0.0f, u1 = 1.0f, v1 = 1.0f;
+    switch ( m_eBkgFit )
+    {
+        case FitFill:   // covers the rect, the overflow cut off evenly
+        {
+            float s = std::max( cx / iw, cy / ih ), uw = cx / ( iw * s ), vh = cy / ( ih * s );
+            u0 = ( 1.0f - uw ) / 2.0f; u1 = u0 + uw;
+            v0 = ( 1.0f - vh ) / 2.0f; v1 = v0 + vh;
+            break;
+        }
+        case FitFit:    // all of it, centred (the background colour shows around it)
+        {
+            float s = std::min( cx / iw, cy / ih ), dw = iw * s, dh = ih * s;
+            x0 = x + ( cx - dw ) / 2.0f; x1 = x0 + dw;
+            y0 = y + ( cy - dh ) / 2.0f; y1 = y0 + dh;
+            break;
+        }
+        case FitCenter: // its own size, centred, cut to the rect
+        {
+            float fx = std::floor( x + ( cx - iw ) / 2.0f ), fy = std::floor( y + ( cy - ih ) / 2.0f );
+            x0 = std::max( x, fx ); x1 = std::min( x + cx, fx + iw );
+            y0 = std::max( y, fy ); y1 = std::min( y + cy, fy + ih );
+            if ( x1 <= x0 || y1 <= y0 ) return;
+            u0 = ( x0 - fx ) / iw; u1 = ( x1 - fx ) / iw;
+            v0 = ( y0 - fy ) / ih; v1 = ( y1 - fy ) / ih;
+            break;
+        }
+        case FitTile:   // its own size, repeated from the top left
+            u1 = cx / iw;
+            v1 = cy / ih;
+            break;
+        default:        // FitStretch
+            break;
+    }
+
+    struct TexVertex { float x, y, z, h; D3DCOLOR c; float u, v; };
+    // The diffuse alpha is 1 - opacity: with the image's inverted alpha, D3DTOP_ADDSMOOTH makes
+    // 1 - opacity * image alpha, which the inverted blend (Renderer.h) takes as the image's share
+    D3DCOLOR c = ( (DWORD)std::clamp( (int)( ( 1.0f - m_fBkgOpacity ) * 255.0f + 0.5f ), 0, 255 ) << 24 ) | 0x00FFFFFF;
+    const TexVertex v[4] = {
+        { x0 - 0.5f, y0 - 0.5f, 0.5f, 1.0f, c, u0, v0 },
+        { x1 - 0.5f, y0 - 0.5f, 0.5f, 1.0f, c, u1, v0 },
+        { x0 - 0.5f, y1 - 0.5f, 0.5f, 1.0f, c, u0, v1 },
+        { x1 - 0.5f, y1 - 0.5f, 0.5f, 1.0f, c, u1, v1 },
+    };
+    static const D3DTEXTURESTAGESTATETYPE aStage[] = { D3DTSS_COLOROP, D3DTSS_COLORARG1, D3DTSS_ALPHAOP, D3DTSS_ALPHAARG1, D3DTSS_ALPHAARG2 };
+    static const D3DSAMPLERSTATETYPE aSamp[] = { D3DSAMP_ADDRESSU, D3DSAMP_ADDRESSV, D3DSAMP_MINFILTER, D3DSAMP_MAGFILTER, D3DSAMP_MIPFILTER };
+    DWORD aOldStage[5], aOldSamp[5];
+    for ( int i = 0; i < 5; i++ ) { m_pDevice->GetTextureStageState( 0, aStage[i], &aOldStage[i] ); m_pDevice->GetSamplerState( 0, aSamp[i], &aOldSamp[i] ); }
+    const DWORD dwAddress = m_eBkgFit == FitTile ? D3DTADDRESS_WRAP : D3DTADDRESS_CLAMP;
+    const DWORD aNewStage[5] = { D3DTOP_SELECTARG1, D3DTA_TEXTURE, D3DTOP_ADDSMOOTH, D3DTA_TEXTURE, D3DTA_DIFFUSE };
+    const DWORD aNewSamp[5] = { dwAddress, dwAddress, D3DTEXF_LINEAR, D3DTEXF_LINEAR, D3DTEXF_LINEAR };
+    for ( int i = 0; i < 5; i++ ) { m_pDevice->SetTextureStageState( 0, aStage[i], aNewStage[i] ); m_pDevice->SetSamplerState( 0, aSamp[i], aNewSamp[i] ); }
+    m_pDevice->SetTexture( 0, m_pBkgTex );
+    m_pDevice->SetFVF( D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1 );
+    m_pDevice->DrawPrimitiveUP( D3DPT_TRIANGLESTRIP, 2, v, sizeof( TexVertex ) );
+    m_pDevice->SetTexture( 0, nullptr );
+    for ( int i = 0; i < 5; i++ ) { m_pDevice->SetTextureStageState( 0, aStage[i], aOldStage[i] ); m_pDevice->SetSamplerState( 0, aSamp[i], aOldSamp[i] ); }
     m_pDevice->SetFVF( SCREEN_VERTEX::FVF );
 }

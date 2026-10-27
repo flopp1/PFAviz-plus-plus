@@ -27,6 +27,10 @@ namespace MidiOutputs
     bool KdmapiAvailable();                       // OmniMIDI.dll loads and reports KDMAPI available
     std::wstring KdmapiName();
     std::wstring KdmapiStatus();                  // one line for the Audio tab
+    // The synth's active voices and rendering time (CPU busy, percent): only newer KDMAPI versions have
+    // them (false: this one does not)
+    bool KdmapiActiveVoices( unsigned &uVoices );
+    bool KdmapiRenderingTime( float &fPercent );
     std::unique_ptr< MidiOutput > OpenKdmapi();
     std::unique_ptr< MidiOutput > OpenWinMM( int iDevice );
     // The device chosen in the settings: KDMAPI when preferred and available, else the WinMM device

@@ -36,6 +36,8 @@ VOID SetZoomMove( BOOL bZoomMove );
 VOID SetMute( BOOL bMute );
 VOID SetSpeed( double dSpeed );
 VOID SetNSpeed( double dSpeed );
+// The toolbar's exact speed boxes (the main loop leaves the accelerators to them while one has the focus)
+BOOL IsSpeedEdit( HWND hWnd );
 VOID SetVolume( double dVolume );
 VOID SetPosition( INT iPosition );
 VOID SetMetronome( INT iMetronome );

@@ -9,11 +9,13 @@
 #include <windows.h>
 #include <d3d9.h>
 #include <list>
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
 class TextRenderer;
+struct Image;
 
 class Renderer
 {
@@ -77,6 +79,15 @@ public:
     HRESULT DrawSkew( float x1, float y1, float x2, float y2, float x3, float y3, float x4, float y4,
                       DWORD c1, DWORD c2, DWORD c3, DWORD c4 );
 
+    // The background image (Visual tab): drawn by DrawBackgroundImage into a rect, fitted to it as
+    // eFit says, over what is there at fOpacity (its own transparency too). Kept across device resets.
+    enum ImageFit { FitFill, FitFit, FitStretch, FitCenter, FitTile, FitCount };
+    void SetBackgroundImage( std::shared_ptr< const Image > pImage );   // null: none
+    void SetBackgroundStyle( int eFit, float fOpacity ) { m_eBkgFit = eFit; m_fBkgOpacity = fOpacity; }
+    bool HasBackgroundImage() const { return m_pBkgImage != nullptr; }
+    void DrawBackgroundImage( float x, float y, float cx, float cy );
+    int MaxTextureSide() const;
+
     bool GetLimitFPS() const { return m_bLimitFPS; }
     HRESULT SetLimitFPS( bool bLimitFPS );
     int GetBufferWidth() const { return m_iBufferWidth; }
@@ -99,6 +110,7 @@ private:
     void FlushInstances();
     void SubmitInstances( const NoteInstance *pInst, size_t iCount );
     void CreateInstancing();                    // the shaders and declaration, once per device (if supported)
+    bool CreateBackgroundTexture();
 
     static const UINT VBVertices = 6 * 16384;
     static const UINT IBQuads = 16384;              // 16-bit indices: 65536 vertices per draw
@@ -138,4 +150,11 @@ private:
     UINT m_uInstPos = 0;
     float m_aCols[128][4] = {};
     std::vector< NoteInstance > m_vInst;            // queued instances (as with the other two queues)
+
+    // Background image
+    std::shared_ptr< const Image > m_pBkgImage;
+    IDirect3DTexture9 *m_pBkgTex = nullptr;         // made from it when first drawn (null again after a reset)
+    bool m_bBkgFailed = false;                      // the texture could not be made: not tried again for this image
+    int m_eBkgFit = FitFill;
+    float m_fBkgOpacity = 1.0f;
 };

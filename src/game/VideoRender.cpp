@@ -35,15 +35,16 @@ void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
         return job.Finish( false, buf );
     }
     // Frames in flight between drawing and readback (developer switches: PFAVIZ_CAPTUREDEPTH=n,
-    // PFAVIZ_BGRXPIPE=1 sends BGRX frames for ffmpeg to convert)
+    // PFAVIZ_BGRXPIPE=1 sends BGRX frames for ffmpeg to convert). Codecs that are not 4:2:0 get BGRX.
     int iDepth = getenv( "PFAVIZ_CAPTUREDEPTH" ) ? std::clamp( atoi( getenv( "PFAVIZ_CAPTUREDEPTH" ) ), 1, 8 ) : 3;
     FrameCapture cap;
     std::wstring sError;
-    if ( !cap.Init( r, iW, iH, !getenv( "PFAVIZ_BGRXPIPE" ), iDepth, sError ) ) return job.Finish( false, sError );
+    if ( !cap.Init( r, iW, iH, !getenv( "PFAVIZ_BGRXPIPE" ) && ExportSettings::Is420( job.iCodec ), iDepth, sError ) ) return job.Finish( false, sError );
     job.bYuv = cap.Yuv();
     r.SetInstancing( cPerf.bGpuInstancing );
-    FfmpegPipe pipe;
-    if ( !pipe.Start( job, sError ) ) return job.Finish( false, sError );
+    const VisualSettings &cVisual = Config::GetConfig().GetVisualSettings();
+    r.SetBackgroundImage( m_pBkgImage );
+    r.SetBackgroundStyle( cVisual.iBkgFit, cVisual.iBkgOpacity / 100.0f );
 
     // Its own engine, with the hidden channels and the LOD cache ready before each frame is drawn
     FastEngine engine( *m_pSong, cPerf.iWorkerThreads );
@@ -61,6 +62,11 @@ void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
     auto FrameTime = [&]( long long f ) { return llFirst + (long long)std::llround( f * 1e6 / job.iFPS ); };
     job.llFrames = llFrames;
     job.llSongEnd = llLast;
+    // For the audio: the first note sounds when it reaches the keyboard, at its start time
+    job.dFirstNoteSecs = ( m_pSong->info.llFirstNote - llFirst ) / 1e6;
+    job.dDurationSecs = (double)llFrames / job.iFPS;
+    FfmpegPipe pipe;
+    if ( !pipe.Start( job, sError ) ) return job.Finish( false, sError );
     job.eState = VideoJob::Rendering;
 
     // The stats area as the window shows it (its frame rate line shows the video's)
@@ -167,9 +173,9 @@ void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
     if ( !sError.empty() ) return job.Finish( false, sError );
     if ( !bEncoded )
     {
-        if ( job.iEncoder != ExportSettings::X264 )
+        if ( job.iBackend != ExportSettings::Software )
             sFfmpegError += L"\n\nThe hardware encoders need a graphics card and driver that have them: NVENC on NVIDIA, AMF on AMD, "
-                            L"QSV on Intel. x264 runs on any computer.";
+                            L"Quick Sync on Intel. The software encoders run on any computer.";
         return job.Finish( false, sFfmpegError );
     }
     if ( pipe.Failed() ) return job.Finish( false, L"ffmpeg stopped reading frames." );

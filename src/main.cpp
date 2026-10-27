@@ -173,7 +173,7 @@ int WINAPI wWinMain( HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow )
     {
         HWND hDlg = GetLoadingDialog();
         if ( hDlg && IsDialogMessageW( hDlg, &msg ) ) continue;
-        if ( !TranslateAcceleratorW( g_hWnd, hAccel, &msg ) && !IsDialogMessageW( g_hWnd, &msg ) )
+        if ( ( IsSpeedEdit( GetFocus() ) || !TranslateAcceleratorW( g_hWnd, hAccel, &msg ) ) && !IsDialogMessageW( g_hWnd, &msg ) )
         {
             TranslateMessage( &msg );
             DispatchMessageW( &msg );

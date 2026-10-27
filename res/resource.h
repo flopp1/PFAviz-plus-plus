@@ -26,6 +26,8 @@
 #define IDC_SPEED                       1054
 #define IDC_NSPEED                      1095
 #define IDC_METRONOME                   1037
+#define IDC_SPEEDEDIT                   1102
+#define IDC_NSPEEDEDIT                  1103
 
 #define ID_PLAY_PLAY                    40005
 #define ID_PLAY_SKIPFWD                 40006
@@ -88,6 +90,16 @@
 #define IDC_SHOWALL128KEYS              1065
 #define IDC_KDMAPISTATUS                1066
 #define IDC_PERF_THREADS                1070
+#define IDC_PERF_PLAYTHREADS            1104
+#define IDC_PERF_THREADSNOTE            1105
+#define IDC_PERF_PLAYTHREADSNOTE        1106
+#define IDC_BKGIMAGE                    1107
+#define IDC_BKGBROWSE                   1108
+#define IDC_BKGFIT                      1109
+#define IDC_BKGOPACITY                  1110
+#define IDC_CLEAN_MINHEIGHT             1111     // + the bit of the Clean flag (visual/Scene.h)
+#define IDC_CLEAN_KEEPBOTTOM            1112
+#define IDC_CLEAN_EDGES                 1113
 #define IDC_PERF_LOADSTATS              1071
 #define IDC_PERF_KDMAPI                 1072
 #define IDC_PERF_SKIPPING               1073
@@ -107,6 +119,8 @@
 #define IDC_PERF_MINVEL                 1090
 #define IDC_PERF_INSTANCING             1091
 #define IDC_STARTPAUSED                 1096
+#define IDC_NSARROWS                    1100
+#define IDC_NSARROWSSPIN                1101
 #define IDC_WINWIDTH                    1097
 #define IDC_WINHEIGHT                   1098
 #define IDC_WINSIZEMAX                  1099
@@ -123,9 +137,20 @@
 #define IDC_VID_PRESET                  1308
 #define IDC_VID_STATS                   1309
 #define IDC_VID_ENCODER                 1310
-#define IDC_STAT_FIRST                  1400    // + VisualSettings::Stat, through 1419
+#define IDC_VID_CONTAINER               1311
+#define IDC_VID_CODEC                   1312
+#define IDC_VID_ENCNOTE                 1313
+#define IDC_VID_AUDIO                   1314
+#define IDC_VID_AUDIOBROWSE             1315
+#define IDC_VID_AUDIOALIGN              1316
+#define IDC_VID_AUDIOOFFSET             1317
+#define IDC_STATS_LIST                  1400
+#define IDC_STATS_UP                    1401
+#define IDC_STATS_DOWN                  1402
+#define IDC_STATS_RESETORDER            1403
 #define IDC_STATS_ALL                   1420
 #define IDC_STATS_NONE                  1421
+#define IDC_STATS_SECTION0              1430    // + VisualSettings::StatSection
 #define IDC_VIDP_FILE                   1320
 #define IDC_VIDP_PREVIEW                1321
 #define IDC_VIDP_BAR                    1322

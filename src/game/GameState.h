@@ -15,6 +15,7 @@
 #include "audio/PlaybackEngine.h"
 #include "core/Util.h"
 #include "midi/RefMidi.h"
+#include "render/Image.h"
 #include "render/Renderer.h"
 #include "visual/FastEngine.h"
 #include "visual/Scene.h"
@@ -158,7 +159,8 @@ private:
     // The stats box: its line count (0: not drawn) and its text, with the lines the settings show
     // The stats box for the lines in uStats (VisualSettings::Stat bits)
     static int StatusLines( unsigned uStats );
-    void RenderStatus( Renderer *pRenderer, LPRECT prcPos, long long llTime, double dFPS, unsigned uStats );
+    // llPastEnd: how long the live view has stood at the song's end, so the NPS falls to 0 there too
+    void RenderStatus( Renderer *pRenderer, LPRECT prcPos, long long llTime, double dFPS, unsigned uStats, long long llPastEnd = 0 );
     void RenderMessage( LPRECT prcMsg, const wchar_t *sMsg );
 
     // Song
@@ -168,6 +170,7 @@ private:
 
     // Playback
     long long m_llStartTime, m_llTimeSpan;
+    long long m_llPastEndUs = 0;        // real time spent at the song's end (capped), for the NPS line
     long long m_iStartTick;
     double m_dSpeed;
     bool m_bPaused;
@@ -202,6 +205,8 @@ private:
     long long m_llRenderEnd = 0;
     long long m_llEnvRunUs = 0;         // PFAVIZ_EXIT_AFTER
     PlaybackEngine::Stats m_Stats;
+    int m_iSynthVoices = -1;            // KDMAPI's GetActiveVoices and GetRenderingTime (-1: not available)
+    double m_dSynthCpu = -1.0;
 
     // Audio: the clock drives both the visuals (sampled once per frame) and the playback threads
     PlaybackClock m_Clock;
@@ -212,6 +217,11 @@ private:
     SceneColors m_Colors;
     std::vector< TrackSettings > m_vTrackSettings;
     bool m_bHiddenChanged = false;  // the draw view needs the new hidden channels
+    // The background image, loaded when its file setting changes (shared with the video renderer)
+    std::shared_ptr< const Image > m_pBkgImage;
+    std::wstring m_sBkgImage;
+    bool m_bBkgApplied = false;
+    unsigned m_uVisualGen = 0;          // Config::VisualGen when the file was last looked at
     FrameGlobals m_G;
 
     float m_fZoomX, m_fOffsetX, m_fOffsetY;
