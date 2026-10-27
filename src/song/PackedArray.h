@@ -4,8 +4,27 @@
 #pragma once
 
 #include <cstdint>
+#include <cstring>
 #include <functional>
 #include <vector>
+
+// The w-bit field at bit llBit of a little-endian bit array that has a word of slack after it
+inline uint64_t ReadBitField( const uint64_t *pWords, uint64_t llBit, unsigned w )
+{
+    if ( !w ) return 0;
+    if ( w <= 57 )
+    {
+        // One unaligned load from the field's first byte holds it (the slack keeps it in bounds)
+        uint64_t v;
+        memcpy( &v, (const uint8_t *)pWords + ( llBit >> 3 ), 8 );
+        return ( v >> ( llBit & 7 ) ) & ( ( uint64_t( 1 ) << w ) - 1 );
+    }
+    const uint64_t *q = &pWords[llBit >> 6];
+    unsigned s = llBit & 63;
+    uint64_t v = q[0] >> s;
+    if ( s + w > 64 ) v |= q[1] << ( 64 - s );
+    return w == 64 ? v : v & ( ( uint64_t( 1 ) << w ) - 1 );
+}
 
 class PackedMonotone
 {
@@ -21,11 +40,7 @@ public:
     {
         const Block &k = m_vBlocks[i >> BlockShift];
         unsigned w = (unsigned)( k.llBitWidth & 0xFF );
-        if ( !w ) return k.llBase;
-        uint64_t llBit = ( k.llBitWidth >> 8 ) + ( uint64_t )( i & ( BlockSize - 1 ) ) * w;
-        uint64_t lo = m_vBits[llBit >> 6] >> ( llBit & 63 );
-        if ( ( llBit & 63 ) + w > 64 ) lo |= m_vBits[( llBit >> 6 ) + 1] << ( 64 - ( llBit & 63 ) );
-        return k.llBase + ( w == 64 ? lo : ( lo & ( ( uint64_t( 1 ) << w ) - 1 ) ) );
+        return k.llBase + ReadBitField( m_vBits.data(), ( k.llBitWidth >> 8 ) + ( uint64_t )( i & ( BlockSize - 1 ) ) * w, w );
     }
     // First index with value >= v (n if none)
     size_t LowerBound( uint64_t v ) const;

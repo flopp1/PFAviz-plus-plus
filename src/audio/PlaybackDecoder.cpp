@@ -366,10 +366,13 @@ size_t PlaybackDecoder::Notes( uint32_t uTrack, uint32_t uBase, const uint8_t *p
         rn = n;
         return i;
     }
-    // Offs (NoteOff, or NoteOn with velocity 0). With nothing to drop and no voices to count, all are sent
-    if ( !bCollapse && !bLane && !m_llPending )
+    // Offs (NoteOff, or NoteOn with velocity 0). With nothing to drop and no voices to count, all are
+    // sent. A lane takes this only while nothing can be skipped, and does not count what it sends here
+    // (FinishBatch counts them from its output if it needs them)
+    if ( !bCollapse && !m_llPending && ( !bLane || m_bLaneFast ) )
     {
         SendAll( uBase );
+        if ( bLane ) m_llFastOffs += i;
         rn = n;
         return i;
     }
@@ -539,16 +542,25 @@ bool PlaybackDecoder::PlanBatch( int iLanes, long long llHorizon, uint64_t llMax
 
 void PlaybackDecoder::FillLane( const Params &p, long long llNow, LaneOut &out )
 {
+    // Straight into the output; with collapsing, into a buffer that stays in cache instead (a voice's
+    // velocity is raised where it was written, anywhere in the call's output)
     uint32_t aBuf[8192];
     for ( ;; )
     {
         long long llDue;
-        size_t n = Fill( aBuf, 8192, LLONG_MAX - 1, llNow, p, llDue );
-        if ( n )
+        size_t n0 = out.vMsgs.size(), n;
+        if ( p.bCollapse )
         {
+            n = Fill( aBuf, 8192, LLONG_MAX - 1, llNow, p, llDue );
             out.vMsgs.insert( out.vMsgs.end(), aBuf, aBuf + n );
-            out.vGroups.push_back( { (uint32_t)n, llDue } );
         }
+        else
+        {
+            out.vMsgs.resize( n0 + 8192 );
+            n = Fill( out.vMsgs.data() + n0, 8192, LLONG_MAX - 1, llNow, p, llDue );
+            out.vMsgs.resize( n0 + n );
+        }
+        if ( n ) out.vGroups.push_back( { (uint32_t)n, llDue } );
         if ( m_Cursor.Stopped() || ( !n && llDue == LLONG_MAX ) ) break;
     }
 }
@@ -578,6 +590,9 @@ void PlaybackDecoder::RunLane( const Batch &b, int k, const Params &p, LaneOut &
     m_uCachedTick = SIZE_MAX;
     m_bCollapse = p.bCollapse;
     m_bLane = true;
+    // Offs take the fast path (uncounted) only while nothing can be skipped
+    m_bLaneFast = !( p.bMute || p.bVelocitySkip || p.llMaxSendsPerSec > 0 || p.iMinVelocity > 0 );
+    m_llFastOffs = 0;
     m_bScout = true;                    // counting, with nothing in m_aRem to take out
     m_uWinBin = SIZE_MAX;
     m_dLaneTokens = std::min( b.dTokens, BudgetDepth( p.llMaxSendsPerSec ) );
@@ -604,9 +619,45 @@ void PlaybackDecoder::FinishBatch( const Batch &b, PlaybackDecoder *const *aLane
         vVoiceTick[i] = ks.uVoiceTick;
     }
     // Each later lane owes, per key, the first of the offs it sent, as many as are owed then
-    // (counted here, dropped by the lanes themselves at once)
     std::vector< uint32_t > vQuota( (size_t)iLanes * 2048 );
-    std::vector< char > vDrops( iLanes );
+    std::vector< uint64_t > vLeft( iLanes );   // offs each lane drops
+    // A lane that sent offs on the fast path did not count them. Its quota needs them only up to what
+    // can be owed by then (carried in, plus what the lanes before it left owing), so they are counted
+    // again from its output up to that, until every such key has reached it
+    bool bCount = false;
+    {
+        std::vector< uint64_t > vMax( vOwed );
+        for ( int k = 1; k < iLanes; k++ )
+        {
+            PlaybackDecoder &L = *aLanes[k];
+            uint32_t *pBound = &vQuota[(size_t)k * 2048];
+            for ( int i = 0; i < 2048; i++ )
+            {
+                const KeyState &ks = L.m_aKey[i];
+                if ( L.m_llFastOffs && vMax[i] ) { pBound[i] = (uint32_t)std::min< uint64_t >( vMax[i], UINT32_MAX ); bCount = true; }
+                vMax[i] += ks.uPending + ( ks.uHeld - ks.uVoices );
+            }
+        }
+    }
+    if ( bCount )
+        parallel( [&]( int k ) {
+            PlaybackDecoder &L = *aLanes[k];
+            uint32_t *pBound = &vQuota[(size_t)k * 2048];
+            size_t iKeys = 0;
+            for ( int i = 0; i < 2048; i++ ) iKeys += pBound[i] != 0;
+            if ( !L.m_llFastOffs || !iKeys ) return;
+            for ( KeyState &ks : L.m_aKey ) ks.uSentOffs = 0;
+            for ( uint32_t m : aOut[k].vMsgs )
+            {
+                size_t i = ( ( m & 0x0F ) << 7 ) | ( ( m >> 8 ) & 0x7F );
+                if ( IsOff( m ) && pBound[i] && ++L.m_aKey[i].uSentOffs == pBound[i] )
+                {
+                    pBound[i] = 0;
+                    if ( !--iKeys ) break;
+                }
+            }
+            for ( int i = 0; i < 2048; i++ ) pBound[i] = 0;
+        } );
     // The bucket at the batch's end is the last lane's (with what read anything): earlier lanes'
     // leftovers belong to earlier song time, and spending them later could exceed the budget
     double dTokens = m_dTokens;
@@ -623,14 +674,14 @@ void PlaybackDecoder::FinishBatch( const Batch &b, PlaybackDecoder *const *aLane
                 uint32_t q = (uint32_t)std::min< uint64_t >( vOwed[i], ks.uSentOffs );
                 pQuota[i] = q;
                 vOwed[i] -= q;
-                llDropped += q;
-                vDrops[k] = 1;
+                vLeft[k] += q;
             }
             // What the lane leaves owing and sounding adds to what was carried in
             vOwed[i] += ks.uPending + ( ks.uHeld - ks.uVoices );
             vVoices[i] = std::min< uint64_t >( vVoices[i] + ks.uVoices, 1u << 30 );
             if ( ks.uVoiceTick != SIZE_MAX ) vVoiceTick[i] = ks.uVoiceTick;
         }
+        llDropped += vLeft[k];
         m_Counters.llSent += L.m_Counters.llSent;
         m_Counters.llNoteOns += L.m_Counters.llNoteOns;
         m_Counters.llSkipped += L.m_Counters.llSkipped;
@@ -641,23 +692,36 @@ void PlaybackDecoder::FinishBatch( const Batch &b, PlaybackDecoder *const *aLane
     m_Counters.llSent -= llDropped;
     if ( llDropped )
         parallel( [&]( int k ) {
-            if ( !vDrops[k] ) return;
-            // The lane's first offs of each owing key, in order
+            uint64_t q = vLeft[k];
+            if ( !q ) return;
+            // The lane's first offs of each owing key, in order, dropped here on the lane's thread; once
+            // all are, the rest moves down as it is
             uint32_t *pQuota = &vQuota[(size_t)k * 2048];
             LaneOut &o = aOut[k];
-            size_t r = 0, w = 0, g = 0;
-            for ( auto &grp : o.vGroups )
+            uint32_t *pm = o.vMsgs.data();
+            size_t r = 0, w = 0, g = 0, G = o.vGroups.size(), N = o.vMsgs.size();
+            for ( size_t gi = 0; gi < G; gi++ )
             {
-                size_t w0 = w;
-                for ( uint32_t i = 0; i < grp.first; i++ )
+                const auto grp = o.vGroups[gi];
+                size_t w0 = w, rEnd = r + grp.first;
+                for ( ; r < rEnd && q; r++ )
                 {
-                    uint32_t m = o.vMsgs[r++], s = m & 0xF0;
-                    if ( s == 0x80 || ( s == 0x90 && !( m & 0x7F0000 ) ) )
+                    uint32_t m = pm[r];
+                    if ( IsOff( m ) )
                     {
-                        uint32_t &q = pQuota[( ( m & 0x0F ) << 7 ) | ( ( m >> 8 ) & 0x7F )];
-                        if ( q ) { q--; continue; }
+                        uint32_t &c = pQuota[( ( m & 0x0F ) << 7 ) | ( ( m >> 8 ) & 0x7F )];
+                        if ( c ) { c--; q--; continue; }
                     }
-                    o.vMsgs[w++] = m;
+                    pm[w++] = m;
+                }
+                if ( !q )
+                {
+                    size_t iInGroup = w - w0 + ( rEnd - r );
+                    memmove( pm + w, pm + r, ( N - r ) * sizeof( uint32_t ) );
+                    w += N - r;
+                    if ( iInGroup ) o.vGroups[g++] = { (uint32_t)iInGroup, grp.second };
+                    for ( size_t gj = gi + 1; gj < G; gj++ ) o.vGroups[g++] = o.vGroups[gj];
+                    break;
                 }
                 if ( w > w0 ) o.vGroups[g++] = { (uint32_t)( w - w0 ), grp.second };
             }

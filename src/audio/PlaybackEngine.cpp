@@ -340,6 +340,7 @@ void PlaybackEngine::EnsureLanes( int iLanes )
 void PlaybackEngine::LaneThread( int k, unsigned uSeen )
 {
     SetThreadPriority( GetCurrentThread(), THREAD_PRIORITY_HIGHEST );
+    Parallel::SpreadThread( k );
     std::unique_lock< std::mutex > lock( m_mxLanes );
     for ( ;; )
     {
@@ -370,12 +371,16 @@ void PlaybackEngine::RunOnLanes( int iLanes, const std::function< void( int ) > 
     m_cvLanesDone.wait( lock, [&] { return m_iLanesLeft == 0; } );
 }
 
-// A batch up to 8 ms (x speed) ahead of the clock, about 2 MB of the stream per lane: lane 0 here,
+// A batch up to 16 ms (x speed) ahead of the clock, about 2 MB of the stream per lane: lane 0 here,
 // the others on the helper threads, then stitched into slices (grouped as Fill groups them)
 bool PlaybackEngine::RunBatch( int iLanes, const PlaybackDecoder::Params &p, long long llNow, unsigned uEpoch, HANDLE hTimer )
 {
     PlaybackDecoder::Batch b;
-    long long llHorizon = llNow + std::max< long long >( 2000, (long long)( 8000 * p.dSpeed ) );
+    // Only once the next event is within one thread's horizon (4 ms), and then 16 ms ahead: about 12 ms
+    // of song per batch, so the lanes' work outweighs waking them (a batch on every wait would hold
+    // well under a millisecond)
+    if ( m_Decoder.NextTime( PlaybackDecoder::MetOff ) > llNow + std::max< long long >( 1000, (long long)( 4000 * p.dSpeed ) ) ) return false;
+    long long llHorizon = llNow + std::max< long long >( 4000, (long long)( 16000 * p.dSpeed ) );
     if ( !m_Decoder.PlanBatch( iLanes, llHorizon, (uint64_t)iLanes << 21, llNow, b ) ) return false;
     EnsureLanes( iLanes );
     long long t0 = Timer::NowMicroSecs();

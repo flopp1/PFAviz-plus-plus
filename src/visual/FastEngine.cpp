@@ -624,7 +624,17 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
         long long tK0 = Timer::NowMicroSecs();
         Bounds bd;
         GetBounds( S, k, bd );
-        SweepKey( S, pCpos, k, bd, vTracks, abDegenerate[k], m_aOwners[k], vScratch[t], vQueries[i] );
+        // The key's owners, rows and query count in locals while it is swept: the vectors' headers sit
+        // side by side in arrays, and other threads' keys writing theirs would share cache lines
+        std::vector< Owner > vOwners;
+        std::vector< uint64_t > vRows;
+        vOwners.swap( m_aOwners[k] );
+        vRows.swap( vScratch[t] );
+        size_t iQueries = 0;
+        SweepKey( S, pCpos, k, bd, vTracks, abDegenerate[k], vOwners, vRows, iQueries );
+        vQueries[i] = iQueries;
+        vScratch[t].swap( vRows );
+        m_aOwners[k].swap( vOwners );
         long long tK1 = Timer::NowMicroSecs();
         // The owners' vertices, exactly as DrawNote makes them, minus rects the rasteriser culls
         // anyway (one negative extent: back-facing, R7; or zero area), such as the inner rect of a

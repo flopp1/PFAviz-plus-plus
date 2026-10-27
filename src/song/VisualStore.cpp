@@ -1512,15 +1512,7 @@ private:
         p[0] |= v << s;
         if ( s + w > 64 ) p[1] |= v >> ( 64 - s );
     }
-    uint64_t Read( uint64_t llBit, unsigned w ) const
-    {
-        if ( !w ) return 0;
-        const uint64_t *p = &m_vBits[llBit >> 6];
-        unsigned s = llBit & 63;
-        uint64_t v = p[0] >> s;
-        if ( s + w > 64 ) v |= p[1] << ( 64 - s );
-        return w == 64 ? v : v & ( ( uint64_t( 1 ) << w ) - 1 );
-    }
+    uint64_t Read( uint64_t llBit, unsigned w ) const { return ReadBitField( &m_vBits[0], llBit, w ); }
 
     void FeedBlock( size_t b, unsigned n )
     {

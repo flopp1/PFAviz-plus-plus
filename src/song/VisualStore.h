@@ -177,15 +177,7 @@ private:
     uint64_t BlockMaxEnd( size_t b ) const { return m_vTreeEnd[m_iLeaves + b]; }
     uint32_t BlockMaxDur( size_t b ) const { return m_vTreeDur[m_iLeaves + b]; }
 
-    static uint64_t ReadBits( const uint64_t *pWords, uint64_t llBit, unsigned w )
-    {
-        if ( !w ) return 0;
-        const uint64_t *p = &pWords[llBit >> 6];
-        unsigned s = llBit & 63;
-        uint64_t v = p[0] >> s;
-        if ( s + w > 64 ) v |= p[1] << ( 64 - s );
-        return w == 64 ? v : v & ( ( uint64_t( 1 ) << w ) - 1 );
-    }
+    static uint64_t ReadBits( const uint64_t *pWords, uint64_t llBit, unsigned w ) { return ReadBitField( pWords, llBit, w ); }
     uint64_t Read( uint64_t llBit, unsigned w ) const { return w ? ReadBits( &m_vBits[0], llBit, w ) : 0; }
     int64_t ScanEnd( size_t lo, size_t hi, uint64_t llEndU ) const;
     // First position in [b << BlockShift, hi) with start >= llU, or hi (block b's first note starts before llU)

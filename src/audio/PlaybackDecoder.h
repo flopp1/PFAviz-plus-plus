@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <functional>
 #include <memory>
+#include <utility>
 #include <vector>
 
 #include "song/Song.h"
@@ -89,9 +90,16 @@ public:
         long long llNow = 0;                // the playback time (for the lag)
         double dTokens = 0.0;               // the send budget's tokens at the start
     };
+    // Leaves elements uninitialised on resize, so a lane decodes straight into its output
+    template < class T > struct NoInit : std::allocator< T >
+    {
+        template < class U > struct rebind { using other = NoInit< U >; };
+        template < class U, class... A > void construct( U *p, A &&...a ) { ::new ( (void *)p ) U( std::forward< A >( a )... ); }
+        template < class U > void construct( U *p ) noexcept { ::new ( (void *)p ) U; }
+    };
     struct LaneOut
     {
-        std::vector< uint32_t > vMsgs;
+        std::vector< uint32_t, NoInit< uint32_t > > vMsgs;
         std::vector< std::pair< uint32_t, long long > > vGroups;    // messages and the time they are due, as Fill returns them
         void Clear() { vMsgs.clear(); vGroups.clear(); }
     };
@@ -132,6 +140,8 @@ private:
     long long CurrentTick( long long llTime ) const;
     void SetBeat( long long llBeatTick );
     void FillLane( const Params &p, long long llNow, LaneOut &out );
+    // A NoteOff, or a NoteOn of velocity 0
+    static bool IsOff( uint32_t m ) { return ( ( m & 0xF0 ) == 0x80 ) | ( ( m & 0x7F00F0 ) == 0x90 ); }
     // Fill's decoding of the cursor's events up to the end of tick u, one instance per mode; true when
     // it got there
     template < bool bCollapse, bool bCounting, bool bLane >
@@ -175,7 +185,7 @@ private:
     {
         size_t uVoiceTick = SIZE_MAX, uCursorTick = SIZE_MAX;
         uint32_t uPending = 0, uHeld = 0, uVoices = 0, uVoiceOut = 0, uVoiceCall = 0;
-        uint32_t uSentOffs = 0;         // offs sent (only a lane counts them, for the stitch)
+        uint32_t uSentOffs = 0;         // offs a lane sent, for the stitch (FinishBatch counts them again after any on the fast path)
     };
     KeyState m_aKey[2048];
     uint64_t m_llPending = 0;           // the keys' uPending summed: while 0, an off needs no key state (without collapsing)
@@ -200,6 +210,8 @@ private:
     // A lane of a parallel batch: the budget's cut comes from the bins alone (with the batch's tokens),
     // and the lane's own tokens are what it gains over its stretch of song time
     bool m_bLane = false;
+    bool m_bLaneFast = false;           // a lane's offs may take the fast path (nothing can be skipped)
+    uint64_t m_llFastOffs = 0;          // the offs a lane sent on it (not counted per key)
     double m_dLaneTokens = 0.0;
     double m_dDepth = 0.0;              // the bucket's depth at the last tick
 
