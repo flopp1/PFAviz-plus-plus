@@ -132,6 +132,18 @@ private:
     long long CurrentTick( long long llTime ) const;
     void SetBeat( long long llBeatTick );
     void FillLane( const Params &p, long long llNow, LaneOut &out );
+    // Fill's decoding of the cursor's events up to the end of tick u, one instance per mode; true when
+    // it got there
+    template < bool bCollapse, bool bCounting, bool bLane >
+    bool FillTick( uint32_t *__restrict pOut, size_t iCap, size_t &rn, size_t &rRead, size_t iMaxRead, size_t u, uint32_t uMinVel, const Params &p );
+    // Keys of one note run (one track, channel, status and velocity), so what holds for the whole run
+    // is decided once: up to the key with bit 7 set (the run's last, then bEnd) or iMax keys (each
+    // makes at most one message). Returns the keys taken.
+    template < bool bCollapse, bool bCounting, bool bLane >
+    size_t Notes( uint32_t uTrack, uint32_t uBase, const uint8_t *pk, size_t iMax, bool &bEnd, uint32_t *__restrict pOut, size_t &rn, size_t u,
+                  uint32_t uMinVel, const Params &p );
+    using FillTickFn = bool ( PlaybackDecoder::* )( uint32_t *, size_t, size_t &, size_t &, size_t, size_t, uint32_t, const Params & );
+    static const FillTickFn s_aFillTick[8];
 
     const Song &m_Song;
     const EventStream &m_Stream;
@@ -163,9 +175,10 @@ private:
     {
         size_t uVoiceTick = SIZE_MAX, uCursorTick = SIZE_MAX;
         uint32_t uPending = 0, uHeld = 0, uVoices = 0, uVoiceOut = 0, uVoiceCall = 0;
-        uint32_t uSentOffs = 0;         // offs sent (a lane's, for the stitch)
+        uint32_t uSentOffs = 0;         // offs sent (only a lane counts them, for the stitch)
     };
     KeyState m_aKey[2048];
+    uint64_t m_llPending = 0;           // the keys' uPending summed: while 0, an off needs no key state (without collapsing)
     int m_iSkipVelocity = 0;
     bool m_bCollapse = false;
     uint32_t m_uCall = 1;

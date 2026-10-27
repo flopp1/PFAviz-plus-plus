@@ -19,13 +19,13 @@ public:
     size_t Size() const { return m_n; }
     uint64_t Get( size_t i ) const
     {
-        size_t b = i >> BlockShift;
-        unsigned w = m_vWidth[b];
-        if ( !w ) return m_vBase[b];
-        uint64_t llBit = m_vBitOffset[b] + ( uint64_t )( i & ( BlockSize - 1 ) ) * w;
+        const Block &k = m_vBlocks[i >> BlockShift];
+        unsigned w = (unsigned)( k.llBitWidth & 0xFF );
+        if ( !w ) return k.llBase;
+        uint64_t llBit = ( k.llBitWidth >> 8 ) + ( uint64_t )( i & ( BlockSize - 1 ) ) * w;
         uint64_t lo = m_vBits[llBit >> 6] >> ( llBit & 63 );
         if ( ( llBit & 63 ) + w > 64 ) lo |= m_vBits[( llBit >> 6 ) + 1] << ( 64 - ( llBit & 63 ) );
-        return m_vBase[b] + ( w == 64 ? lo : ( lo & ( ( uint64_t( 1 ) << w ) - 1 ) ) );
+        return k.llBase + ( w == 64 ? lo : ( lo & ( ( uint64_t( 1 ) << w ) - 1 ) ) );
     }
     // First index with value >= v (n if none)
     size_t LowerBound( uint64_t v ) const;
@@ -36,7 +36,12 @@ public:
     size_t MemoryBytes() const;
 
 private:
+    // Per block, in one record so a lookup reads one cache line besides the bits: the base, and the
+    // block's first bit << 8 | the width
+    struct Block { uint64_t llBase, llBitWidth; };
     size_t m_n = 0;
-    std::vector< uint64_t > m_vBase, m_vBitOffset, m_vBits;
-    std::vector< uint8_t > m_vWidth;
+    std::vector< Block > m_vBlocks;
+    std::vector< uint64_t > m_vBits;
+    // The first index in block b's range with value >= v (bStrict: > v), or the block's end
+    size_t BoundInBlock( size_t b, uint64_t v, bool bStrict ) const;
 };

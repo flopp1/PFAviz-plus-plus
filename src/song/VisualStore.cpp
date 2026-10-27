@@ -103,11 +103,11 @@ void SetLzCacheBytes( size_t iBytes )
     g_iLzCacheBytes = std::max< size_t >( iBytes, 16u << 20 );
 }
 
-KeyStore::LzNote KeyStore::LzGet( size_t i ) const
+template < class F >
+auto KeyStore::LzWith( uint64_t g, F &&fn ) const
 {
     LzCache &c = *m_pLzCache;
     while ( c.lock.test_and_set( std::memory_order_acquire ) ) YieldProcessor();
-    uint64_t g = i >> GroupShift;
     size_t e = c.iLast;
     if ( c.v[e].llGroup != g )
     {
@@ -125,9 +125,14 @@ KeyStore::LzNote KeyStore::LzGet( size_t i ) const
         c.iLast = e;
     }
     c.v[e].llUse = ++c.llClock;
-    LzNote v = c.v[e].p[i & ( ( size_t( 1 ) << GroupShift ) - 1 )];
+    auto r = fn( (const LzNote *)c.v[e].p.get() );
     c.lock.clear( std::memory_order_release );
-    return v;
+    return r;
+}
+
+KeyStore::LzNote KeyStore::LzGet( size_t i ) const
+{
+    return LzWith( i >> GroupShift, [&]( const LzNote *p ) { return p[i & ( ( size_t( 1 ) << GroupShift ) - 1 )]; } );
 }
 
 void KeyStore::LzDecode( uint64_t g, LzNote *pOut, std::vector< uint8_t > &vRaw ) const
@@ -361,13 +366,90 @@ size_t KeyStore::LowerBoundStart( uint64_t llU ) const
         if ( BlockStartBase( mid ) < llU ) lo = mid + 1; else hi = mid;
     }
     if ( lo == 0 ) return 0;
-    size_t i0 = ( lo - 1 ) << BlockShift, i1 = std::min( m_n, lo << BlockShift );
-    while ( i0 < i1 )
+    return BlockLowerBound( lo - 1, llU, std::min( m_n, lo << BlockShift ) );
+}
+
+size_t KeyStore::LowerBoundStartBelow( uint64_t llU, size_t hi ) const
+{
+    hi = std::min( hi, m_n );
+    if ( !hi ) return 0;
+    size_t b = ( hi - 1 ) >> BlockShift;
+    if ( BlockStartBase( b ) >= llU )
     {
-        size_t mid = ( i0 + i1 ) / 2;
-        if ( StartU( mid ) < llU ) i0 = mid + 1; else i1 = mid;
+        // Back from hi's block, a block, then twice as far each time, to one that starts before llU
+        size_t lo, step = 1;
+        for ( ;; )
+        {
+            if ( b < step )
+            {
+                if ( BlockStartBase( 0 ) >= llU ) return 0;
+                lo = 0;
+                break;
+            }
+            lo = b - step;
+            if ( BlockStartBase( lo ) < llU ) break;
+            b = lo;
+            step *= 2;
+        }
+        // BlockStartBase( lo ) < llU <= BlockStartBase( b ): the last block starting before llU
+        while ( b - lo > 1 )
+        {
+            size_t mid = ( lo + b ) / 2;
+            if ( BlockStartBase( mid ) < llU ) lo = mid; else b = mid;
+        }
+        b = lo;
+        hi = ( b + 1 ) << BlockShift;
     }
-    return i0;
+    return BlockLowerBound( b, llU, hi );
+}
+
+// The answer is usually a few notes below hi (a frame's bucket), whose cache lines were just read: a
+// step back from hi, then twice as far each time, to a note before llU, then a branch-free search
+// between (the comparisons are not predictable), the answer staying in [base, base + m]
+size_t KeyStore::BlockLowerBound( size_t b, uint64_t llU, size_t hi ) const
+{
+    size_t i0 = b << BlockShift, n = hi - i0;
+    if ( m_bLz )
+        return LzWith( i0 >> GroupShift, [&]( const LzNote *p ) {
+            const LzNote *q = p + ( i0 & ( ( size_t( 1 ) << GroupShift ) - 1 ) );
+            // q[0] starts before llU; the answer is in (lo, top]
+            size_t top = n, lo = 0, step = 1;
+            while ( top > step )
+            {
+                size_t k = top - step;
+                if ( q[k].llStartU < llU ) { lo = k; break; }
+                top = k;
+                step *= 2;
+            }
+            const LzNote *a = q + lo + 1, *base = a;
+            size_t m = top - lo - 1;
+            if ( !m ) return i0 + lo + 1;
+            while ( m > 1 )
+            {
+                size_t half = m / 2;
+                base = base[half].llStartU < llU ? base + half : base;
+                m -= half;
+            }
+            return i0 + lo + 1 + (size_t)( base - a ) + ( base->llStartU < llU );
+        } );
+    // The same over the packed records
+    size_t top = n, lo = 0, step = 1;
+    while ( top > step )
+    {
+        size_t k = top - step;
+        if ( StartU( i0 + k ) < llU ) { lo = k; break; }
+        top = k;
+        step *= 2;
+    }
+    size_t base = i0 + lo + 1, m = top - lo - 1;
+    if ( !m ) return base;
+    while ( m > 1 )
+    {
+        size_t half = m / 2;
+        base = StartU( base + half ) < llU ? base + half : base;
+        m -= half;
+    }
+    return base + ( StartU( base ) < llU );
 }
 
 size_t KeyStore::LowerBoundOrder( uint64_t llU, uint64_t llOrder ) const
@@ -382,9 +464,17 @@ size_t KeyStore::LowerBoundOrder( uint64_t llU, uint64_t llOrder ) const
     return i;
 }
 
+// [lo, hi) lies in one block (so in one LZ group)
 int64_t KeyStore::ScanEnd( size_t lo, size_t hi, uint64_t llEndU ) const
 {
     if ( lo >= hi || BlockMaxEnd( lo >> BlockShift ) < llEndU ) return -1;
+    if ( m_bLz )
+        return LzWith( lo >> GroupShift, [&]( const LzNote *p ) -> int64_t {
+            const LzNote *q = p - ( ( lo >> GroupShift ) << GroupShift );
+            for ( size_t i = hi; i-- > lo; )
+                if ( q[i].llEndU >= llEndU ) return (int64_t)i;
+            return -1;
+        } );
     for ( size_t i = hi; i-- > lo; )
         if ( EndU( i ) >= llEndU ) return (int64_t)i;
     return -1;
@@ -393,6 +483,35 @@ int64_t KeyStore::ScanEnd( size_t lo, size_t hi, uint64_t llEndU ) const
 int64_t KeyStore::ScanDur( size_t lo, size_t hi, uint64_t llDurUs, const PackedMonotone &times ) const
 {
     if ( lo >= hi || BlockMaxDur( lo >> BlockShift ) < std::min< uint64_t >( llDurUs, UINT32_MAX ) ) return -1;
+    if ( m_bLz )
+        return LzWith( lo >> GroupShift, [&]( const LzNote *p ) -> int64_t {
+            const LzNote *q = p - ( ( lo >> GroupShift ) << GroupShift );
+            // Notes of a block often share start and end ticks: each time is looked up once in a row
+            uint64_t llS = UINT64_MAX, llE = UINT64_MAX, tS = 0, tE = 0;
+            for ( size_t i = hi; i-- > lo; )
+            {
+                if ( q[i].llStartU != llS ) { llS = q[i].llStartU; tS = times.Get( llS ); }
+                if ( q[i].llEndU != llE ) { llE = q[i].llEndU; tE = times.Get( llE ); }
+                if ( tE - tS >= llDurUs ) return (int64_t)i;
+            }
+            return -1;
+        } );
+    if ( m_bCompact )
+    {
+        // Only the start and the duration of each record
+        const CBlock &c = m_vCBlocks[lo >> BlockShift];
+        unsigned uRec = c.wStart + c.wPal + c.wRank + c.wDur, uDurAt = c.wStart + c.wPal + c.wRank;
+        uint64_t llLastS = UINT64_MAX, llLastE = UINT64_MAX, tS = 0, tE = 0;
+        for ( size_t i = hi; i-- > lo; )
+        {
+            uint64_t llBit = c.llBit + ( uint64_t )( i & ( BlockSize - 1 ) ) * uRec;
+            uint64_t llS = c.llStartBase + Read( llBit, c.wStart ), llE = llS + Read( llBit + uDurAt, c.wDur );
+            if ( llS != llLastS ) { llLastS = llS; tS = times.Get( llS ); }
+            if ( llE != llLastE ) { llLastE = llE; tE = times.Get( llE ); }
+            if ( tE - tS >= llDurUs ) return (int64_t)i;
+        }
+        return -1;
+    }
     NoteView n;
     for ( size_t i = hi; i-- > lo; )
     {

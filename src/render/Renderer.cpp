@@ -215,7 +215,8 @@ HRESULT Renderer::RestoreDeviceObjects()
     m_pIB->Unlock();
     m_uVBPos = 0;
     m_vVerts.clear();
-    m_vQuads.clear();
+    m_pQuadMap = nullptr;
+    m_uMapUsed = 0;
     m_vInst.clear();
     CreateInstancing();
     m_pText->OnResetDevice();
@@ -227,6 +228,7 @@ void Renderer::DestroyDeviceObjects()
 {
     if ( m_pReadback ) { m_pReadback->Release(); m_pReadback = nullptr; }
     if ( m_pText ) m_pText->OnLostDevice();
+    if ( m_pQuadMap ) { m_pVB->Unlock(); m_pQuadMap = nullptr; m_uMapUsed = 0; }
     if ( m_pVB ) { m_pVB->Release(); m_pVB = nullptr; }
     if ( m_pIB ) { m_pIB->Release(); m_pIB = nullptr; }
     if ( m_pTmplVB ) { m_pTmplVB->Release(); m_pTmplVB = nullptr; }
@@ -410,8 +412,21 @@ void Renderer::DrawQuads( const SCREEN_VERTEX *pVerts, size_t iQuads )
     FlushInstances();
     if ( iQuads < 1024 )
     {
-        m_vQuads.insert( m_vQuads.end(), pVerts, pVerts + iQuads * 4 );
-        if ( m_vQuads.size() >= IBQuads * 4 ) FlushQuads();
+        UINT uCount = (UINT)iQuads * 4;
+        if ( m_pQuadMap && m_uMapUsed + uCount > m_uMapCap ) FlushQuads();
+        if ( !m_pQuadMap )
+        {
+            // The rest of the buffer, up to what one draw can index (discarded only when this does not fit)
+            DWORD dwLock = D3DLOCK_NOOVERWRITE;
+            if ( m_uVBPos + uCount > VBVertices ) { m_uVBPos = 0; dwLock = D3DLOCK_DISCARD; }
+            m_uMapCap = std::min( VBVertices - m_uVBPos, IBQuads * 4 );
+            void *pData = nullptr;
+            if ( FAILED( m_pVB->Lock( m_uVBPos * sizeof( SCREEN_VERTEX ), m_uMapCap * sizeof( SCREEN_VERTEX ), &pData, dwLock ) ) ) return;
+            m_pQuadMap = (SCREEN_VERTEX *)pData;
+            m_uMapUsed = 0;
+        }
+        memcpy( m_pQuadMap + m_uMapUsed, pVerts, uCount * sizeof( SCREEN_VERTEX ) );
+        m_uMapUsed += uCount;
         return;
     }
     // Large batches go straight to the vertex buffer, after what is queued (same order)
@@ -422,9 +437,16 @@ void Renderer::DrawQuads( const SCREEN_VERTEX *pVerts, size_t iQuads )
 void Renderer::FlushQuads()
 {
     FlushInstances();
-    if ( m_vQuads.empty() ) return;
-    if ( m_pVB && m_pIB ) SubmitQuads( m_vQuads.data(), m_vQuads.size() / 4 );
-    m_vQuads.clear();
+    if ( !m_pQuadMap ) return;
+    m_pVB->Unlock();
+    m_pQuadMap = nullptr;
+    if ( !m_uMapUsed ) return;
+    m_pDevice->SetStreamSource( 0, m_pVB, 0, sizeof( SCREEN_VERTEX ) );
+    m_pDevice->SetIndices( m_pIB );
+    m_pDevice->SetFVF( SCREEN_VERTEX::FVF );
+    m_pDevice->DrawIndexedPrimitive( D3DPT_TRIANGLELIST, (INT)m_uVBPos, 0, m_uMapUsed, 0, m_uMapUsed / 2 );
+    m_uVBPos += m_uMapUsed;
+    m_uMapUsed = 0;
 }
 
 void Renderer::SubmitQuads( const SCREEN_VERTEX *pVerts, size_t iQuads )
@@ -566,7 +588,7 @@ void Renderer::SetNoteColumns( const float ( *aCols )[4] )
 void Renderer::DrawNoteInstances( const NoteInstance *pInst, size_t iCount )
 {
     if ( !iCount ) return;
-    if ( !m_vVerts.empty() || !m_vQuads.empty() ) FlushBuffer();
+    if ( !m_vVerts.empty() || m_pQuadMap ) FlushBuffer();
     if ( iCount < 1024 )
     {
         m_vInst.insert( m_vInst.end(), pInst, pInst + iCount );

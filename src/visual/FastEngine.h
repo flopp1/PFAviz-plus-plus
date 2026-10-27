@@ -114,7 +114,9 @@ private:
     void PrepareFrame( const FrameGlobals &g );
     int Beta( long long d ) const;
     int Height( long long D ) const;
-    bool Coverage( long long s, long long e, int &a, int &b ) const;
+    // iBottom: Beta( s - R ) when the caller knows it (the bucket's row), which is the rounded y it
+    // would compute (INT_MIN: computed)
+    bool Coverage( long long s, long long e, int &a, int &b, int iBottom = INT_MIN ) const;
     void SweepKey( const VisualStore &S, const uint64_t *pCpos, int k, const Bounds &bd, const std::vector< TrackSettings > &vTracks, bool bDegenerate,
                    std::vector< Owner > &vOwners, std::vector< uint64_t > &vRows, size_t &iQueries ) const;
     void ComputeJumpCutoff();

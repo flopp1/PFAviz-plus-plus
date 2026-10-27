@@ -15,49 +15,63 @@ void PackedMonotone::Build( size_t n, const std::function< uint64_t( size_t ) > 
 {
     m_n = n;
     size_t iBlocks = ( n + BlockSize - 1 ) / BlockSize;
-    m_vBase.assign( iBlocks, 0 );
-    m_vWidth.assign( iBlocks, 0 );
-    m_vBitOffset.assign( iBlocks + 1, 0 );
+    std::vector< uint64_t > vBase( iBlocks, 0 ), vBitOffset( iBlocks + 1, 0 );
+    std::vector< uint8_t > vWidth( iBlocks, 0 );
 
     Parallel::For( iThreads, iBlocks, [&]( size_t b, int ) {
         size_t i0 = b * BlockSize, i1 = std::min( n, i0 + BlockSize );
         uint64_t llBase = get( i0 ), llLast = get( i1 - 1 );
-        m_vBase[b] = llBase;
-        m_vWidth[b] = (uint8_t)BitsFor( llLast - llBase );
+        vBase[b] = llBase;
+        vWidth[b] = (uint8_t)BitsFor( llLast - llBase );
     } );
     for ( size_t b = 0; b < iBlocks; b++ )
     {
         size_t iCount = std::min( n - b * BlockSize, BlockSize );
-        m_vBitOffset[b + 1] = m_vBitOffset[b] + (uint64_t)m_vWidth[b] * iCount;
+        vBitOffset[b + 1] = vBitOffset[b] + (uint64_t)vWidth[b] * iCount;
     }
-    m_vBits.assign( ( m_vBitOffset[iBlocks] + 63 ) / 64 + 1, 0 );
+    m_vBits.assign( ( vBitOffset[iBlocks] + 63 ) / 64 + 1, 0 );
 
     // Neighbouring blocks can share a 64-bit word at their edges, so bits are OR-ed in atomically
     Parallel::For( iThreads, iBlocks, [&]( size_t b, int ) {
-        unsigned w = m_vWidth[b];
+        unsigned w = vWidth[b];
         if ( !w ) return;
         size_t i0 = b * BlockSize, i1 = std::min( n, i0 + BlockSize );
-        uint64_t llBit = m_vBitOffset[b];
+        uint64_t llBit = vBitOffset[b];
         for ( size_t i = i0; i < i1; i++, llBit += w )
         {
-            uint64_t v = get( i ) - m_vBase[b];
+            uint64_t v = get( i ) - vBase[b];
             uint64_t *pWord = &m_vBits[llBit >> 6];
             unsigned s = llBit & 63;
             __atomic_fetch_or( pWord, v << s, __ATOMIC_RELAXED );
             if ( s + w > 64 ) __atomic_fetch_or( pWord + 1, v >> ( 64 - s ), __ATOMIC_RELAXED );
         }
     } );
+    m_vBlocks.resize( iBlocks );
+    for ( size_t b = 0; b < iBlocks; b++ ) m_vBlocks[b] = { vBase[b], vBitOffset[b] << 8 | vWidth[b] };
 }
 
-size_t PackedMonotone::LowerBound( uint64_t v ) const
+size_t PackedMonotone::BoundInBlock( size_t b, uint64_t v, bool bStrict ) const
 {
-    size_t lo = 0, hi = m_n;
+    size_t lo = b << BlockShift, hi = std::min( m_n, lo + BlockSize );
     while ( lo < hi )
     {
         size_t mid = lo + ( hi - lo ) / 2;
-        if ( Get( mid ) < v ) lo = mid + 1; else hi = mid;
+        uint64_t x = Get( mid );
+        if ( bStrict ? x <= v : x < v ) lo = mid + 1; else hi = mid;
     }
     return lo;
+}
+
+// The blocks' bases first (one record each), then the one block that can hold the answer
+size_t PackedMonotone::LowerBound( uint64_t v ) const
+{
+    size_t lo = 0, hi = m_vBlocks.size();
+    while ( lo < hi )
+    {
+        size_t mid = lo + ( hi - lo ) / 2;
+        if ( m_vBlocks[mid].llBase < v ) lo = mid + 1; else hi = mid;
+    }
+    return lo ? BoundInBlock( lo - 1, v, false ) : 0;
 }
 
 size_t PackedMonotone::LowerBoundFrom( uint64_t v, size_t iHint ) const
@@ -102,16 +116,16 @@ size_t PackedMonotone::LowerBoundFrom( uint64_t v, size_t iHint ) const
 
 size_t PackedMonotone::UpperBound( uint64_t v ) const
 {
-    size_t lo = 0, hi = m_n;
+    size_t lo = 0, hi = m_vBlocks.size();
     while ( lo < hi )
     {
         size_t mid = lo + ( hi - lo ) / 2;
-        if ( Get( mid ) <= v ) lo = mid + 1; else hi = mid;
+        if ( m_vBlocks[mid].llBase <= v ) lo = mid + 1; else hi = mid;
     }
-    return lo;
+    return lo ? BoundInBlock( lo - 1, v, true ) : 0;
 }
 
 size_t PackedMonotone::MemoryBytes() const
 {
-    return m_vBase.size() * 8 + m_vBitOffset.size() * 8 + m_vBits.size() * 8 + m_vWidth.size();
+    return m_vBlocks.size() * sizeof( Block ) + m_vBits.size() * 8;
 }

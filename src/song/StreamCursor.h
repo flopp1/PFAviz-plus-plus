@@ -94,6 +94,102 @@ public:
         }
     }
 
+    // Next's work for a stretch of events in one loop, with the reader's state in locals: on to tick
+    // uEnd (or the end, or the stop), handing each note run's keys over as they can be read and every
+    // other event as a message.
+    //   onRun( uTrack, uBase, pk, iAvail, bEnd, bStop ) -> keys taken: uBase is the run's message
+    //     without the key; its keys are at pk (iAvail readable now, the run ending at the first with
+    //     bit 7 set). It sets bEnd when the last key it took ended the run, and bStop to stop after it.
+    //   onMsg( uTrack, uMsg ) -> false to stop after it.
+    // Returns true when it reached uEnd (or the end, or the stop), false when a callback stopped it.
+    template < class FRun, class FMsg >
+    bool Scan( size_t uEnd, FRun &&onRun, FMsg &&onMsg )
+    {
+        static const uint8_t aStatus[8] = { 0x90, 0x80, 0x90, 0xA0, 0xB0, 0xC0, 0xD0, 0xE0 };
+        StreamBytes &r = m_bytes;
+        const uint8_t *p = r.p;
+        size_t u = m_u, U = m_p->UniqueTicks();
+        int64_t llPrev = m_llPrev;
+        uint32_t uTrack = m_uTrack, uRunBase = m_uRunBase;
+        bool bInGroup = m_bInGroup, bInRun = m_bInRun, bLastRun = m_bLastRun, bLastGroup = m_bLastGroup;
+        bool bReached = false;
+        // Groups, their runs, and a run's keys, each in a loop of its own, so a group costs no state tests
+        // between its parts; 16 bytes are readable at p at every step that reads (StreamBytes::Need)
+        for ( ;; )
+        {
+            if ( !bInGroup )
+            {
+                if ( u >= U || u >= uEnd ) { bReached = true; break; }
+                if ( __builtin_expect( r.end - p < 16, 0 ) ) { r.p = p; r.Refill(); p = r.p; }
+                if ( __builtin_expect( m_bStop, 0 ) )
+                {
+                    r.p = p;
+                    if ( u >= m_uStopTick || r.Pos() >= m_llStopRaw ) { m_bStopped = true; bReached = true; break; }
+                }
+                uint64_t hdr = EventStream::ReadVar( p );
+                uTrack = (uint32_t)( llPrev + 1 + (int64_t)( hdr >> 1 ) );
+                bLastGroup = hdr & 1;
+                bInGroup = true;
+            }
+            for ( ;; )
+            {
+                if ( !bInRun )
+                {
+                    if ( __builtin_expect( r.end - p < 16, 0 ) ) { r.p = p; r.Refill(); p = r.p; }
+                    unsigned h = *p++;
+                    unsigned op = h >> 5;
+                    unsigned uStatus = aStatus[op] | ( h & 0x0F );
+                    bLastRun = ( h & 0x10 ) != 0;
+                    if ( op > 2 )
+                    {
+                        unsigned d1 = *p++;
+                        unsigned d2 = ( op == 5 || op == 6 ) ? 0 : *p++;
+                        bool bGo = onMsg( uTrack, uStatus | ( d1 << 8 ) | ( d2 << 16 ) );
+                        if ( bLastRun ) bInGroup = false;
+                        if ( !bGo ) goto done;
+                        if ( bLastRun ) break;
+                        continue;
+                    }
+                    unsigned d2 = op == 2 ? 0 : *p++;
+                    uRunBase = uStatus | ( d2 << 16 );
+                    bInRun = true;
+                }
+                bool bEnd = false, bStop = false;
+                for ( ;; )
+                {
+                    if ( __builtin_expect( r.end - p < 16, 0 ) ) { r.p = p; r.Refill(); p = r.p; }
+                    p += onRun( uTrack, uRunBase, p, (size_t)( r.end - p ), bEnd, bStop );
+                    if ( bEnd ) break;
+                    if ( bStop ) goto done;
+                }
+                bInRun = false;
+                if ( bLastRun ) bInGroup = false;
+                if ( bStop ) goto done;
+                if ( bLastRun ) break;
+            }
+            // The group ended
+            if ( bLastGroup ) { u++; llPrev = -1; }
+            else llPrev = uTrack;
+        }
+    done:
+        // A group that ended where a callback stopped moves the tick on as EndGroup does
+        if ( !bInGroup && !bReached )
+        {
+            if ( bLastGroup ) { u++; llPrev = -1; }
+            else llPrev = uTrack;
+        }
+        r.p = p;
+        m_u = u;
+        m_llPrev = llPrev;
+        m_uTrack = uTrack;
+        m_uRunBase = uRunBase;
+        m_bInGroup = bInGroup;
+        m_bInRun = bInRun;
+        m_bLastRun = bLastRun;
+        m_bLastGroup = bLastGroup;
+        return bReached;
+    }
+
     // Offset in the raw stream of the next byte to read (at a group's start between groups)
     uint64_t RawPos() const { return m_bytes.Pos(); }
 

@@ -118,7 +118,10 @@ private:
     bool m_bLimitFPS = true;
     int m_iBufferWidth = 0, m_iBufferHeight = 0;
     std::vector< SCREEN_VERTEX > m_vVerts;
-    std::vector< SCREEN_VERTEX > m_vQuads;          // queued quads (at most one of the two queues holds anything)
+    // Queued quads, copied straight into a locked run of the vertex buffer from m_uVBPos and drawn in one
+    // call when flushed (at most one of this and m_vVerts holds anything)
+    SCREEN_VERTEX *m_pQuadMap = nullptr;
+    UINT m_uMapUsed = 0, m_uMapCap = 0;
     TextRenderer *m_pText = nullptr;
     bool m_bOffscreen = false;
     int m_iOffscreenW = 0, m_iOffscreenH = 0;

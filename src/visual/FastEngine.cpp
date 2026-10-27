@@ -188,12 +188,12 @@ int FastEngine::Height( long long D ) const
 }
 
 // Pixel rows [a, b) the outer rect of a note covers, after the original clipping
-bool FastEngine::Coverage( long long s, long long e, int &a, int &b ) const
+bool FastEngine::Coverage( long long s, long long e, int &a, int &b, int iBottom ) const
 {
-    float y = m_F.fNotesY + m_F.fNotesCY * ( 1.0f - static_cast< float >( s - m_F.R ) / m_F.llSpan );
     float cy = m_F.fNotesCY * ( static_cast< float >( e - s ) / m_F.llSpan );
     cy = floor( cy + 0.5f );
-    y = floor( y + 0.5f );
+    // Beta's expression rounded the same way: the row (a whole float, exact well within 2^24)
+    float y = iBottom != INT_MIN ? (float)iBottom : floor( m_F.fNotesY + m_F.fNotesCY * ( 1.0f - static_cast< float >( s - m_F.R ) / m_F.llSpan ) + 0.5f );
     float fMinY = m_F.fNotesY - 5.0f;
     float fMaxY = m_F.fNotesY + m_F.fNotesCY + 5.0f;
     if ( y > fMaxY )
@@ -318,9 +318,13 @@ void FastEngine::SweepKey( const VisualStore &S, const uint64_t *pCpos, int k, c
     const Frame &F = m_F;
     int iRows = F.iRowHi - F.iRowLo;
     if ( iRows <= 0 ) return;
-    size_t iWords = ( iRows + 63 ) / 64;
-    vRows.assign( iWords, ~0ull );
-    if ( iRows & 63 ) vRows.back() = ( 1ull << ( iRows & 63 ) ) - 1;
+    // A bit per unpainted row, then a bit per row word that has any (so the highest is found in a step
+    // or two however much below it is painted)
+    size_t iWords = ( iRows + 63 ) / 64, iSum = ( iWords + 63 ) / 64;
+    vRows.assign( iWords + iSum, ~0ull );
+    uint64_t *pRows = vRows.data(), *pSum = pRows + iWords;
+    if ( iRows & 63 ) pRows[iWords - 1] = ( 1ull << ( iRows & 63 ) ) - 1;
+    if ( iWords & 63 ) pSum[iSum - 1] = ( 1ull << ( iWords & 63 ) ) - 1;
 
     // Highest (largest) unpainted row below iLimit
     auto MaxUnpainted = [&]( int iLimit ) -> int {
@@ -328,21 +332,35 @@ void FastEngine::SweepKey( const VisualStore &S, const uint64_t *pCpos, int k, c
         if ( lim <= 0 ) return INT_MIN;
         int w = ( lim - 1 ) >> 6;
         int nb = lim - 64 * w;
-        uint64_t mask = nb >= 64 ? ~0ull : ( 1ull << nb ) - 1;
-        for ( ; w >= 0; w--, mask = ~0ull )
+        uint64_t v = pRows[w] & ( nb >= 64 ? ~0ull : ( 1ull << nb ) - 1 );
+        if ( v ) return F.iRowLo + 64 * w + 63 - __builtin_clzll( v );
+        // The highest word below w with any
+        if ( --w < 0 ) return INT_MIN;
+        int s = w >> 6;
+        uint64_t m = pSum[s] & ( ( w & 63 ) == 63 ? ~0ull : ( 2ull << ( w & 63 ) ) - 1 );
+        while ( !m )
         {
-            uint64_t v = vRows[w] & mask;
-            if ( v ) return F.iRowLo + 64 * w + 63 - __builtin_clzll( v );
+            if ( --s < 0 ) return INT_MIN;
+            m = pSum[s];
         }
-        return INT_MIN;
+        w = s * 64 + 63 - __builtin_clzll( m );
+        return F.iRowLo + 64 * w + 63 - __builtin_clzll( pRows[w] );
     };
-    // Marks the rows a note covers as painted, and returns it as an owner drawn over the span of the
-    // rows that were still unpainted (empty span: owns nothing). Drawing only that span is exact:
-    // a row in it that the note does not own is owned by a note drawn later, which covers it again.
-    auto Paint = [&]( uint64_t llPos, long long s, long long e, uint32_t uSlot ) -> Owner {
-        Owner o = { llPos, s, e, uSlot, INT_MAX, INT_MIN, false };
+    // Marks the rows a note covers as painted, and adds it as an owner drawn over the span of the rows
+    // that were still unpainted (empty span: owns nothing). Drawing only that span is exact: a row in
+    // it that the note does not own is owned by a note drawn later, which covers it again. The owner is
+    // written in place, field by field (a copy of one built apart stalls on store forwarding).
+    auto Paint = [&]( uint64_t llPos, long long s, long long e, uint32_t uSlot, int iBottom ) -> Owner & {
+        Owner &o = vOwners.emplace_back();
+        o.llPos = llPos;
+        o.llStart = s;
+        o.llEnd = e;
+        o.uSlot = uSlot;
+        o.iRowA = INT_MAX;
+        o.iRowB = INT_MIN;
+        o.bShort = false;
         int a, b;
-        if ( !Coverage( s, e, a, b ) ) return o;
+        if ( !Coverage( s, e, a, b, iBottom ) ) return o;
         // [a, b) is the clipped outer rect (b - a its height cy), which the inner rect insets by
         // fDeflate on each side: nothing of it is drawn when cy <= 2 * fDeflate
         o.bShort = (float)( b - a ) <= F.fDeflate * 2.0f;
@@ -353,11 +371,11 @@ void FastEngine::SweepKey( const VisualStore &S, const uint64_t *pCpos, int k, c
             int w = r >> 6, r1 = std::min( b, ( w + 1 ) * 64 );
             int n0 = r & 63, n1 = r1 - w * 64;
             uint64_t mask = ( n1 >= 64 ? ~0ull : ( 1ull << n1 ) - 1 ) & ~( ( 1ull << n0 ) - 1 );
-            if ( uint64_t v = vRows[w] & mask )
+            if ( uint64_t v = pRows[w] & mask )
             {
                 o.iRowA = std::min( o.iRowA, F.iRowLo + 64 * w + __builtin_ctzll( v ) );
                 o.iRowB = std::max( o.iRowB, F.iRowLo + 64 * w + 64 - __builtin_clzll( v ) );
-                vRows[w] &= ~mask;
+                if ( !( pRows[w] &= ~mask ) ) pSum[w >> 6] &= ~( 1ull << ( w & 63 ) );
             }
             r = r1;
         }
@@ -368,10 +386,14 @@ void FastEngine::SweepKey( const VisualStore &S, const uint64_t *pCpos, int k, c
     // composited row cover nothing; within a bucket the bottom is fixed, so reaching row u is
     // exactly "duration >= G[bottom - u]".
     size_t hi = std::min( bd.iE, ks.LowerBoundStart( F.URow( F.iRowLo ) ) );
+    int iBeta = F.iRowLo;
     while ( hi > 0 )
     {
+        // The bucket of the last note left: Beta of its start time, which is the first row whose first
+        // tick it starts at or after (URow is Theta's ticks, and Theta inverts Beta); the buckets only go down
         size_t i = hi - 1;
-        int iBeta = Beta( Time( ks.StartU( i ) ) - F.R );
+        uint64_t llS = ks.StartU( i );
+        while ( iBeta < F.iRowHi && F.URow( iBeta ) > llS ) iBeta++;
         if ( iBeta >= F.iRowHi ) break;
         // From here down, from the LOD cache when every start below this bucket's top is built and
         // before Ehw (so no note the cache dropped could be drawn while the one covering it is not):
@@ -382,7 +404,7 @@ void FastEngine::SweepKey( const VisualStore &S, const uint64_t *pCpos, int k, c
         if ( m_bLodFrame && tB <= m_llEndHW && m_LodView.Covers( tLow, tB ) )
         {
             iQueries += size_t( 1 ) << 40;     // counted apart: LOD sweeps in the high bits
-            int iB = INT_MIN, u = INT_MIN;
+            int iB = iBeta, u = INT_MIN;
             long long tA = LLONG_MAX;
             bool bDone = false;
             for ( long long t = tB - 1; !bDone; )
@@ -395,7 +417,9 @@ void FastEngine::SweepKey( const VisualStore &S, const uint64_t *pCpos, int k, c
                     long long llS = pSeg->Start( e );
                     if ( llS < tA )
                     {
-                        iB = Beta( llS - F.R );
+                        // Its bucket, Beta( llS - R ): the first row whose Theta it reaches (from the
+                        // last bucket's, as the starts only go down; the first is at or below iBeta)
+                        while ( iB < F.iRowHi && F.Theta( iB ) > llS - F.R ) iB++;
                         if ( iB >= F.iRowHi ) { bDone = true; break; }
                         tA = F.R + F.Theta( iB );
                         u = MaxUnpainted( iB );
@@ -410,7 +434,7 @@ void FastEngine::SweepKey( const VisualStore &S, const uint64_t *pCpos, int k, c
                     else if ( e.Weird() ) { ks.Get( pos, n ); bVisible = Visible( S, pCpos, k, pos, n, bd ); }
                     else bVisible = !( pos < bd.iJ && pos < pCpos[k] ) && llE > bd.llEth;
                     if ( !bVisible ) continue;
-                    vOwners.push_back( Paint( pos, llS, llE, e.uSlot ) );
+                    Paint( pos, llS, llE, e.uSlot, iB );
                     u = MaxUnpainted( iB );
                 }
                 long long llSegStart = pSeg->llIndex * m_LodView.llSegUs;
@@ -422,7 +446,7 @@ void FastEngine::SweepKey( const VisualStore &S, const uint64_t *pCpos, int k, c
             break;
         }
 
-        size_t lo = ks.LowerBoundStart( F.URow( iBeta ) );
+        size_t lo = ks.LowerBoundStartBelow( F.URow( iBeta ), hi );
         int u = MaxUnpainted( iBeta );
         while ( u != INT_MIN && hi > lo )
         {
@@ -433,7 +457,7 @@ void FastEngine::SweepKey( const VisualStore &S, const uint64_t *pCpos, int k, c
             bool bVisible = (size_t)j >= bd.iB || Visible( S, pCpos, k, (size_t)j, n, bd );
             if ( bVisible && !Hidden( n.uSlot ) )
             {
-                vOwners.push_back( Paint( (uint64_t)j, Time( n.llStartU ), Time( n.llEndU ), n.uSlot ) );
+                Paint( (uint64_t)j, Time( n.llStartU ), Time( n.llEndU ), n.uSlot, iBeta );
                 u = MaxUnpainted( iBeta );
             }
             hi = (size_t)j;
@@ -462,8 +486,8 @@ void FastEngine::SweepKey( const VisualStore &S, const uint64_t *pCpos, int k, c
         bool bVisible = (size_t)j >= bd.iB ? !n.bUnpaired : Visible( S, pCpos, k, (size_t)j, n, bd );
         if ( bVisible && !Hidden( n.uSlot ) )
         {
-            Owner o = Paint( (uint64_t)j, Time( n.llStartU ), Time( n.llEndU ), n.uSlot );
-            if ( o.iRowA < o.iRowB ) vOwners.push_back( o );
+            const Owner &o = Paint( (uint64_t)j, Time( n.llStartU ), Time( n.llEndU ), n.uSlot, INT_MIN );
+            if ( !( o.iRowA < o.iRowB ) ) vOwners.pop_back();
         }
         hi = (size_t)j;
     }

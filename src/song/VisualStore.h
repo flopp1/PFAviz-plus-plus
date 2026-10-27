@@ -79,6 +79,8 @@ public:
     uint64_t EndU( size_t i ) const;
 
     size_t LowerBoundStart( uint64_t llU ) const;               // first position with start >= llU
+    // The same when it is known to be below hi (at most hi): searched from hi back, for answers near it
+    size_t LowerBoundStartBelow( uint64_t llU, size_t hi ) const;
     size_t LowerBoundOrder( uint64_t llU, uint64_t llOrder ) const; // first position with (start, OrderKey) >= given
     // Rightmost position in [lo, hi) with end tick >= llEndU, or -1
     int64_t RightmostEnd( size_t lo, size_t hi, uint64_t llEndU ) const;
@@ -156,6 +158,10 @@ private:
     static const unsigned GroupShift = 11;
     struct LzGroup { uint64_t llOffset; uint32_t uSize, uRaw; uint64_t llStartBase; };
     LzNote LzGet( size_t i ) const;
+    // fn( pNotes ) on group g decoded in the key's cache (its notes from position g << GroupShift), under
+    // the cache's lock: a scan of many of a group's notes for one lookup
+    template < class F >
+    auto LzWith( uint64_t g, F &&fn ) const;
     // Decodes group g into pOut (its notes, up to 1 << GroupShift), with vRaw as scratch
     void LzDecode( uint64_t g, LzNote *pOut, std::vector< uint8_t > &vRaw ) const;
     size_t LzCacheBytes() const;                            // decoded groups held now
@@ -182,6 +188,8 @@ private:
     }
     uint64_t Read( uint64_t llBit, unsigned w ) const { return w ? ReadBits( &m_vBits[0], llBit, w ) : 0; }
     int64_t ScanEnd( size_t lo, size_t hi, uint64_t llEndU ) const;
+    // First position in [b << BlockShift, hi) with start >= llU, or hi (block b's first note starts before llU)
+    size_t BlockLowerBound( size_t b, uint64_t llU, size_t hi ) const;
     int64_t ScanDur( size_t lo, size_t hi, uint64_t llDurUs, const PackedMonotone &times ) const;
     int64_t TreeEnd( size_t node, size_t nl, size_t nr, size_t a, size_t b, uint64_t x ) const;
     int64_t TreeDur( size_t node, size_t nl, size_t nr, size_t a, size_t b, uint32_t x ) const;
