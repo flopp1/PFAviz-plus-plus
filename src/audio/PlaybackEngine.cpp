@@ -454,7 +454,7 @@ void PlaybackEngine::SenderThread()
         {
             if ( m_pOut ) m_pOut->AllNotesOff();
             m_pOut.reset();
-            m_pOut = MidiOutputs::OpenConfigured();
+            m_pOut = MidiOutputs::OpenConfigured( m_pSong->bTuning31 );
             if ( m_pOut ) m_pOut->SetVolume( 1.0 );
             {
                 std::lock_guard< std::mutex > lock( m_mxName );

@@ -651,6 +651,7 @@ namespace
             pHdr = pData + 8;
         }
         auto song = std::make_unique< Song >();
+        song->bTuning31 = prog.bTuning31;
         RefMidiInfo &info = song->info;
         info.iFormatType = (int)BE( pHdr, 2 );
         info.iDivision = (int)BE( pHdr + 4, 2 );

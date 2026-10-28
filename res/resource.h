@@ -106,6 +106,7 @@
 #define IDC_NSPEEDLABEL                 1117
 #define IDC_PERF_LOADSTATS              1071
 #define IDC_PERF_KDMAPI                 1072
+#define IDC_PERF_TUNING31               1118
 #define IDC_PERF_SKIPPING               1073
 #define IDC_PERF_MAXLAG                 1074
 #define IDC_PERF_MAXLAGSPIN             1075
