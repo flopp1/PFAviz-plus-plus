@@ -116,6 +116,7 @@ namespace
     };
 
     std::atomic< bool > g_bKdmapiLong{ false };
+    std::atomic< size_t > g_iKdmapiLongBytes{ 65535 };
 
     class KdmapiOutput : public MidiOutput
     {
@@ -145,17 +146,22 @@ namespace
                 for ( size_t i = 0; i < n; i++ ) pSend( pMsgs[i] );
                 return;
             }
+            // The size, as set now (a smaller one sends what is gathered first)
+            size_t iMax = g_iKdmapiLongBytes.load( std::memory_order_relaxed );
+            if ( m_iLong > iMax ) Flush();
+            if ( m_vLong.size() < iMax ) m_vLong.resize( iMax );
+            uint8_t *pLong = m_vLong.data();
             for ( size_t i = 0; i < n; i++ )
             {
                 uint32_t m = pMsgs[i];
                 unsigned st = m & 0xFF;
                 if ( st < 0x80 || st >= 0xF0 ) { Flush(); pSend( m ); continue; }
                 bool bTwo = ( st & 0xE0 ) == 0xC0;  // program change and channel pressure: one data byte
-                if ( m_iLong + ( bTwo ? 2 : 3 ) > LongBytes ) Flush();
+                if ( m_iLong + ( bTwo ? 2 : 3 ) > iMax ) Flush();
                 if ( m_bLongFailed ) { pSend( m ); continue; }
-                if ( st != m_uRun ) { m_aLong[m_iLong++] = (uint8_t)st; m_uRun = st; }
-                m_aLong[m_iLong++] = (uint8_t)( ( m >> 8 ) & 0x7F );
-                if ( !bTwo ) m_aLong[m_iLong++] = (uint8_t)( ( m >> 16 ) & 0x7F );
+                if ( st != m_uRun ) { pLong[m_iLong++] = (uint8_t)st; m_uRun = st; }
+                pLong[m_iLong++] = (uint8_t)( ( m >> 8 ) & 0x7F );
+                if ( !bTwo ) pLong[m_iLong++] = (uint8_t)( ( m >> 16 ) & 0x7F );
             }
         }
         void Flush() override
@@ -183,11 +189,10 @@ namespace
         }
 
     private:
-        static const size_t LongBytes = 65535;  // a legacy synth's limit; players send at most this
         Kdmapi::PFN_SEND m_pSend = nullptr;
         bool m_bOpen = false;
         bool m_bLongFailed = false;             // a long message failed or never completed: short sends from then on
-        uint8_t m_aLong[LongBytes];
+        std::vector< uint8_t > m_vLong;         // the long message being gathered (as large as the size set)
         size_t m_iLong = 0;                     // bytes gathered
         unsigned m_uRun = 0;                    // the running status in them
 
@@ -196,7 +201,7 @@ namespace
             Kdmapi &k = Kdmapi::Get();
             if ( !k.pLong || !k.pPrepare || !k.pUnprepare ) { m_bLongFailed = true; return false; }
             MIDIHDR hdr = {};
-            hdr.lpData = (LPSTR)m_aLong;
+            hdr.lpData = (LPSTR)m_vLong.data();
             hdr.dwBufferLength = hdr.dwBytesRecorded = (DWORD)len;
             if ( k.pPrepare( &hdr, sizeof( hdr ) ) != MMSYSERR_NOERROR ) { m_bLongFailed = true; return false; }
             bool bSent = k.pLong( &hdr, sizeof( hdr ) ) == MMSYSERR_NOERROR;
@@ -265,7 +270,11 @@ namespace
 }
 
 bool MidiOutputs::KdmapiAvailable() { return Kdmapi::Get().bAvailable; }
-void MidiOutputs::SetKdmapiLongSends( bool bOn ) { g_bKdmapiLong.store( bOn, std::memory_order_relaxed ); }
+void MidiOutputs::SetKdmapiLongSends( bool bOn, int iMaxBytes )
+{
+    g_iKdmapiLongBytes.store( (size_t)std::max( 3, iMaxBytes ), std::memory_order_relaxed );
+    g_bKdmapiLong.store( bOn, std::memory_order_relaxed );
+}
 
 std::wstring MidiOutputs::KdmapiName() { return L"KDMAPI (OmniMIDI)"; }
 

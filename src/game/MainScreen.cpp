@@ -98,7 +98,7 @@ GameState::GameError MainScreen::Init()
         m_pPlayback->SetSendLimits( cPerf.bCollapseStacks, cPerf.bSendLimit ? cPerf.iMaxSendsPerSec : 0 );
         m_pPlayback->SetMinVelocity( cPerf.bVelocityFloor ? cPerf.iMinVelocity : 0 );
         m_pPlayback->SetTuning( cPerf.bTuning31, cPerf.bTuning31PitchBend );
-        MidiOutputs::SetKdmapiLongSends( cPerf.bKdmapiLongSends );
+        MidiOutputs::SetKdmapiLongSends( cPerf.bKdmapiLongSends, cPerf.iKdmapiLongBytes );
         m_pPlayback->SetMute( m_bMute );
         m_pPlayback->SetMetronome( cPlayback.GetMetronome() );
         m_Clock.SetSpeed( cPlayback.GetSpeed() );
@@ -398,9 +398,6 @@ GameState::GameError MainScreen::Logic()
     if ( !m_bBkgApplied || config.VisualGen() != m_uVisualGen )
     {
         m_uVisualGen = config.VisualGen();
-        // Colors by key: key k takes palette colour k % the count (applied at once, unlike the channels')
-        m_bColorByKey = cVisual.bColorByKey;
-        for ( int k = 0; k < 256 && m_bColorByKey; k++ ) m_aKeyColors[k].SetColor( cVisual.colors[k % std::max( 1, cVisual.iColorCount )] );
         std::wstring sBkgImage = config.GetBkgImage();
         bBkgChanged |= sBkgImage != m_sBkgImage;
         m_sBkgImage.swap( sBkgImage );
@@ -439,7 +436,7 @@ GameState::GameError MainScreen::Logic()
         m_pPlayback->SetMaxThreads( cPerf.iPlaybackThreads );
         // 31-EDO changed: the output reopens in the new mode, and playback seeks to where it is so the
         // new output gets the controllers there
-        MidiOutputs::SetKdmapiLongSends( cPerf.bKdmapiLongSends );
+        MidiOutputs::SetKdmapiLongSends( cPerf.bKdmapiLongSends, cPerf.iKdmapiLongBytes );
         if ( m_pPlayback->SetTuning( cPerf.bTuning31, cPerf.bTuning31PitchBend ) )
             m_pPlayback->Seek( m_llStartTime, m_llStartTime, m_llStartTime );
     }
@@ -620,7 +617,6 @@ GameState::GameError MainScreen::Render()
     Scene::DrawBackground( m_pRenderer, m_G, m_Colors );
     m_pMeter->DrawMeasureLines( m_pRenderer, m_G, m_Colors, m_iStartTick );
     long long tB = Timer::NowMicroSecs();
-    m_pEngine->SetKeyColors( m_bColorByKey ? m_aKeyColors : nullptr );
     m_pEngine->DrawNotes( m_pRenderer, m_G, m_vTrackSettings );
     long long tC = Timer::NowMicroSecs();
     if ( m_bShowKB )
@@ -628,7 +624,8 @@ GameState::GameError MainScreen::Render()
         int aSlot[256];
         m_pEngine->GetKeySlots( aSlot );
         const ChannelSettings *pKeyColor[256];
-        for ( int i = 0; i < 256; i++ ) pKeyColor[i] = KeyColor( i, aSlot[i] );
+        for ( int i = 0; i < 256; i++ )
+            pKeyColor[i] = aSlot[i] < 0 ? nullptr : &m_vTrackSettings[aSlot[i] >> 4].aChannels[aSlot[i] & 15];
         Scene::DrawKeys( m_pRenderer, m_G, m_Colors, pKeyColor );
     }
     Scene::DrawBorder( m_pRenderer, m_G, m_Colors );

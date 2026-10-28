@@ -58,7 +58,6 @@ struct VisualSettings
     unsigned uClean;            // Clean flags (visual/Scene.h): the original's rounding quirks left out
     bool bHideLines;            // no key dividers or measure lines over the background
     bool bHideSpeedBoxes;       // the toolbar as the original's: sliders only, without the exact speed boxes
-    bool bColorByKey;           // notes take their key's color: key k gets colors[k % iColorCount] (not their channel's)
     bool bLoopColors;           // the track colors repeat (channel n gets colors[n % iColorCount]); off: random after them
 };
 
@@ -139,6 +138,8 @@ struct PerformanceSettings
     bool bTuning31;
     bool bTuning31PitchBend;
     bool bKdmapiLongSends;      // KDMAPI: batches go out as long messages of raw MIDI bytes (off: one call an event)
+    int iKdmapiLongBytes;       // the most bytes in one (LongBytesMin to LongBytesMax)
+    static const int LongBytesMin = 16, LongBytesMax = 16 << 20;
     bool bVelocitySkip;         // skip quiet note-ons while the output lags (off: every event is sent)
     int iSkipLagMs;             // the lag above which velocity skipping starts
     bool bVelocityFloor;        // always skip note-ons quieter than iMinVelocity

@@ -244,8 +244,6 @@ namespace
         CheckDlgButton( hWnd, IDC_BKGON, cVisual.bBkgImage ? BST_CHECKED : BST_UNCHECKED );
         CheckDlgButton( hWnd, IDC_HIDELINES, cVisual.bHideLines ? BST_CHECKED : BST_UNCHECKED );
         CheckDlgButton( hWnd, IDC_LOOPCOLORS, cVisual.bLoopColors ? BST_CHECKED : BST_UNCHECKED );
-        CheckDlgButton( hWnd, IDC_COLORBYKEY, cVisual.bColorByKey ? BST_CHECKED : BST_UNCHECKED );
-        EnableWindow( GetDlgItem( hWnd, IDC_LOOPCOLORS ), !cVisual.bColorByKey );
         CheckDlgButton( hWnd, IDC_HIDESPEEDBOXES, cVisual.bHideSpeedBoxes ? BST_CHECKED : BST_UNCHECKED );
         SetDlgItemTextW( hWnd, IDC_BKGIMAGE, cVisual.sBkgImage.c_str() );
         SendDlgItemMessageW( hWnd, IDC_BKGFIT, CB_SETCURSEL, cVisual.iBkgFit, 0 );
@@ -356,9 +354,6 @@ namespace
                         }
                         return TRUE;
                     }
-                    case IDC_COLORBYKEY:     // (looping is for colouring by channel)
-                        EnableWindow( GetDlgItem( hWnd, IDC_LOOPCOLORS ), IsDlgButtonChecked( hWnd, IDC_COLORBYKEY ) != BST_CHECKED );
-                        return TRUE;
                     case IDC_COLORCOUNT:
                         if ( HIWORD( wParam ) == EN_CHANGE ) InvalidateRect( GetDlgItem( hWnd, IDC_PALETTE ), nullptr, FALSE );
                         return TRUE;
@@ -492,7 +487,6 @@ namespace
                     cVisual.iBkgOpacity = std::min( 100, (int)uOpacity );
                     cVisual.bHideLines = IsDlgButtonChecked( hWnd, IDC_HIDELINES ) == BST_CHECKED;
                     cVisual.bLoopColors = IsDlgButtonChecked( hWnd, IDC_LOOPCOLORS ) == BST_CHECKED;
-                    cVisual.bColorByKey = IsDlgButtonChecked( hWnd, IDC_COLORBYKEY ) == BST_CHECKED;
                     bool bOldHideBoxes = cVisual.bHideSpeedBoxes;
                     cVisual.bHideSpeedBoxes = IsDlgButtonChecked( hWnd, IDC_HIDESPEEDBOXES ) == BST_CHECKED;
                     cVisual.iBkgFit = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_BKGFIT, CB_GETCURSEL, 0, 0 ) );
@@ -695,6 +689,7 @@ namespace
                 EnableWindow( GetDlgItem( hWnd, IDC_PERF_TUNING31BEND ), cPerf.bTuning31 );
                 CheckDlgButton( hWnd, IDC_PERF_KDMAPI, cPerf.bPreferKDMAPI ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_PERF_LONGSENDS, cPerf.bKdmapiLongSends ? BST_CHECKED : BST_UNCHECKED );
+                SetDlgItemInt( hWnd, IDC_PERF_LONGBYTES, (UINT)cPerf.iKdmapiLongBytes, FALSE );
                 CheckDlgButton( hWnd, IDC_PERF_COLLAPSE, cPerf.bCollapseStacks ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_PERF_VELFLOOR, cPerf.bVelocityFloor ? BST_CHECKED : BST_UNCHECKED );
                 SetDlgItemInt( hWnd, IDC_PERF_MINVEL, (UINT)cPerf.iMinVelocity, FALSE );
@@ -754,6 +749,14 @@ namespace
                         SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_INVALID );
                         return TRUE;
                     }
+                    UINT uLongBytes = GetDlgItemInt( hWnd, IDC_PERF_LONGBYTES, &bOk, FALSE );
+                    if ( !bOk || uLongBytes < (UINT)PerformanceSettings::LongBytesMin || uLongBytes > (UINT)PerformanceSettings::LongBytesMax )
+                    {
+                        MessageBoxW( hWnd, L"Please specify a long message size between 16 and 16,777,216 bytes (65,535 is the usual limit)", L"Error", MB_OK | MB_ICONEXCLAMATION );
+                        PostMessageW( hWnd, WM_NEXTDLGCTL, ( WPARAM )GetDlgItem( hWnd, IDC_PERF_LONGBYTES ), TRUE );
+                        SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_INVALID );
+                        return TRUE;
+                    }
                     UINT uCache = GetDlgItemInt( hWnd, IDC_PERF_CACHEMB, &bOk, FALSE );
                     if ( !bOk || uCache < 16 || uCache > 65536 )
                     {
@@ -782,6 +785,7 @@ namespace
                     cPerf.bTuning31PitchBend = IsDlgButtonChecked( hWnd, IDC_PERF_TUNING31BEND ) == BST_CHECKED;
                     cPerf.bPreferKDMAPI = IsDlgButtonChecked( hWnd, IDC_PERF_KDMAPI ) == BST_CHECKED;
                     cPerf.bKdmapiLongSends = IsDlgButtonChecked( hWnd, IDC_PERF_LONGSENDS ) == BST_CHECKED;
+                    cPerf.iKdmapiLongBytes = (int)uLongBytes;
                     cVideo.bLimitFPS = IsDlgButtonChecked( hWnd, IDC_LIMITFPS ) == BST_CHECKED;
 
                     config.SetPerformanceSettings( cPerf );

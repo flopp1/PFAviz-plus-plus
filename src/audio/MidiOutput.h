@@ -36,8 +36,8 @@ namespace MidiOutputs
     bool KdmapiRenderingTime( float &fPercent );
     std::unique_ptr< MidiOutput > OpenKdmapi();
     // KDMAPI sends batches as long messages (SendDirectLongData) of raw MIDI bytes with running status,
-    // up to 64 KB each, instead of a call per event (Performance tab; off by default). Read per batch
-    void SetKdmapiLongSends( bool bOn );
+    // of up to iMaxBytes each, instead of a call per event (Performance tab; off by default). Read per batch
+    void SetKdmapiLongSends( bool bOn, int iMaxBytes );
     std::unique_ptr< MidiOutput > OpenWinMM( int iDevice );
     // The device chosen in the settings: KDMAPI when preferred and available, else the WinMM device
     std::unique_ptr< MidiOutput > OpenConfigured( bool bTuning31 = false, bool bPitchBend = false );

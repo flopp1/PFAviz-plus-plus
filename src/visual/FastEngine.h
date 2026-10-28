@@ -67,9 +67,6 @@ public:
     void SetMergeRows( bool bOn ) { m_bMergeRows = bOn; }
     size_t LodBytes() const { return m_pLod ? m_pLod->MemoryBytes() : 0; }
     bool LodOn() const { return m_bLod; }
-    // Colors by key: pKeyColors[k] (256 of them) colours key k's notes in place of their channels'
-    // settings (hidden channels stay hidden); null colours by channel
-    void SetKeyColors( const ChannelSettings *pKeyColors ) { m_pKeyColors = pKeyColors; }
     bool DrawsPreviousMask() const { return m_vDrawMask != m_vMask; }   // the last frame waited for the view
 
     // The NoteEngine sequence of MainScreen::Logic (see visual/NoteEngine.h)
@@ -166,7 +163,6 @@ private:
     LodCache::View m_LodView;                       // this frame's ready segments
     LodCache::Setting m_LodSetting;
     bool m_bSkipHidden = false;                     // this frame skips hidden notes (Full store, view pending)
-    const ChannelSettings *m_pKeyColors = nullptr;  // SetKeyColors
 
     Frame m_F;
     float m_fCacheY = -1e30f, m_fCacheCY = -1e30f;

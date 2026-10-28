@@ -141,7 +141,6 @@ void VisualSettings::LoadDefaultValues()
     bHideLines = false;
     bHideSpeedBoxes = false;
     bLoopColors = false;
-    bColorByKey = false;
     int R, G, B, S = 80, V = 100;
     const int iColors = 16;     // the original's 16, as it made them
     for ( int i = 10, count = 0; count < iColors; i = ( i + 7 ) % iColors, count++ )
@@ -214,7 +213,6 @@ void VisualSettings::Load( const IniFile &ini )
     uClean = (unsigned)ini.GetInt( "Visual", "CleanDrawing", (int)uClean ) & 7;
     bHideLines = ini.GetBool( "Visual", "HideLines", bHideLines );
     bLoopColors = ini.GetBool( "Visual", "LoopColors", bLoopColors );
-    bColorByKey = ini.GetBool( "Visual", "ColorByKey", bColorByKey );
     bHideSpeedBoxes = ini.GetBool( "Visual", "HideSpeedBoxes", bHideSpeedBoxes );
 }
 
@@ -239,7 +237,6 @@ void VisualSettings::Save( IniFile &ini ) const
     ini.SetInt( "Visual", "CleanDrawing", uClean );
     ini.SetInt( "Visual", "HideLines", bHideLines );
     ini.SetInt( "Visual", "LoopColors", bLoopColors );
-    ini.SetInt( "Visual", "ColorByKey", bColorByKey );
     ini.SetInt( "Visual", "HideSpeedBoxes", bHideSpeedBoxes );
 }
 
@@ -443,6 +440,7 @@ void PerformanceSettings::LoadDefaultValues()
     bTuning31 = false;
     bTuning31PitchBend = false;
     bKdmapiLongSends = false;
+    iKdmapiLongBytes = 65535;   // a legacy synth's limit, which players keep to
     bVelocitySkip = false;
     iSkipLagMs = 100;
     bVelocityFloor = false;
@@ -467,6 +465,7 @@ void PerformanceSettings::Load( const IniFile &ini )
     bTuning31 = ini.GetBool( "Performance", "Tuning31", bTuning31 );
     bTuning31PitchBend = ini.GetBool( "Performance", "Tuning31PitchBend", bTuning31PitchBend );
     bKdmapiLongSends = ini.GetBool( "Performance", "KdmapiLongSends", bKdmapiLongSends );
+    iKdmapiLongBytes = std::clamp( ini.GetInt( "Performance", "KdmapiLongBytes", iKdmapiLongBytes ), LongBytesMin, LongBytesMax );
     bVelocitySkip = ini.GetBool( "Performance", "VelocitySkip", bVelocitySkip );
     iSkipLagMs = std::clamp( ini.GetInt( "Performance", "SkipLagMs", iSkipLagMs ), 1, 10000 );
     bVelocityFloor = ini.GetBool( "Performance", "VelocityFloor", bVelocityFloor );
@@ -490,6 +489,7 @@ void PerformanceSettings::Save( IniFile &ini ) const
     ini.SetInt( "Performance", "Tuning31", bTuning31 );
     ini.SetInt( "Performance", "Tuning31PitchBend", bTuning31PitchBend );
     ini.SetInt( "Performance", "KdmapiLongSends", bKdmapiLongSends );
+    ini.SetInt( "Performance", "KdmapiLongBytes", iKdmapiLongBytes );
     ini.SetInt( "Performance", "VelocitySkip", bVelocitySkip );
     ini.SetInt( "Performance", "SkipLagMs", iSkipLagMs );
     ini.SetInt( "Performance", "VelocityFloor", bVelocityFloor );

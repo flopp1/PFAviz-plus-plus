@@ -226,14 +226,6 @@ private:
     std::shared_ptr< const Image > m_pBkgImage;
     std::wstring m_sBkgImage;
     bool m_bBkgApplied = false;
-    ChannelSettings m_aKeyColors[256];  // Colors by key (VisualSettings::bColorByKey), from the palette
-    bool m_bColorByKey = false;
-    // The lit key's colour: its note's channel's, or the key's
-    const ChannelSettings *KeyColor( int iKey, int iSlot ) const
-    {
-        if ( iSlot < 0 ) return nullptr;
-        return m_bColorByKey ? &m_aKeyColors[iKey] : &m_vTrackSettings[iSlot >> 4].aChannels[iSlot & 15];
-    }
     unsigned m_uVisualGen = 0;          // Config::VisualGen when the file was last looked at
     FrameGlobals m_G;
 
