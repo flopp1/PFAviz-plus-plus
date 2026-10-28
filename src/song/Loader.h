@@ -30,8 +30,6 @@ struct LoadProgress
     std::atomic< bool > bWaitingOnDisk{ false };
     std::atomic< long long > llCountEndUs{ 0 }; // Timer::NowMicroSecs() when the count pass finished
     std::atomic< uint64_t > llPrivateNow{ 0 }, llPrivatePeak{ 0 };    // the process's private memory in RAM (Util::ProcessMemory), sampled every 2 ms
-    bool bTuning31 = false;
-    bool bTuning31PitchBend = false;
     bool bSkipPairing = false;          // tools only: stop after the event stream (no visual store)
     bool bFullVisual = false;           // tools only: keep the visual store in the Full layout
     bool bLzVisual = false;             // the Performance tab's "Compact visual store" (LZ groups)

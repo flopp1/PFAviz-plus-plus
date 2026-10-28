@@ -140,7 +140,7 @@ void Song::BuildSendCounts( int iThreads )
                     continue;
                 }
                 unsigned v = op == 2 ? 0 : *r.p++;
-                if ( op == 0 && ( v & 0x7F ) && ( !( v & 0x80 ) || ( bTuning31 && ( h & 0x0F ) != 9 ) ) && bCount )
+                if ( op == 0 && v && !( v & 0x80 ) && bCount )   // keys past 127 (the 31-EDO output only) not counted
                 {
                     uint32_t uCh = ( ( h & 0x0F ) << 8 ) | ( v & 0x80 );
                     v &= 0x7F;

@@ -31,7 +31,6 @@ static void CheckSong( bool extended, bool full, bool lz, int fused, bool tuning
 {
     auto file = Midi( extended );
     LoadProgress progress;
-    progress.bTuning31 = tuning;
     progress.bFullVisual = full;
     progress.bLzVisual = lz;
     progress.iFusedRead = fused;
@@ -40,12 +39,11 @@ static void CheckSong( bool extended, bool full, bool lz, int fused, bool tuning
     auto song = Loader::LoadMemory( file.data(), file.size(), 2, progress, stats, error );
     if ( !song ) std::fwprintf( stderr, L"%ls\n", error.c_str() );
     assert( song );
-    // Keys past 127 are kept only with 31-EDO tuning; otherwise dropped as the original does (each key's on and off)
-    const int keys = extended && tuning ? 256 : 128;
-    assert( song->bTuning31 == tuning );
+    // Keys past 127 are always loaded; the tuning only decides whether they are played
+    const int keys = extended ? 256 : 128;
     assert( song->info.iMinNote == 0 && song->info.iMaxNote == keys - 1 );
     assert( song->info.llNoteCount == keys );
-    assert( stats.llOutOfRange == ( extended && !tuning ? 256u : 0u ) && stats.llMalformedTracks == 0 );
+    assert( stats.llOutOfRange == 0 && stats.llMalformedTracks == 0 );
     for ( int key = 0; key < keys; key++ )
     {
         assert( song->aKeyNoteCounts[key] == 1 );
@@ -98,13 +96,13 @@ static void CheckSong( bool extended, bool full, bool lz, int fused, bool tuning
     }
     RefMidi reference;
     assert( reference.Parse( file.data(), file.size() ) );
-    assert( reference.GetInfo().llNoteCount == 128 );     // the original's parser: keys past 127 dropped
+    assert( reference.GetInfo().llNoteCount == keys );
     for ( const auto &event : reference.GetEvents() ) assert( event.iSister >= 0 );
     for ( const auto &bins : song->aSendOns )
     {
         uint64_t ons = 0;
         for ( size_t bin = 0; bin < bins.Bins(); bin++ ) ons += bins.Total( bin );
-        assert( ons == (uint64_t)( tuning ? keys : 128 ) );
+        assert( ons == 128u );      // keys past 127 are sent only by the 31-EDO output, so not counted
     }
     for ( bool collapse : { false, true } )
     for ( int floor : { 0, 101 } )
@@ -205,11 +203,10 @@ int wmain( int argc, wchar_t **argv )
     {
         auto file = Midi( false );
         LoadProgress progress;
-        progress.bTuning31 = progress.bTuning31PitchBend = true;
         LoadStats stats;
         std::wstring error;
         auto song = Loader::LoadMemory( file.data(), file.size(), 2, progress, stats, error );
-        assert( song && song->bTuning31PitchBend );
+        assert( song );
         const std::vector< uint32_t > history = { 0x000065B0, 0x000064B0, 0x003006B0, 0x007F65B0, 0x007F64B0, 0x006000E0 };
         song->vChase.clear();
         for ( uint32_t message : history ) song->vChase.push_back( { 100, message } );

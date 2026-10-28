@@ -49,7 +49,6 @@ void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
     // Its own engine, with the hidden channels and the LOD cache ready before each frame is drawn
     FastEngine engine( *m_pSong, cPerf.iWorkerThreads );
     engine.SetLod( cPerf.bLodCache, true );
-    engine.SetKeyCount( cPerf.bTuning31 ? 256 : 128 );
     std::vector< uint8_t > vHidden( m_vTrackSettings.size() * 16 );
     bool bAnyHidden = false;
     for ( size_t t = 0; t < m_vTrackSettings.size(); t++ )

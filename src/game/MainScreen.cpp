@@ -433,18 +433,10 @@ GameState::GameError MainScreen::Logic()
         m_pPlayback->SetMinVelocity( cPerf.bVelocityFloor ? cPerf.iMinVelocity : 0 );
         m_pPlayback->SetMaxThreads( cPerf.iPlaybackThreads );
         // 31-EDO changed: the output reopens in the new mode, and playback seeks to where it is so the
-        // new output gets the controllers. Keys past 127 a song was loaded without need it reopened
+        // new output gets the controllers there
         if ( m_pPlayback->SetTuning( cPerf.bTuning31, cPerf.bTuning31PitchBend ) )
-        {
             m_pPlayback->Seek( m_llStartTime, m_llStartTime, m_llStartTime );
-            if ( cPerf.bTuning31 && m_pSong->llKeysPast127 )
-            {
-                swprintf( m_sBuf, 128, L"31-EDO: reopen the song to load its keys past 127" );
-                m_tpMessage.Reset( m_pRenderer->GetBufferWidth() / 2.0f, m_pRenderer->GetBufferHeight() * ( 1.0f - KBPercent ) / 2.0f - 35.0f / 2.0f, 0xFFFFFFFF, m_sBuf );
-            }
-        }
     }
-    m_pEngine->SetKeyCount( config.GetPerformanceSettings().bTuning31 ? 256 : 128 );
     static const bool bEnvDrawThreads = getenv( "PFAVIZ_DRAWTHREADS" ) != nullptr;
     if ( !bEnvDrawThreads ) m_pEngine->SetThreads( config.GetPerformanceSettings().iWorkerThreads );
     if ( m_pEngine->LodOn() != config.GetPerformanceSettings().bLodCache ) m_pEngine->SetLod( config.GetPerformanceSettings().bLodCache );
@@ -637,9 +629,8 @@ ViewInputs MainScreen::GetViewInputs( int iWidth, int iHeight, long long llStart
     in.iBufferWidth = iWidth;
     in.iBufferHeight = iHeight;
     in.eKeysShown = cVisual.eKeysShown;
-    // A song with keys past 127 (loaded with 31-EDO tuning) on all 256 in the 128-key view; the setting is kept
-    if ( in.eKeysShown == VisualSettings::All128 && m_pSong->info.iMaxNote > 127 && Config::GetConfig().GetPerformanceSettings().bTuning31 )
-        in.eKeysShown = VisualSettings::All256;
+    // A 256-key file (notes past key 127) is always shown on all 256 keys, whatever the setting (kept)
+    if ( m_pSong->info.iMaxNote > 127 ) in.eKeysShown = VisualSettings::All256;
     in.iFirstKey = cVisual.iFirstKey;
     in.iLastKey = cVisual.iLastKey;
     in.iSongMinNote = m_pSong->info.iMinNote;

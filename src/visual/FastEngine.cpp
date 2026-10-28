@@ -582,7 +582,7 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
     std::vector< KeyCols > *aClass = m_aClass;
     aClass[0].clear();
     aClass[1].clear();
-    for ( int k = 0; k < m_iKeys; k++ )
+    for ( int k = 0; k < 256; k++ )
     {
         if ( !S.aKeys[k].Size() ) continue;
         bool bSharp = Notes::IsSharp( k );
@@ -884,7 +884,7 @@ void FastEngine::GetKeySlots( int aSlot[256] ) const
     {
         aSlot[k] = -1;
         const KeyStore &ks = m_Store.aKeys[k];
-        if ( !ks.Size() || k >= m_iKeys ) continue;
+        if ( !ks.Size() ) continue;
         Bounds bd;
         GetBounds( m_Store, k, bd );
         size_t hi = bd.iB;
@@ -979,7 +979,7 @@ void FastEngine::ComputeJumpCutoff()
     uint64_t uX = UpperBoundTime( Time( uP ) );
     std::vector< Member > v;
     long long llTotal = 0;
-    for ( int k = 0; k < m_iKeys; k++ )
+    for ( int k = 0; k < 256; k++ )
     {
         const KeyStore &ks = S.aKeys[k];
         size_t hi = ks.LowerBoundStart( uP + 1 );
