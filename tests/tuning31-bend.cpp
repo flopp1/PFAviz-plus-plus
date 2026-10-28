@@ -82,6 +82,15 @@ int main()
             if ( channel != 9 )
                 for ( unsigned key = 0; key < 256; key++ )
                 {
+                    if ( Tuning31::Pitch( key, channel ).second > 127 )
+                    {
+                        // Past the MIDI keys: neither the note nor its off is sent
+                        size_t ons = synth.ons.size(), offs = synth.offs.size();
+                        output.Send( Note( channel, key ) );
+                        output.Send( Note( channel, key, 0 ) );
+                        assert( synth.ons.size() == ons && synth.offs.size() == offs );
+                        continue;
+                    }
                     output.Send( Note( channel, key ) );
                     assert( synth.ons.back().channel != 9 );
                     Near( synth.Pitch( synth.ons.back() ), Expected( channel, key ) );

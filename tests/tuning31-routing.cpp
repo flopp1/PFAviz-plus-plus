@@ -39,7 +39,7 @@ int main()
         assert( output.Init() && capture.sysex.size() == 3 );
         const unsigned cases[][4] = {
             { 0, 124, 0, 48 }, { 0, 125, 1, 48 }, { 0, 127, 1, 49 }, { 0, 128, 2, 50 },
-            { 1, 186, 0, 96 }, { 2, 186, 0, 120 }, { 10, 128, 12, 50 }, { 15, 255, 13, 127 },
+            { 1, 186, 0, 96 }, { 2, 186, 0, 120 }, { 10, 128, 12, 50 }, { 15, 186, 13, 120 },
             { 0, 255, 0, 99 }, { 9, 60, 9, 60 }
         };
         for ( const auto &c : cases )
@@ -54,6 +54,8 @@ int main()
         }
         capture.notes.clear();
         output.Send( Note( 0x90, 9, 128 ) );
+        assert( capture.notes.empty() );
+        output.Send( Note( 0x90, 15, 255 ) );           // key 147: past the MIDI keys, dropped
         assert( capture.notes.empty() );
         for ( unsigned type : { 0xB0u, 0xC0u, 0xD0u, 0xE0u } )
         {

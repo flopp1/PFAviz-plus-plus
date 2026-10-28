@@ -101,8 +101,10 @@ FrameGlobals Scene::ComputeGlobals( const ViewInputs &in )
 
     // Keys info
     g.iAllWhiteKeys = Notes::WhiteCount( g.iStartNote, g.iEndNote + 1 );
+    // Key 255 (D#) is the last there is: the field ends at its middle (its nudge right of the white key
+    // edge) instead of half a sharp past it, so no part of the key after it is shown
     float fBuffer = ( Notes::IsSharp( g.iStartNote ) ? SharpRatio / 2.0f : 0.0f ) +
-                    ( Notes::IsSharp( g.iEndNote ) ? SharpRatio / 2.0f : 0.0f );
+                    ( g.iEndNote == 255 ? SharpRatio / 5.0f : Notes::IsSharp( g.iEndNote ) ? SharpRatio / 2.0f : 0.0f );
     g.fWhiteCX = g.fNotesCX / ( g.iAllWhiteKeys + fBuffer );
 
     // Screen Y info
@@ -255,7 +257,7 @@ void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneCol
     float fKeyGap1 = fKeyGap - floor( fKeyGap / 2.0f + 0.5f );
 
     int iStartRender = ( Notes::IsSharp( g.iStartNote ) ? g.iStartNote - 1 : g.iStartNote );
-    int iEndRender = ( Notes::IsSharp( g.iEndNote ) ? g.iEndNote + 1 : g.iEndNote );
+    int iEndRender = ( Notes::IsSharp( g.iEndNote ) && g.iEndNote < 255 ? g.iEndNote + 1 : g.iEndNote );   // no white key past 255
     float fStartX = ( Notes::IsSharp( g.iStartNote ) ? g.fWhiteCX * ( SharpRatio / 2.0f - 1.0f ) : 0.0f );
     float fSharpCY = fTopCY * 0.67f;
 

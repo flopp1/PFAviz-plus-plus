@@ -37,6 +37,7 @@ public:
         if ( type == 0x90 && value )
         {
             auto pitch = Tuning31::Pitch( key, channel );
+            if ( pitch.second > 127 ) return;               // past the MIDI keys: not played (its off finds no route)
             unsigned lane = pitch.first - group;
             const auto &scale = Tuning31::ScaleMessages[lane];
             unsigned pc = pitch.second % 12;

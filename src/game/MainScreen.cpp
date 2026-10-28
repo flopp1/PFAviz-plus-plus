@@ -624,6 +624,8 @@ ViewInputs MainScreen::GetViewInputs( int iWidth, int iHeight, long long llStart
     in.iBufferWidth = iWidth;
     in.iBufferHeight = iHeight;
     in.eKeysShown = cVisual.eKeysShown;
+    // A song with keys past 127 (loaded with 31-EDO tuning) on all 256 in the 128-key view; the setting is kept
+    if ( in.eKeysShown == VisualSettings::All128 && m_pSong->info.iMaxNote > 127 ) in.eKeysShown = VisualSettings::All256;
     in.iFirstKey = cVisual.iFirstKey;
     in.iLastKey = cVisual.iLastKey;
     in.iSongMinNote = m_pSong->info.iMinNote;

@@ -17,6 +17,13 @@ void MidiOutput::AllNotesOff()
 
 namespace
 {
+    // A sent SysEx's header until the synth marks it done (at most a second: one that never does is not
+    // waited on forever)
+    void WaitDone( const MIDIHDR &hdr, bool bSent )
+    {
+        for ( int i = 0; bSent && i < 1000 && !( hdr.dwFlags & MHDR_DONE ); i++ ) Sleep( 1 );
+    }
+
     //-------------------------------------------------------------------------
     // WinMM
     //-------------------------------------------------------------------------
@@ -42,8 +49,7 @@ namespace
             hdr.dwBufferLength = (DWORD)n;
             if ( midiOutPrepareHeader( m_h, &hdr, sizeof( hdr ) ) != MMSYSERR_NOERROR ) return false;
             MMRESULT result = midiOutLongMsg( m_h, &hdr, sizeof( hdr ) );
-            if ( result == MMSYSERR_NOERROR )
-                while ( !( hdr.dwFlags & MHDR_DONE ) ) Sleep( 1 );
+            WaitDone( hdr, result == MMSYSERR_NOERROR );
             midiOutUnprepareHeader( m_h, &hdr, sizeof( hdr ) );
             return result == MMSYSERR_NOERROR;
         }
@@ -67,7 +73,7 @@ namespace
     {
         typedef BOOL ( WINAPI *PFN_BOOL )();
         typedef VOID ( WINAPI *PFN_SEND )( DWORD );
-        typedef UINT ( WINAPI *PFN_LONG )( MIDIHDR * );
+        typedef UINT ( WINAPI *PFN_LONG )( MIDIHDR *, UINT );     // the header and its size, as midiOut*
         typedef unsigned long long ( WINAPI *PFN_VOICES )();     // 64 bits: Maestro returns one (OmniMIDI's 32 are the low half)
         typedef float ( WINAPI *PFN_RENDERTIME )();
         HMODULE hMod = nullptr;
@@ -138,11 +144,10 @@ namespace
             MIDIHDR hdr = {};
             hdr.lpData = (LPSTR)pData;
             hdr.dwBufferLength = (DWORD)n;
-            if ( k.pPrepare( &hdr ) != MMSYSERR_NOERROR ) return false;
-            UINT result = k.pLong( &hdr );
-            if ( result == MMSYSERR_NOERROR )
-                while ( !( hdr.dwFlags & MHDR_DONE ) ) Sleep( 1 );
-            k.pUnprepare( &hdr );
+            if ( k.pPrepare( &hdr, sizeof( hdr ) ) != MMSYSERR_NOERROR ) return false;
+            UINT result = k.pLong( &hdr, sizeof( hdr ) );
+            WaitDone( hdr, result == MMSYSERR_NOERROR );
+            k.pUnprepare( &hdr, sizeof( hdr ) );
             return result == MMSYSERR_NOERROR;
         }
 

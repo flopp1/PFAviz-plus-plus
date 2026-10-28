@@ -49,7 +49,8 @@ namespace Tuning31
         if ( channel == 9 ) return { channel, note };
         uint8_t base = GroupBase( channel );
         unsigned key = steps[note % 31][0] + 12 * ( note / 31 ) + 24 * ( channel - base );
-        return { uint8_t( base + steps[note % 31][1] ), uint8_t( std::min( key, 127u ) ) };
+        // The key may pass 127 (the top of the third channel of a group): callers drop such notes
+        return { uint8_t( base + steps[note % 31][1] ), uint8_t( key ) };
     }
 
     inline constexpr uint8_t ScaleMessages[3][33] = {
