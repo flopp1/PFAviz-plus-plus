@@ -625,6 +625,7 @@ namespace
                 CheckDlgButton( hWnd, IDC_PERF_TUNING31BEND, cPerf.bTuning31PitchBend ? BST_CHECKED : BST_UNCHECKED );
                 EnableWindow( GetDlgItem( hWnd, IDC_PERF_TUNING31BEND ), cPerf.bTuning31 );
                 CheckDlgButton( hWnd, IDC_PERF_KDMAPI, cPerf.bPreferKDMAPI ? BST_CHECKED : BST_UNCHECKED );
+                CheckDlgButton( hWnd, IDC_PERF_LONGSENDS, cPerf.bKdmapiLongSends ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_PERF_COLLAPSE, cPerf.bCollapseStacks ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_PERF_VELFLOOR, cPerf.bVelocityFloor ? BST_CHECKED : BST_UNCHECKED );
                 SetDlgItemInt( hWnd, IDC_PERF_MINVEL, (UINT)cPerf.iMinVelocity, FALSE );
@@ -711,6 +712,7 @@ namespace
                     cPerf.bTuning31 = IsDlgButtonChecked( hWnd, IDC_PERF_TUNING31 ) == BST_CHECKED;
                     cPerf.bTuning31PitchBend = IsDlgButtonChecked( hWnd, IDC_PERF_TUNING31BEND ) == BST_CHECKED;
                     cPerf.bPreferKDMAPI = IsDlgButtonChecked( hWnd, IDC_PERF_KDMAPI ) == BST_CHECKED;
+                    cPerf.bKdmapiLongSends = IsDlgButtonChecked( hWnd, IDC_PERF_LONGSENDS ) == BST_CHECKED;
                     cVideo.bLimitFPS = IsDlgButtonChecked( hWnd, IDC_LIMITFPS ) == BST_CHECKED;
 
                     config.SetPerformanceSettings( cPerf );

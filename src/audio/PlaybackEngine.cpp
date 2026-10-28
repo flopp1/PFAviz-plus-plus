@@ -498,7 +498,12 @@ void PlaybackEngine::SenderThread()
 
         // Nothing to send: until the decoder commits a slice (at most 1 ms, for the flags above)
         int r = m_iRead.load( std::memory_order_relaxed ), w = m_iWrite.load( std::memory_order_acquire );
-        if ( r == w ) { WaitOnAddress( &m_iWrite, &w, sizeof( w ), 1 ); continue; }
+        if ( r == w )
+        {
+            if ( m_pOut ) m_pOut->Flush();      // (before every wait: what long sends gathered goes out)
+            WaitOnAddress( &m_iWrite, &w, sizeof( w ), 1 );
+            continue;
+        }
         Slice &s = m_pRing[r];
 
         if ( s.uEpoch == m_Clock.Epoch() )
@@ -519,6 +524,7 @@ void PlaybackEngine::SenderThread()
                     // Early: no lag (else the last late slice's stays while this waits; see the decoder's
                     // wait for the other case)
                     m_llLagUs.store( 0, std::memory_order_relaxed );
+                    if ( m_pOut ) m_pOut->Flush();
                     if ( m_Clock.Paused() ) { WaitUs( hTimer, 1000 ); continue; }
                     long long llWall = (long long)( ( s.llDue - llNow ) / std::max( m_Clock.Speed(), 1e-6 ) );
                     WaitUs( hTimer, llWall > 1000 ? 1000 : llWall > 300 ? llWall - 200 : llWall );

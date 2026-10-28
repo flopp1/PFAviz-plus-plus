@@ -5,6 +5,7 @@
 #include <mmsystem.h>
 
 #include <algorithm>
+#include <atomic>
 #include <climits>
 
 #include "core/Config.h"
@@ -114,6 +115,8 @@ namespace
         }
     };
 
+    std::atomic< bool > g_bKdmapiLong{ false };
+
     class KdmapiOutput : public MidiOutput
     {
     public:
@@ -129,16 +132,44 @@ namespace
         {
             if ( m_bOpen ) { AllNotesOff(); Kdmapi::Get().pTerminate(); }
         }
-        void Send( uint32_t uMsg ) override { m_pSend( uMsg ); }
+        void Send( uint32_t uMsg ) override { Flush(); m_pSend( uMsg ); }
+        // Long sends: channel messages as raw bytes with running status, gathered across batches until
+        // the buffer fills or Flush (the sender flushes before it waits, so a buffer only grows while it
+        // is behind: on time, a batch is a message). Anything else goes short, in its place
         void SendBatch( const uint32_t *pMsgs, size_t n ) override
         {
             Kdmapi::PFN_SEND pSend = m_pSend;
-            for ( size_t i = 0; i < n; i++ ) pSend( pMsgs[i] );
+            if ( !g_bKdmapiLong.load( std::memory_order_relaxed ) || m_bLongFailed )
+            {
+                Flush();
+                for ( size_t i = 0; i < n; i++ ) pSend( pMsgs[i] );
+                return;
+            }
+            for ( size_t i = 0; i < n; i++ )
+            {
+                uint32_t m = pMsgs[i];
+                unsigned st = m & 0xFF;
+                if ( st < 0x80 || st >= 0xF0 ) { Flush(); pSend( m ); continue; }
+                bool bTwo = ( st & 0xE0 ) == 0xC0;  // program change and channel pressure: one data byte
+                if ( m_iLong + ( bTwo ? 2 : 3 ) > LongBytes ) Flush();
+                if ( m_bLongFailed ) { pSend( m ); continue; }
+                if ( st != m_uRun ) { m_aLong[m_iLong++] = (uint8_t)st; m_uRun = st; }
+                m_aLong[m_iLong++] = (uint8_t)( ( m >> 8 ) & 0x7F );
+                if ( !bTwo ) m_aLong[m_iLong++] = (uint8_t)( ( m >> 16 ) & 0x7F );
+            }
+        }
+        void Flush() override
+        {
+            if ( !m_iLong ) return;
+            SendLongBuffer( m_iLong );      // (not taken: these events are lost, once; short sends after)
+            m_iLong = 0;
+            m_uRun = 0;
         }
         const std::wstring &Name() const override { static const std::wstring s = MidiOutputs::KdmapiName(); return s; }
         bool IsKdmapi() const override { return true; }
         bool SendSysEx( const uint8_t *pData, size_t n ) override
         {
+            Flush();
             Kdmapi &k = Kdmapi::Get();
             if ( !k.pLong || !k.pPrepare || !k.pUnprepare ) return false;
             MIDIHDR hdr = {};
@@ -152,8 +183,40 @@ namespace
         }
 
     private:
+        static const size_t LongBytes = 65535;  // a legacy synth's limit; players send at most this
         Kdmapi::PFN_SEND m_pSend = nullptr;
         bool m_bOpen = false;
+        bool m_bLongFailed = false;             // a long message failed or never completed: short sends from then on
+        uint8_t m_aLong[LongBytes];
+        size_t m_iLong = 0;                     // bytes gathered
+        unsigned m_uRun = 0;                    // the running status in them
+
+        bool SendLongBuffer( size_t len )
+        {
+            Kdmapi &k = Kdmapi::Get();
+            if ( !k.pLong || !k.pPrepare || !k.pUnprepare ) { m_bLongFailed = true; return false; }
+            MIDIHDR hdr = {};
+            hdr.lpData = (LPSTR)m_aLong;
+            hdr.dwBufferLength = hdr.dwBytesRecorded = (DWORD)len;
+            if ( k.pPrepare( &hdr, sizeof( hdr ) ) != MMSYSERR_NOERROR ) { m_bLongFailed = true; return false; }
+            bool bSent = k.pLong( &hdr, sizeof( hdr ) ) == MMSYSERR_NOERROR;
+            // Done at once by the synths tried; a short spin, then up to 50 ms before giving long sends up
+            long long llEnd = 0;
+            for ( int i = 0; bSent && !( hdr.dwFlags & MHDR_DONE ); i++ )
+            {
+                if ( i < 4096 ) { YieldProcessor(); continue; }
+                LARGE_INTEGER t, f;
+                QueryPerformanceCounter( &t );
+                QueryPerformanceFrequency( &f );
+                long long llNow = t.QuadPart * 1000 / f.QuadPart;
+                if ( !llEnd ) llEnd = llNow + 50;
+                if ( llNow > llEnd ) { m_bLongFailed = true; break; }
+                Sleep( 0 );
+            }
+            for ( int i = 0; i < 50 && k.pUnprepare( &hdr, sizeof( hdr ) ) == MIDIERR_STILLPLAYING; i++ ) Sleep( 1 );
+            if ( !bSent ) m_bLongFailed = true;
+            return bSent;
+        }
     };
 
     class TunedOutput : public MidiOutput
@@ -202,6 +265,8 @@ namespace
 }
 
 bool MidiOutputs::KdmapiAvailable() { return Kdmapi::Get().bAvailable; }
+void MidiOutputs::SetKdmapiLongSends( bool bOn ) { g_bKdmapiLong.store( bOn, std::memory_order_relaxed ); }
+
 std::wstring MidiOutputs::KdmapiName() { return L"KDMAPI (OmniMIDI)"; }
 
 bool MidiOutputs::KdmapiActiveVoices( unsigned &uVoices )

@@ -423,6 +423,7 @@ void PerformanceSettings::LoadDefaultValues()
     bPreferKDMAPI = true;
     bTuning31 = false;
     bTuning31PitchBend = false;
+    bKdmapiLongSends = false;
     bVelocitySkip = false;
     iSkipLagMs = 100;
     bVelocityFloor = false;
@@ -446,6 +447,7 @@ void PerformanceSettings::Load( const IniFile &ini )
     bPreferKDMAPI = ini.GetBool( "Performance", "PreferKDMAPI", bPreferKDMAPI );
     bTuning31 = ini.GetBool( "Performance", "Tuning31", bTuning31 );
     bTuning31PitchBend = ini.GetBool( "Performance", "Tuning31PitchBend", bTuning31PitchBend );
+    bKdmapiLongSends = ini.GetBool( "Performance", "KdmapiLongSends", bKdmapiLongSends );
     bVelocitySkip = ini.GetBool( "Performance", "VelocitySkip", bVelocitySkip );
     iSkipLagMs = std::clamp( ini.GetInt( "Performance", "SkipLagMs", iSkipLagMs ), 1, 10000 );
     bVelocityFloor = ini.GetBool( "Performance", "VelocityFloor", bVelocityFloor );
@@ -468,6 +470,7 @@ void PerformanceSettings::Save( IniFile &ini ) const
     ini.SetInt( "Performance", "PreferKDMAPI", bPreferKDMAPI );
     ini.SetInt( "Performance", "Tuning31", bTuning31 );
     ini.SetInt( "Performance", "Tuning31PitchBend", bTuning31PitchBend );
+    ini.SetInt( "Performance", "KdmapiLongSends", bKdmapiLongSends );
     ini.SetInt( "Performance", "VelocitySkip", bVelocitySkip );
     ini.SetInt( "Performance", "SkipLagMs", iSkipLagMs );
     ini.SetInt( "Performance", "VelocityFloor", bVelocityFloor );

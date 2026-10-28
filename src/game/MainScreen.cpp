@@ -98,6 +98,7 @@ GameState::GameError MainScreen::Init()
         m_pPlayback->SetSendLimits( cPerf.bCollapseStacks, cPerf.bSendLimit ? cPerf.iMaxSendsPerSec : 0 );
         m_pPlayback->SetMinVelocity( cPerf.bVelocityFloor ? cPerf.iMinVelocity : 0 );
         m_pPlayback->SetTuning( cPerf.bTuning31, cPerf.bTuning31PitchBend );
+        MidiOutputs::SetKdmapiLongSends( cPerf.bKdmapiLongSends );
         m_pPlayback->SetMute( m_bMute );
         m_pPlayback->SetMetronome( cPlayback.GetMetronome() );
         m_Clock.SetSpeed( cPlayback.GetSpeed() );
@@ -434,6 +435,7 @@ GameState::GameError MainScreen::Logic()
         m_pPlayback->SetMaxThreads( cPerf.iPlaybackThreads );
         // 31-EDO changed: the output reopens in the new mode, and playback seeks to where it is so the
         // new output gets the controllers there
+        MidiOutputs::SetKdmapiLongSends( cPerf.bKdmapiLongSends );
         if ( m_pPlayback->SetTuning( cPerf.bTuning31, cPerf.bTuning31PitchBend ) )
             m_pPlayback->Seek( m_llStartTime, m_llStartTime, m_llStartTime );
     }

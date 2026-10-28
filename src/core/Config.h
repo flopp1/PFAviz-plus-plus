@@ -134,6 +134,7 @@ struct PerformanceSettings
     bool bPreferKDMAPI;
     bool bTuning31;
     bool bTuning31PitchBend;
+    bool bKdmapiLongSends;      // KDMAPI: batches go out as long messages of raw MIDI bytes (off: one call an event)
     bool bVelocitySkip;         // skip quiet note-ons while the output lags (off: every event is sent)
     int iSkipLagMs;             // the lag above which velocity skipping starts
     bool bVelocityFloor;        // always skip note-ons quieter than iMinVelocity
