@@ -78,7 +78,7 @@ bool FastEngine::ViewPending() const
 
 void FastEngine::CposFor( const VisualStore &S, uint64_t *pCpos ) const
 {
-    for ( int k = 0; k < 128; k++ )
+    for ( int k = 0; k < 256; k++ )
         pCpos[k] = m_iCut == 0 ? 0 : m_iCut == 1 ? UINT64_MAX : S.aKeys[k].LowerBoundOrder( m_llCutU, m_llCutOrder );
 }
 
@@ -582,7 +582,7 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
     std::vector< KeyCols > *aClass = m_aClass;
     aClass[0].clear();
     aClass[1].clear();
-    for ( int k = 0; k < 128; k++ )
+    for ( int k = 0; k < 256; k++ )
     {
         if ( !S.aKeys[k].Size() ) continue;
         bool bSharp = Notes::IsSharp( k );
@@ -600,7 +600,7 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
 
     std::vector< int > &vActive = m_vActive;
     vActive.clear();
-    bool abDegenerate[128] = {};
+    bool abDegenerate[256] = {};
     for ( int c = 0; c < 2; c++ )
         for ( const KeyCols &kc : aClass[c] ) { vActive.push_back( kc.iKey ); abDegenerate[kc.iKey] = kc.bDegenerate; }
     std::vector< size_t > &vQueries = m_vQueries;
@@ -612,10 +612,10 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
     vPixels.assign( vActive.size(), 0.0 );
     std::vector< std::vector< uint64_t > > &vScratch = m_vScratch;
     if ( vScratch.size() < (size_t)m_iThreads + 1 ) vScratch.resize( m_iThreads + 1 );
-    const bool bInst = pRenderer->InstancingOn();
+    const bool bInst = pRenderer->InstancingOn() && m_Song.info.iMaxNote < 128;
     // Keys that may share a pixel column with another are drawn interleaved with it, owner by owner
     // (below), so only the others merge rects across owners
-    bool abMerge[128] = {};
+    bool abMerge[256] = {};
     for ( int c = 0; c < 2 && m_bMergeRows; c++ )
     {
         std::vector< KeyCols > &v = aClass[c];
@@ -877,10 +877,10 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
     m_Stats.dSweepMs = ( Timer::NowMicroSecs() - llStart ) / 1000.0;
 }
 
-void FastEngine::GetKeySlots( int aSlot[128] ) const
+void FastEngine::GetKeySlots( int aSlot[256] ) const
 {
     NoteView n;
-    for ( int k = 0; k < 128; k++ )
+    for ( int k = 0; k < 256; k++ )
     {
         aSlot[k] = -1;
         const KeyStore &ks = m_Store.aKeys[k];
@@ -914,7 +914,7 @@ namespace
     void AddDroppedOrders( const EventStream &es, const VisualStore &S, uint64_t s, uint64_t uX, const bool *abKeys,
                            std::vector< uint64_t > &vOrders )
     {
-        std::vector< uint64_t > avOns[128];
+        std::vector< uint64_t > avOns[256];
         uint32_t uOrd = 0;
         es.Walk( s, s + 1, [&]( size_t, const StreamEvent &e ) {
             if ( ( e.cStatus >> 4 ) == 0x9 && e.cData2 && abKeys[e.cData1] ) avOns[e.cData1].push_back( OrderKey( e.uTrack * 16, uOrd ) );
@@ -924,7 +924,7 @@ namespace
         std::vector< Class > vClasses;
         std::vector< uint64_t > vCulled;
         NoteView n;
-        for ( int k = 0; k < 128; k++ )
+        for ( int k = 0; k < 256; k++ )
         {
             if ( !abKeys[k] ) continue;
             const KeyStore &ks = S.aKeys[k];
@@ -979,7 +979,7 @@ void FastEngine::ComputeJumpCutoff()
     uint64_t uX = UpperBoundTime( Time( uP ) );
     std::vector< Member > v;
     long long llTotal = 0;
-    for ( int k = 0; k < 128; k++ )
+    for ( int k = 0; k < 256; k++ )
     {
         const KeyStore &ks = S.aKeys[k];
         size_t hi = ks.LowerBoundStart( uP + 1 );
@@ -1020,7 +1020,7 @@ void FastEngine::ComputeJumpCutoff()
         i = e;
     }
     std::vector< uint64_t > vOrders;
-    bool abKeys[128] = {};
+    bool abKeys[256] = {};
     bool bDrops = false;
     for ( size_t q = i; q < e; q++ )
     {

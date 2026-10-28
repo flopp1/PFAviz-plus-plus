@@ -140,7 +140,7 @@ void Song::BuildSendCounts( int iThreads )
                     continue;
                 }
                 unsigned v = op == 2 ? 0 : *r.p++;
-                if ( op == 0 && v && bCount )
+                if ( op == 0 && v && !( v & 0x80 ) && bCount )
                 {
                     uint32_t uCh = ( h & 0x0F ) << 7;
                     uint64_t n = 0, nFirst = 0;

@@ -55,3 +55,6 @@ clean:
 	rm -rf build
 
 -include $(OBJS:.o=.d)
+
+$(OUT)/extended_keys.exe: tests/extended_keys.cpp $(OBJS)
+	$(CXX) $(CXXFLAGS) $(filter-out -mwindows,$(LDFLAGS)) -mconsole $^ -o $@ $(LDLIBS)

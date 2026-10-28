@@ -1,0 +1,160 @@
+#include <cassert>
+#include <cmath>
+#include <cstdio>
+#include <cwchar>
+#include <vector>
+
+#include "audio/PlaybackDecoder.h"
+#include "core/Config.h"
+#include "core/Ini.h"
+#include "midi/Notes.h"
+#include "song/Loader.h"
+#include "visual/Scene.h"
+#include "visual/FastEngine.h"
+
+static std::vector< uint8_t > Midi( bool extended )
+{
+    std::vector< uint8_t > track;
+    const int keys = extended ? 256 : 128;
+    for ( int key = 0; key < keys; key++ )
+        track.insert( track.end(), { 0, 0x90, (uint8_t)key, 100 } );
+    for ( int key = 0; key < keys; key++ )
+        track.insert( track.end(), { (uint8_t)( key == 0 ? 96 : 0 ), (uint8_t)( key % 2 ? 0x90 : 0x80 ), (uint8_t)key, 0 } );
+    track.insert( track.end(), { 0, 0xFF, 0x2F, 0 } );
+    std::vector< uint8_t > file = { 'M', 'T', 'h', 'd', 0, 0, 0, 6, 0, 0, 0, 1, 0, 96, 'M', 'T', 'r', 'k' };
+    for ( int shift = 24; shift >= 0; shift -= 8 ) file.push_back( (uint8_t)( track.size() >> shift ) );
+    file.insert( file.end(), track.begin(), track.end() );
+    return file;
+}
+
+static void CheckSong( bool extended, bool full, bool lz, int fused )
+{
+    auto file = Midi( extended );
+    LoadProgress progress;
+    progress.bFullVisual = full;
+    progress.bLzVisual = lz;
+    progress.iFusedRead = fused;
+    LoadStats stats;
+    std::wstring error;
+    auto song = Loader::LoadMemory( file.data(), file.size(), 2, progress, stats, error );
+    if ( !song ) std::fwprintf( stderr, L"%ls\n", error.c_str() );
+    assert( song );
+    const int keys = extended ? 256 : 128;
+    assert( song->info.iMinNote == 0 && song->info.iMaxNote == keys - 1 );
+    assert( song->info.llNoteCount == keys );
+    assert( stats.llOutOfRange == 0 && stats.llMalformedTracks == 0 );
+    for ( int key = 0; key < keys; key++ )
+    {
+        assert( song->aKeyNoteCounts[key] == 1 );
+        const auto &store = song->visual.aKeys[key];
+        assert( store.Size() == 1 );
+        NoteView note;
+        store.Get( 0, note );
+        assert( !note.bUnpaired && note.llStartU == 0 && note.llEndU == 1 );
+    }
+    ViewInputs view;
+    view.eKeysShown = extended ? VisualSettings::All256 : VisualSettings::All128;
+    view.iBufferWidth = 3840;
+    view.iBufferHeight = 1080;
+    view.llStartTime = 100000;
+    auto globals = Scene::ComputeGlobals( view );
+    FastEngine engine( *song, 2 );
+    engine.AdvanceEnd( view.llStartTime + view.llTimeSpan );
+    engine.Process( view.llStartTime );
+    int slots[256];
+    engine.GetKeySlots( slots );
+    const ChannelSettings *keyColors[256] = {};
+    std::vector< TrackSettings > tracks( 1 );
+    for ( int key = 0; key < keys; key++ )
+    {
+        assert( slots[key] == 0 );
+        keyColors[key] = &tracks[0].aChannels[0];
+    }
+    Renderer renderer;
+    std::vector< Renderer::SCREEN_VERTEX > vertices;
+    renderer.SetCapture( &vertices );
+    engine.DrawNotes( &renderer, globals, tracks );
+    assert( engine.LastStats().iKeys == (size_t)keys && !vertices.empty() );
+    SceneColors colors;
+    Scene::DrawKeys( &renderer, globals, colors, keyColors );
+    for ( const auto &vertex : vertices ) assert( std::isfinite( vertex.x ) && std::isfinite( vertex.y ) );
+    std::vector< StreamEvent > events;
+    song->stream.Walk( 0, song->stream.UniqueTicks(), [&]( size_t, const StreamEvent &e ) { events.push_back( e ); },
+                       []( size_t, uint32_t, bool ) { return true; } );
+    assert( events.size() == (size_t)keys * 2 );
+    StreamCursor cursor;
+    cursor.Attach( &song->stream );
+    for ( size_t i = 0; i < events.size(); i++ )
+    {
+        assert( events[i].cData1 == i % keys );
+        assert( events[i].cData2 == ( i < (size_t)keys ? 100 : 0 ) );
+        uint32_t track, msg;
+        assert( cursor.Next( track, msg ) );
+        assert( ( ( msg >> 8 ) & 0xFF ) == events[i].cData1 );
+        assert( ( msg >> 16 ) == events[i].cData2 );
+    }
+    RefMidi reference;
+    assert( reference.Parse( file.data(), file.size() ) );
+    assert( reference.GetInfo().llNoteCount == keys );
+    for ( const auto &event : reference.GetEvents() ) assert( event.iSister >= 0 );
+    for ( bool collapse : { false, true } )
+    {
+        PlaybackDecoder decoder( *song );
+        decoder.Reset( 0 );
+        PlaybackDecoder::Params params;
+        params.bCollapse = collapse;
+        std::vector< uint32_t > messages;
+        for ( int attempt = 0; decoder.NextTime( 0 ) != LLONG_MAX; attempt++ )
+        {
+            assert( attempt < 100 );
+            uint32_t out[64];
+            long long due;
+            size_t n = decoder.Fill( out, 64, 2000000, 0, params, due );
+            messages.insert( messages.end(), out, out + n );
+        }
+        assert( messages.size() == 256 );
+        for ( size_t i = 0; i < messages.size(); i++ )
+        {
+            assert( ( ( messages[i] >> 8 ) & 0xFF ) == i % 128 );
+            assert( ( messages[i] >> 16 ) == ( i < 128 ? 100 : 0 ) );
+        }
+    }
+}
+
+int wmain()
+{
+    VisualSettings settings;
+    settings.LoadDefaultValues();
+    settings.eKeysShown = VisualSettings::All256;
+    settings.iLastKey = 255;
+    IniFile ini;
+    settings.Save( ini );
+    VisualSettings restored;
+    restored.LoadDefaultValues();
+    restored.Load( ini );
+    assert( restored.eKeysShown == VisualSettings::All256 && restored.iLastKey == 255 );
+    assert( std::wcscmp( Notes::NoteName( 255 ), L"D#20" ) == 0 );
+    ViewInputs view;
+    view.eKeysShown = VisualSettings::All256;
+    view.iBufferWidth = 1920;
+    view.iBufferHeight = 1080;
+    auto globals = Scene::ComputeGlobals( view );
+    assert( globals.iStartNote == 0 && globals.iEndNote == 255 );
+    assert( globals.iAllWhiteKeys == 149 && std::isfinite( globals.fWhiteCX ) && globals.fWhiteCX > 0 );
+    float previous = -1;
+    for ( int key = 0; key < 256; key++ )
+    {
+        float x = Scene::GetNoteX( globals, key );
+        assert( std::isfinite( x ) && x > previous );
+        previous = x;
+    }
+    for ( bool extended : { false, true } )
+        for ( int fused : { 0, 1 } )
+        {
+            CheckSong( extended, true, false, fused );
+            CheckSong( extended, false, false, fused );
+            CheckSong( extended, false, true, fused );
+        }
+    std::puts( "Extended key regression checks passed" );
+    return 0;
+}

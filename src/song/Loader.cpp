@@ -103,7 +103,7 @@ namespace
         // ordinal among the track's NoteOns of the key; end tick and duration -1: unpaired
         void Finish( uint64_t llTrack, std::vector< uint64_t > &vId, std::vector< int64_t > &vEnd, std::vector< int64_t > &vDur )
         {
-            for ( unsigned key = 0; key < 128; key++ )
+            for ( unsigned key = 0; key < 256; key++ )
             {
                 if ( !m_a[key] ) continue;
                 Key &k = *m_a[key];
@@ -167,7 +167,7 @@ namespace
         }
         static void PopBack( Key &k ) { if ( !--k.vStack.back().uLen ) k.vStack.pop_back(); }
         int64_t m_llLongTicks;
-        std::unique_ptr< Key > m_a[128];
+        std::unique_ptr< Key > m_a[256];
     };
 
     struct TrackScan
@@ -189,7 +189,7 @@ namespace
         }
         RefTrackInfo info;
         std::vector< RefMetaEvent > vMeta;
-        uint32_t aKeyCounts[128] = {};
+        uint32_t aKeyCounts[256] = {};
         uint64_t llChannelEvents = 0;
         uint64_t llOutOfRange = 0;          // channel events dropped for a key, controller or program past 127
         int64_t llLongTicks = 0;            // PairSim's threshold
@@ -371,7 +371,7 @@ namespace
         uint64_t llEventCount = 0, llChannelEvents = 0, llOutOfRange = 0, llNotes = 0, llVolumeSum = 0;
         long long llTotalTicks = 0;
         int iMinNote = 0, iMaxNote = 0, iMaxVolume = 0;
-        uint32_t aKeyCounts[128] = {};
+        uint32_t aKeyCounts[256] = {};
         auto AddInfo = [&]( long long llAt ) {
             if ( COUNT ) { llEventCount++; llTotalTicks = std::max( llTotalTicks, llAt ); }
         };
@@ -405,12 +405,9 @@ namespace
                 unsigned iType = iStatus >> 4, iChannel = iStatus & 0xF;
                 int iDataBytes = ( iType == 0xC || iType == 0xD ) ? 1 : 2;
                 if ( pEnd - p < iDataBytes ) { MORE( true ) if ( COUNT ) pScan->info.bMalformed = true; break; }
-                // Data bytes are read as data, as the original reads them (DESIGN.md 1.5). A key, controller
-                // or program past 127 drops the event (its tick still counts for the length); a second
-                // byte past 127 (velocity, value) is clamped
                 uint8_t aData[2] = { p[0], iDataBytes == 2 ? std::min< uint8_t >( p[1], 0x7F ) : (uint8_t)0 };
                 p += iDataBytes;
-                if ( aData[0] >= 0x80 )
+                if ( aData[0] >= 0x80 && iType != 0x8 && iType != 0x9 )
                 {
                     if ( COUNT ) { llOutOfRange++; llTotalTicks = std::max( llTotalTicks, llTick ); }
                     continue;
@@ -436,13 +433,16 @@ namespace
                 }
 
                 unsigned op = OpOf( iType, aData[1] );
+                unsigned uBank = ( iType == 0x8 || iType == 0x9 ) ? aData[0] & 0x80 : 0;
+                if ( op == 2 && uBank ) op = 1;
+                unsigned uVelocity = aData[1] | uBank;
                 Reserve();
                 if ( op <= 2 )
                 {
-                    uint32_t uKey = ( op << 12 ) | ( iChannel << 8 ) | ( op == 2 ? 0 : aData[1] );
+                    uint32_t uKey = ( op << 12 ) | ( iChannel << 8 ) | ( op == 2 ? 0 : uVelocity );
                     if ( uKey == uRunKey )
                     {
-                        if ( WRITE ) { pLastKey = pDst; *pDst++ = aData[0]; }
+                        if ( WRITE ) { pLastKey = pDst; *pDst++ = aData[0] & 0x7F; }
                         if ( COUNT ) uSize += 1;
                     }
                     else
@@ -453,9 +453,9 @@ namespace
                         {
                             pRunHeader = pDst;
                             *pDst++ = (uint8_t)( ( op << 5 ) | iChannel );
-                            if ( op != 2 ) *pDst++ = aData[1];
+                            if ( op != 2 ) *pDst++ = (uint8_t)uVelocity;
                             pLastKey = pDst;
-                            *pDst++ = aData[0];
+                            *pDst++ = aData[0] & 0x7F;
                         }
                         if ( COUNT ) uSize += ( op == 2 ? 2 : 3 );
                     }
@@ -556,7 +556,7 @@ namespace
             out.iMinNote = iMinNote; out.iMaxNote = iMaxNote; out.iMaxVolume = iMaxVolume;
             pScan->llChannelEvents += llChannelEvents;
             pScan->llOutOfRange += llOutOfRange;
-            for ( int k = 0; k < 128; k++ ) pScan->aKeyCounts[k] += aKeyCounts[k];
+            for ( int k = 0; k < 256; k++ ) pScan->aKeyCounts[k] += aKeyCounts[k];
         }
         if ( MODE == Stream )
         {
@@ -855,7 +855,7 @@ namespace
             std::vector< int64_t > vDur;
             for ( auto &sc : vScans )
             {
-                for ( int k = 0; k < 128; k++ ) llNotes += sc->aKeyCounts[k];
+                for ( int k = 0; k < 256; k++ ) llNotes += sc->aKeyCounts[k];
                 for ( int64_t d : sc->vKnownDur ) if ( d >= 0 ) vDur.push_back( d );
             }
             size_t iCap = getenv( "PFAVIZ_KEEPALL" ) ? SIZE_MAX : (size_t)std::max< uint64_t >( 1 << 20, llNotes / 256 );   // TEMP
@@ -872,7 +872,7 @@ namespace
             song->vTrackMeta[t] = vScans[t]->vMeta;
             stats.llMalformedTracks += mti.bMalformed;
             stats.llOutOfRange += vScans[t]->llOutOfRange;
-            for ( int k = 0; k < 128; k++ ) song->aKeyNoteCounts[k] += vScans[t]->aKeyCounts[k];
+            for ( int k = 0; k < 256; k++ ) song->aKeyNoteCounts[k] += vScans[t]->aKeyCounts[k];
             const TrackScan &sc = *vScans[t];
             for ( size_t i = 0; i < sc.vKnownId.size(); i++ )
                 if ( sc.vKnownDur[i] < 0 || sc.vKnownDur[i] >= llKeepDur )

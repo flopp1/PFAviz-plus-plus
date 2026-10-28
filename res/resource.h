@@ -88,6 +88,7 @@
 #define IDC_LASTKEY                     1063
 #define IDC_THROUGH                     1064
 #define IDC_SHOWALL128KEYS              1065
+#define IDC_SHOWALL256KEYS              1190
 #define IDC_KDMAPISTATUS                1066
 #define IDC_PERF_THREADS                1070
 #define IDC_PERF_PLAYTHREADS            1104

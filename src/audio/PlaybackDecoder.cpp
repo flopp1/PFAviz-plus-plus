@@ -283,9 +283,16 @@ template < bool bCollapse, bool bCounting, bool bLane >
 size_t PlaybackDecoder::Notes( uint32_t uTrack, uint32_t uBase, const uint8_t *pk, size_t iMax, bool &bEnd, uint32_t *__restrict pOut, size_t &rn,
                                size_t u, uint32_t uMinVel, const Params &p )
 {
+    bEnd = false;
+    if ( uBase & 0x8000 )
+    {
+        size_t i = 0;
+        while ( i < iMax )
+            if ( pk[i++] & 0x80 ) { bEnd = true; break; }
+        return i;
+    }
     uint32_t ch = uBase & 0x0F, uKeys = ch << 7, uVel = uBase >> 16;
     size_t i = 0, n = rn;
-    bEnd = false;
     // Every key sent as it is: the run's length (to its last key, or iMax), then the messages
     auto SendAll = [&]( uint32_t uOut ) {
         // Most runs of a many-track song are one key

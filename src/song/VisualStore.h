@@ -223,7 +223,7 @@ private:
 
 struct VisualStore
 {
-    KeyStore aKeys[128];
+    KeyStore aKeys[256];
     bool bWeird = false;                    // some note was paired more than once (Full layout)
     bool bCompact = false;                  // Compact layout (culled with the hidden mask it was built for)
     long long llFirstNote = -1;             // time of the first paired note (-1: none)

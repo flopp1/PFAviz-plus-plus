@@ -177,13 +177,14 @@ bool EventStream::Walk( size_t u0, size_t u1, FE &&onEvent, FG &&onGroupEnd ) co
             e.cStatus = (uint8_t)( aStatus[op] | ( h & 0x0F ) );
             if ( op <= 2 )
             {
-                e.cData2 = op == 2 ? 0 : *r.p++;
+                unsigned v = op == 2 ? 0 : *r.p++;
+                e.cData2 = (uint8_t)( v & 0x7F );
                 unsigned k;
                 do
                 {
                     r.Need();
                     k = *r.p++;
-                    e.cData1 = (uint8_t)( k & 0x7F );
+                    e.cData1 = (uint8_t)( ( k & 0x7F ) | ( v & 0x80 ) );
                     if ( bEmit ) onEvent( u, e );
                 } while ( !( k & 0x80 ) );
             }
@@ -305,7 +306,7 @@ struct Song
     std::vector< RefMetaEvent > vMeta;      // tempo (length 3) and time signatures (length 4), global order, with times
     std::vector< std::vector< RefMetaEvent > > vTrackMeta; // the same, per track in file order
     std::vector< uint64_t > vTrackLastU;    // per track: unique tick of its last channel event (UINT64_MAX: none)
-    uint32_t aKeyNoteCounts[128] = {};      // NoteOns (velocity > 0) per key, for later phases
+    uint32_t aKeyNoteCounts[256] = {};      // NoteOns (velocity > 0) per key, for later phases
     // NoteOns whose pairing the count pass already knows (PairSim in Loader.cpp): the ones no off will
     // pair, and long notes paired once. Ascending ids, track << 48 | key << 40 | the note's ordinal
     // among its track's NoteOns of that key; vKnownEnd: the end's unique tick, UINT64_MAX for

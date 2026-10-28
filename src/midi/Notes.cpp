@@ -82,17 +82,17 @@ const wchar_t *const Notes::Instruments[129] =
 
 const wchar_t *Notes::NoteName( int iNote )
 {
-    static wchar_t aNames[128][6];
+    static wchar_t aNames[256][6];
     static bool bInit = false;
     if ( !bInit )
     {
         static const wchar_t *const aLetters[12] = { L"C", L"C#", L"D", L"D#", L"E", L"F", L"F#", L"G", L"G#", L"A", L"A#", L"B" };
-        for ( int i = 0; i < 128; i++ )
+        for ( int i = 0; i < 256; i++ )
         {
             int iOctave = i / 12 - 1;
             swprintf( aNames[i], 6, L"%ls%ls%d", aLetters[i % 12], iOctave < 0 ? L"-" : L"", iOctave < 0 ? -iOctave : iOctave );
         }
         bInit = true;
     }
-    return iNote >= 0 && iNote < 128 ? aNames[iNote] : L"";
+    return iNote >= 0 && iNote < 256 ? aNames[iNote] : L"";
 }

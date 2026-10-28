@@ -238,11 +238,9 @@ bool RefMidi::ParseTrack( const unsigned char *p, const unsigned char *pEnd, int
             int iType = iStatus >> 4, iChannel = iStatus & 0xF;
             int iDataBytes = ( iType == 0xC || iType == 0xD ) ? 1 : 2;
             if ( pEnd - p < iDataBytes ) { info.bMalformed = true; break; }
-            // Data bytes are read as data, as the original reads them. A key, controller or program past
-            // 127 drops the event (its tick still counts for the length); a second byte past 127 is clamped
             unsigned char aData[2] = { p[0], iDataBytes == 2 ? std::min< unsigned char >( p[1], 0x7F ) : (unsigned char)0 };
             p += iDataBytes;
-            if ( aData[0] >= 0x80 ) { info.llTotalTicks = std::max( info.llTotalTicks, llTick ); continue; }
+            if ( aData[0] >= 0x80 && iType != 0x8 && iType != 0x9 ) { info.llTotalTicks = std::max( info.llTotalTicks, llTick ); continue; }
 
             TrackEvent te;
             te.llTick = llTick;
@@ -319,10 +317,10 @@ bool RefMidi::ParseTrack( const unsigned char *p, const unsigned char *pEnd, int
 void RefMidi::ConnectNotes( std::vector< TrackEvent > &vEvents )
 {
     const int StackSize = 10;
-    static int pSize[16][128];
-    static int pStacks[16][128][StackSize];
+    static int pSize[16][256];
+    static int pStacks[16][256][StackSize];
     memset( pSize, 0, sizeof( pSize ) );
-    std::vector< int > vUnpaired[128];
+    std::vector< int > vUnpaired[256];
 
     auto SetSister = [&]( int iOn, int iOff ) { vEvents[iOn].iSister = iOff; vEvents[iOff].iSister = iOn; };
 
@@ -330,8 +328,7 @@ void RefMidi::ConnectNotes( std::vector< TrackEvent > &vEvents )
     {
         const TrackEvent &e = vEvents[i];
         int iType = e.cCode >> 4, iChannel = e.cCode & 0xF;
-        int iNote = e.cParam1 & 0x7F, iVelocity = e.cParam2;
-        if ( e.cParam1 >= 0x80 ) continue;
+        int iNote = e.cParam1, iVelocity = e.cParam2;
 
         if ( iType == 0x9 && iVelocity > 0 )
         {

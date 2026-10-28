@@ -72,7 +72,7 @@ public:
                 if ( op <= 2 )
                 {
                     unsigned d2 = op == 2 ? 0 : *r.p++;
-                    m_uRunBase = uStatus | ( d2 << 16 );
+                    m_uRunBase = uStatus | ( ( d2 & 0x7F ) << 16 ) | ( ( d2 & 0x80 ) << 8 );
                     m_bInRun = true;
                     continue;
                 }
@@ -151,7 +151,7 @@ public:
                         continue;
                     }
                     unsigned d2 = op == 2 ? 0 : *p++;
-                    uRunBase = uStatus | ( d2 << 16 );
+                    uRunBase = uStatus | ( ( d2 & 0x7F ) << 16 ) | ( ( d2 & 0x80 ) << 8 );
                     bInRun = true;
                 }
                 bool bEnd = false, bStop = false;

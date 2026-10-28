@@ -27,7 +27,7 @@ namespace
     // Visual
     //-------------------------------------------------------------------------
 
-    const int aKeyModeIds[4] = { IDC_SHOWALLKEYS, IDC_SHOWSONGKEYS, IDC_SHOWCUSTOMKEYS, IDC_SHOWALL128KEYS }; // by KeysShown
+    const int aKeyModeIds[5] = { IDC_SHOWALLKEYS, IDC_SHOWSONGKEYS, IDC_SHOWCUSTOMKEYS, IDC_SHOWALL128KEYS, IDC_SHOWALL256KEYS }; // by KeysShown
 
     VOID EnableCustomKeys( HWND hWnd, BOOL bEnable )
     {
@@ -214,7 +214,7 @@ namespace
         g_Stats.uStats = cVisual.uStats;
         std::copy( cVisual.aStatOrder, cVisual.aStatOrder + VisualSettings::StatCount, g_Stats.aOrder );
         ShowStatsCount( hWnd );
-        for ( int i = 0; i < 4; i++ )
+        for ( int i = 0; i < 5; i++ )
             CheckDlgButton( hWnd, aKeyModeIds[i], i == cVisual.eKeysShown ? BST_CHECKED : BST_UNCHECKED );
         EnableCustomKeys( hWnd, cVisual.eKeysShown == VisualSettings::Custom );
         CheckDlgButton( hWnd, IDC_SHOWCONTROLS, cVisual.bAlwaysShowControls ? BST_CHECKED : BST_UNCHECKED );
@@ -272,7 +272,7 @@ namespace
         switch ( msg )
         {
             case WM_INITDIALOG:
-                for ( int i = 0; i < 128; i++ )
+                for ( int i = 0; i < 256; i++ )
                 {
                     SendDlgItemMessageW( hWnd, IDC_FIRSTKEY, CB_ADDSTRING, 0, ( LPARAM )Notes::NoteName( i ) );
                     SendDlgItemMessageW( hWnd, IDC_LASTKEY, CB_ADDSTRING, 0, ( LPARAM )Notes::NoteName( i ) );
@@ -302,7 +302,7 @@ namespace
                     case IDC_SHOWCUSTOMKEYS:
                         EnableCustomKeys( hWnd, TRUE );
                         return TRUE;
-                    case IDC_SHOWALLKEYS: case IDC_SHOWSONGKEYS: case IDC_SHOWALL128KEYS:
+                    case IDC_SHOWALLKEYS: case IDC_SHOWSONGKEYS: case IDC_SHOWALL128KEYS: case IDC_SHOWALL256KEYS:
                         EnableCustomKeys( hWnd, FALSE );
                         return TRUE;
                     case IDC_STATSBOX:
@@ -409,7 +409,7 @@ namespace
                     }
 
                     cVisual.eKeysShown = VisualSettings::All128;
-                    for ( int i = 0; i < 4; i++ )
+                    for ( int i = 0; i < 5; i++ )
                         if ( IsDlgButtonChecked( hWnd, aKeyModeIds[i] ) == BST_CHECKED )
                             cVisual.eKeysShown = static_cast< VisualSettings::KeysShown >( i );
                     cVisual.bAlwaysShowControls = IsDlgButtonChecked( hWnd, IDC_SHOWCONTROLS ) == BST_CHECKED;

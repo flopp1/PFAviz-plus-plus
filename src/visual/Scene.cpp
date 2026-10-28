@@ -88,6 +88,11 @@ FrameGlobals Scene::ComputeGlobals( const ViewInputs &in )
         g.iStartNote = 0;
         g.iEndNote = 127;
     }
+    else if ( in.eKeysShown == 4 )
+    {
+        g.iStartNote = 0;
+        g.iEndNote = 255;
+    }
 
     // Screen X info
     g.fNotesX = in.fOffsetX;
@@ -221,7 +226,7 @@ void Scene::DrawBackground( Renderer *pRenderer, const FrameGlobals &g, const Sc
         }
 }
 
-void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c, const ChannelSettings *const pKeyColor[128] )
+void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c, const ChannelSettings *const pKeyColor[256] )
 {
     // Screen info
     float fKeysY = g.fNotesY + g.fNotesCY;
@@ -261,7 +266,7 @@ void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneCol
     for ( int i = iStartRender; i <= iEndRender; i++ )
         if ( !Notes::IsSharp( i ) )
         {
-            const ChannelSettings *pLit = ( i >= 0 && i < 128 ) ? pKeyColor[i] : nullptr;
+            const ChannelSettings *pLit = ( i >= 0 && i < 256 ) ? pKeyColor[i] : nullptr;
             if ( !pLit )
             {
                 pRenderer->DrawRect( fCurX + fKeyGap1 , fCurY, g.fWhiteCX - fKeyGap, fTopCY + fNearCY,
@@ -302,7 +307,7 @@ void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneCol
 
     // Draw the sharps
     iStartRender = ( g.iStartNote != Notes::A0 && !Notes::IsSharp( g.iStartNote ) && g.iStartNote > 0 && Notes::IsSharp( g.iStartNote - 1 ) ? g.iStartNote - 1 : g.iStartNote );
-    iEndRender = ( g.iEndNote != Notes::C8 && !Notes::IsSharp( g.iEndNote ) && g.iEndNote < 127 && Notes::IsSharp( g.iEndNote + 1 ) ? g.iEndNote + 1 : g.iEndNote );
+    iEndRender = ( g.iEndNote != Notes::C8 && !Notes::IsSharp( g.iEndNote ) && g.iEndNote < 255 && Notes::IsSharp( g.iEndNote + 1 ) ? g.iEndNote + 1 : g.iEndNote );
     fStartX = ( Notes::IsSharp( g.iStartNote ) ? g.fWhiteCX * SharpRatio / 2.0f : 0.0f );
 
     float fSharpTop = SharpRatio * 0.7f;
@@ -323,7 +328,7 @@ void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneCol
             const float fSharpTopX1 = x + g.fWhiteCX * ( SharpRatio - fSharpTop ) / 2.0f;
             const float fSharpTopX2 = fSharpTopX1 + g.fWhiteCX * fSharpTop;
 
-            const ChannelSettings *pLit = ( i >= 0 && i < 128 ) ? pKeyColor[i] : nullptr;
+            const ChannelSettings *pLit = ( i >= 0 && i < 256 ) ? pKeyColor[i] : nullptr;
             if ( !pLit )
             {
                 pRenderer->DrawSkew( fSharpTopX1, fCurY + fSharpCY - fNearCY,
