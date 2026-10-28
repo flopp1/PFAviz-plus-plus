@@ -676,7 +676,7 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
         {
             vStart[o] = (uint32_t)iOut;
             const Owner &ow = m_aOwners[k][o];
-            const ChannelSettings &cs = vTracks[ow.uSlot >> 4].aChannels[ow.uSlot & 15];
+            const ChannelSettings &cs = m_pKeyColors ? m_pKeyColors[k] : vTracks[ow.uSlot >> 4].aChannels[ow.uSlot & 15];
             if ( bShortPath && ow.bShort && ow.iRowA != INT_MIN )
             {
                 if ( ow.iRowA >= ow.iRowB ) continue;       // owns nothing

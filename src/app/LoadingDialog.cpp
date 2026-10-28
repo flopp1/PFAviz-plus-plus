@@ -238,7 +238,8 @@ void FinishLoad( LPARAM lParam )
         ViewSettings &cView = Config::GetConfig().GetViewSettings();
         std::shared_ptr< const Song > pSong( pJob->song.release() );
         MainScreen *pGameState = new MainScreen( pSong, nullptr, nullptr );
-        pGameState->SetChannelColors( Config::GetConfig().GetVisualSettings().colors );
+        const VisualSettings &cVisual = Config::GetConfig().GetVisualSettings();
+        pGameState->SetChannelColors( cVisual.colors, cVisual.iColorCount );
         if ( !cPlayback.GetPlayable() ) cPlayback.SetPlayable( true, true );
         if ( cPlayback.GetPlayMode() != PlayMode::Play ) cPlayback.SetPlayMode( PlayMode::Play, true );
         cPlayback.SetPaused( Config::GetConfig().GetControlsSettings().bStartPaused, true );

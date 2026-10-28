@@ -148,16 +148,16 @@ ChannelSettings *MainScreen::GetChannelSettings( int iTrack, int *piTrack, int *
     return nullptr;
 }
 
-void MainScreen::SetChannelColors( const unsigned aColor[16] )
+void MainScreen::SetChannelColors( const unsigned *aColor, int iColors )
 {
     const std::vector< RefTrackInfo > &vTracks = m_pSong->vTracks;
     bool bLoop = Config::GetConfig().GetVisualSettings().bLoopColors;
-    size_t iPos = 0;
+    size_t iPos = 0, n = (size_t)std::max( 1, iColors );
     for ( size_t i = 0; i < vTracks.size(); i++ )
         for ( int j = 0; j < 16; j++ )
             if ( vTracks[i].aNoteCount[j] > 0 )
             {
-                if ( iPos < 16 || bLoop ) ColorChannel( (int)i, j, aColor[iPos % 16] );
+                if ( iPos < n || bLoop ) ColorChannel( (int)i, j, aColor[iPos % n] );
                 else ColorChannel( (int)i, j, 0, true );
                 iPos++;
             }
@@ -398,6 +398,9 @@ GameState::GameError MainScreen::Logic()
     if ( !m_bBkgApplied || config.VisualGen() != m_uVisualGen )
     {
         m_uVisualGen = config.VisualGen();
+        // Colors by key: key k takes palette colour k % the count (applied at once, unlike the channels')
+        m_bColorByKey = cVisual.bColorByKey;
+        for ( int k = 0; k < 256 && m_bColorByKey; k++ ) m_aKeyColors[k].SetColor( cVisual.colors[k % std::max( 1, cVisual.iColorCount )] );
         std::wstring sBkgImage = config.GetBkgImage();
         bBkgChanged |= sBkgImage != m_sBkgImage;
         m_sBkgImage.swap( sBkgImage );
@@ -617,6 +620,7 @@ GameState::GameError MainScreen::Render()
     Scene::DrawBackground( m_pRenderer, m_G, m_Colors );
     m_pMeter->DrawMeasureLines( m_pRenderer, m_G, m_Colors, m_iStartTick );
     long long tB = Timer::NowMicroSecs();
+    m_pEngine->SetKeyColors( m_bColorByKey ? m_aKeyColors : nullptr );
     m_pEngine->DrawNotes( m_pRenderer, m_G, m_vTrackSettings );
     long long tC = Timer::NowMicroSecs();
     if ( m_bShowKB )
@@ -624,8 +628,7 @@ GameState::GameError MainScreen::Render()
         int aSlot[256];
         m_pEngine->GetKeySlots( aSlot );
         const ChannelSettings *pKeyColor[256];
-        for ( int i = 0; i < 256; i++ )
-            pKeyColor[i] = aSlot[i] < 0 ? nullptr : &m_vTrackSettings[aSlot[i] >> 4].aChannels[aSlot[i] & 15];
+        for ( int i = 0; i < 256; i++ ) pKeyColor[i] = KeyColor( i, aSlot[i] );
         Scene::DrawKeys( m_pRenderer, m_G, m_Colors, pKeyColor );
     }
     Scene::DrawBorder( m_pRenderer, m_G, m_Colors );

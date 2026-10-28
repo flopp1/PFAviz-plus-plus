@@ -150,6 +150,10 @@ int WINAPI wWinMain( HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow )
     HANDLE hThread = CreateThread( nullptr, 0, GameThread, new SplashScreen( nullptr, nullptr ), 0, nullptr );
     if ( !hThread ) return 1;
 
+    // The settings are saved whenever they change (checked every 2 s), not only at a normal exit: a
+    // crash or a forced end lost every change since the start. A timed developer run leaves them alone
+    if ( !getenv( "PFAVIZ_EXIT_AFTER" ) ) SetTimer( g_hWnd, IDT_SAVECONFIG, 2000, nullptr );
+
     // Set up GUI and show
     SetPlayMode( PlayMode::Splash );
     SetOnTop( cView.GetOnTop() );

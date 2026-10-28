@@ -44,6 +44,22 @@ namespace
     };
     StatsChoice g_Stats;
 
+    // The track colors being edited (the count is its edit box): a grid of every colour the palette can
+    // hold, PaletteCols to a row, the used ones filled
+    unsigned g_aPalette[VisualSettings::MaxColors];
+    const int PaletteCols = 32, PaletteRows = VisualSettings::MaxColors / PaletteCols;
+    int PaletteCount( HWND hWnd )
+    {
+        BOOL bOk = FALSE;
+        int n = (int)GetDlgItemInt( hWnd, IDC_COLORCOUNT, &bOk, FALSE );
+        return bOk ? std::clamp( n, 1, VisualSettings::MaxColors ) : 1;
+    }
+    RECT PaletteCell( const RECT &rc, int i )
+    {
+        int w = rc.right - rc.left, h = rc.bottom - rc.top, c = i % PaletteCols, r = i / PaletteCols;
+        return { rc.left + w * c / PaletteCols, rc.top + h * r / PaletteRows, rc.left + w * ( c + 1 ) / PaletteCols, rc.top + h * ( r + 1 ) / PaletteRows };
+    }
+
     VOID ShowStatsCount( HWND hWnd )
     {
         wchar_t buf[64];
@@ -220,12 +236,16 @@ namespace
         CheckDlgButton( hWnd, IDC_SHOWCONTROLS, cVisual.bAlwaysShowControls ? BST_CHECKED : BST_UNCHECKED );
         SendDlgItemMessageW( hWnd, IDC_FIRSTKEY, CB_SETCURSEL, cVisual.iFirstKey, 0 );
         SendDlgItemMessageW( hWnd, IDC_LASTKEY, CB_SETCURSEL, cVisual.iLastKey, 0 );
-        for ( int i = 0; i < IDC_COLOR6 - IDC_COLOR1 + 1; i++ )
-            SetWindowLongPtrW( GetDlgItem( hWnd, IDC_COLOR1 + i ), GWLP_USERDATA, cVisual.colors[i] );
+        std::copy( cVisual.colors, cVisual.colors + VisualSettings::MaxColors, g_aPalette );
+        SendDlgItemMessageW( hWnd, IDC_COLORCOUNTSPIN, UDM_SETRANGE32, 1, VisualSettings::MaxColors );
+        SendDlgItemMessageW( hWnd, IDC_COLORCOUNTSPIN, UDM_SETPOS32, 0, cVisual.iColorCount );
+        InvalidateRect( GetDlgItem( hWnd, IDC_PALETTE ), nullptr, FALSE );
         SetWindowLongPtrW( GetDlgItem( hWnd, IDC_BKGCOLOR ), GWLP_USERDATA, cVisual.iBkgColor );
         CheckDlgButton( hWnd, IDC_BKGON, cVisual.bBkgImage ? BST_CHECKED : BST_UNCHECKED );
         CheckDlgButton( hWnd, IDC_HIDELINES, cVisual.bHideLines ? BST_CHECKED : BST_UNCHECKED );
         CheckDlgButton( hWnd, IDC_LOOPCOLORS, cVisual.bLoopColors ? BST_CHECKED : BST_UNCHECKED );
+        CheckDlgButton( hWnd, IDC_COLORBYKEY, cVisual.bColorByKey ? BST_CHECKED : BST_UNCHECKED );
+        EnableWindow( GetDlgItem( hWnd, IDC_LOOPCOLORS ), !cVisual.bColorByKey );
         CheckDlgButton( hWnd, IDC_HIDESPEEDBOXES, cVisual.bHideSpeedBoxes ? BST_CHECKED : BST_UNCHECKED );
         SetDlgItemTextW( hWnd, IDC_BKGIMAGE, cVisual.sBkgImage.c_str() );
         SendDlgItemMessageW( hWnd, IDC_BKGFIT, CB_SETCURSEL, cVisual.iBkgFit, 0 );
@@ -288,8 +308,27 @@ namespace
             case WM_DRAWITEM:
             {
                 LPDRAWITEMSTRUCT pdis = ( LPDRAWITEMSTRUCT )lParam;
-                if ( ( pdis->CtlID < IDC_COLOR1 || pdis->CtlID > IDC_COLOR6 ) && pdis->CtlID != IDC_BKGCOLOR )
-                    return FALSE;
+                if ( pdis->CtlID == IDC_PALETTE )
+                {
+                    // Each colour in use filled, the rest outlined; a 1-pixel gap between cells
+                    FillRect( pdis->hDC, &pdis->rcItem, GetSysColorBrush( COLOR_BTNFACE ) );
+                    int n = PaletteCount( hWnd );
+                    for ( int i = 0; i < VisualSettings::MaxColors; i++ )
+                    {
+                        RECT rc = PaletteCell( pdis->rcItem, i );
+                        rc.right--;
+                        rc.bottom--;
+                        if ( i < n )
+                        {
+                            SetDCBrushColor( pdis->hDC, g_aPalette[i] );
+                            FillRect( pdis->hDC, &rc, ( HBRUSH )GetStockObject( DC_BRUSH ) );
+                        }
+                        else FrameRect( pdis->hDC, &rc, GetSysColorBrush( COLOR_BTNSHADOW ) );
+                    }
+                    if ( pdis->itemState & ODS_FOCUS ) DrawFocusRect( pdis->hDC, &pdis->rcItem );
+                    return TRUE;
+                }
+                if ( pdis->CtlID != IDC_BKGCOLOR ) return FALSE;
                 SetDCBrushColor( pdis->hDC, ( COLORREF )GetWindowLongPtrW( pdis->hwndItem, GWLP_USERDATA ) );
                 FillRect( pdis->hDC, &pdis->rcItem, ( HBRUSH )GetStockObject( DC_BRUSH ) );
                 return TRUE;
@@ -317,22 +356,49 @@ namespace
                         }
                         return TRUE;
                     }
-                    // Colour buttons: pop up the colour chooser
-                    case IDC_COLOR1: case IDC_COLOR2: case IDC_COLOR3:
-                    case IDC_COLOR4: case IDC_COLOR5: case IDC_COLOR6:
+                    case IDC_COLORBYKEY:     // (looping is for colouring by channel)
+                        EnableWindow( GetDlgItem( hWnd, IDC_LOOPCOLORS ), IsDlgButtonChecked( hWnd, IDC_COLORBYKEY ) != BST_CHECKED );
+                        return TRUE;
+                    case IDC_COLORCOUNT:
+                        if ( HIWORD( wParam ) == EN_CHANGE ) InvalidateRect( GetDlgItem( hWnd, IDC_PALETTE ), nullptr, FALSE );
+                        return TRUE;
+                    // A colour: the chooser. In the palette, the cell clicked (with the keyboard, the first); one
+                    // past the colours in use adds it, and those before it
+                    case IDC_PALETTE:
                     case IDC_BKGCOLOR:
                     {
                         static COLORREF acrCustClr[16] = { 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF,
                                                            0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF };
                         HWND hWndBtn = ( HWND )lParam;
+                        int iCell = -1;
+                        if ( iId == IDC_PALETTE )
+                        {
+                            DWORD dwPos = GetMessagePos();
+                            POINT pt = { (short)LOWORD( dwPos ), (short)HIWORD( dwPos ) };
+                            ScreenToClient( hWndBtn, &pt );
+                            RECT rc;
+                            GetClientRect( hWndBtn, &rc );
+                            iCell = 0;
+                            if ( PtInRect( &rc, pt ) )
+                                for ( int i = 0; i < VisualSettings::MaxColors; i++ )
+                                {
+                                    RECT rcCell = PaletteCell( rc, i );
+                                    if ( PtInRect( &rcCell, pt ) ) { iCell = i; break; }
+                                }
+                        }
                         CHOOSECOLORW cc = {};
                         cc.lStructSize = sizeof( cc );
                         cc.hwndOwner = hWnd;
                         cc.lpCustColors = acrCustClr;
-                        cc.rgbResult = ( COLORREF )GetWindowLongPtrW( hWndBtn, GWLP_USERDATA );
+                        cc.rgbResult = iCell >= 0 ? g_aPalette[iCell] : ( COLORREF )GetWindowLongPtrW( hWndBtn, GWLP_USERDATA );
                         cc.Flags = CC_FULLOPEN | CC_RGBINIT;
                         if ( !ChooseColorW( &cc ) ) return TRUE;
-                        SetWindowLongPtrW( hWndBtn, GWLP_USERDATA, cc.rgbResult );
+                        if ( iCell >= 0 )
+                        {
+                            g_aPalette[iCell] = cc.rgbResult;
+                            if ( iCell >= PaletteCount( hWnd ) ) SendDlgItemMessageW( hWnd, IDC_COLORCOUNTSPIN, UDM_SETPOS32, 0, iCell + 1 );
+                        }
+                        else SetWindowLongPtrW( hWndBtn, GWLP_USERDATA, cc.rgbResult );
                         InvalidateRect( hWndBtn, nullptr, FALSE );
                         return TRUE;
                     }
@@ -418,14 +484,15 @@ namespace
                     std::copy( g_Stats.aOrder, g_Stats.aOrder + VisualSettings::StatCount, cVisual.aStatOrder );
                     cVisual.iFirstKey = (int)SendDlgItemMessageW( hWnd, IDC_FIRSTKEY, CB_GETCURSEL, 0, 0 );
                     cVisual.iLastKey = (int)SendDlgItemMessageW( hWnd, IDC_LASTKEY, CB_GETCURSEL, 0, 0 );
-                    for ( int i = 0; i < IDC_COLOR6 - IDC_COLOR1 + 1; i++ )
-                        cVisual.colors[i] = ( unsigned )GetWindowLongPtrW( GetDlgItem( hWnd, IDC_COLOR1 + i ), GWLP_USERDATA );
+                    std::copy( g_aPalette, g_aPalette + VisualSettings::MaxColors, cVisual.colors );
+                    cVisual.iColorCount = PaletteCount( hWnd );
                     cVisual.iBkgColor = ( unsigned )GetWindowLongPtrW( GetDlgItem( hWnd, IDC_BKGCOLOR ), GWLP_USERDATA );
                     cVisual.bBkgImage = bBkgOn;
                     cVisual.sBkgImage = sImage;
                     cVisual.iBkgOpacity = std::min( 100, (int)uOpacity );
                     cVisual.bHideLines = IsDlgButtonChecked( hWnd, IDC_HIDELINES ) == BST_CHECKED;
                     cVisual.bLoopColors = IsDlgButtonChecked( hWnd, IDC_LOOPCOLORS ) == BST_CHECKED;
+                    cVisual.bColorByKey = IsDlgButtonChecked( hWnd, IDC_COLORBYKEY ) == BST_CHECKED;
                     bool bOldHideBoxes = cVisual.bHideSpeedBoxes;
                     cVisual.bHideSpeedBoxes = IsDlgButtonChecked( hWnd, IDC_HIDESPEEDBOXES ) == BST_CHECKED;
                     cVisual.iBkgFit = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_BKGFIT, CB_GETCURSEL, 0, 0 ) );

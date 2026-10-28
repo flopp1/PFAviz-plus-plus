@@ -48,7 +48,9 @@ struct VisualSettings
     static const unsigned char DefaultStatOrder[StatCount];
     unsigned uStats;
     unsigned char aStatOrder[StatCount];
-    unsigned int colors[16], iBkgColor;
+    static const int MaxColors = 128;
+    unsigned int colors[MaxColors], iBkgColor;     // the track colors: the first iColorCount are used
+    int iColorCount;
     bool bBkgImage;             // the background image is shown
     std::wstring sBkgImage;     // its file, drawn over iBkgColor
     int iBkgFit;                // Renderer::ImageFit
@@ -56,7 +58,8 @@ struct VisualSettings
     unsigned uClean;            // Clean flags (visual/Scene.h): the original's rounding quirks left out
     bool bHideLines;            // no key dividers or measure lines over the background
     bool bHideSpeedBoxes;       // the toolbar as the original's: sliders only, without the exact speed boxes
-    bool bLoopColors;           // the track colors repeat (channel n gets colors[n % 16]); off: random after the 16th
+    bool bColorByKey;           // notes take their key's color: key k gets colors[k % iColorCount] (not their channel's)
+    bool bLoopColors;           // the track colors repeat (channel n gets colors[n % iColorCount]); off: random after them
 };
 
 struct AudioSettings
@@ -241,7 +244,9 @@ public:
 
     void LoadDefaultValues();
     void LoadConfigValues();
-    bool SaveConfigValues();
+    // bIfChanged: only when the settings differ from the last save (the main window's periodic save,
+    // so settings are kept even when the program does not end normally)
+    bool SaveConfigValues( bool bIfChanged = false );
     void LoadMIDIDevices() { std::lock_guard< std::mutex > lock( m_mxAudio ); m_AudioSettings.LoadMIDIDevices(); }
     // The audio settings change on the UI thread and are read by the game and playback threads
     // (MidiOutputs): those readers hold this, and so do the two writers above and below
@@ -280,6 +285,7 @@ private:
     mutable std::mutex m_mxVisual;
     std::atomic< unsigned > m_uVisualGen{ 0 };
     std::mutex m_mxAudio;
+    std::string m_sSaved;                   // the config file as last saved (SaveConfigValues)
     AudioSettings m_AudioSettings;
     VideoSettings m_VideoSettings;
     ControlsSettings m_ControlsSettings;

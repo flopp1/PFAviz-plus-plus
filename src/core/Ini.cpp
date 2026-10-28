@@ -48,19 +48,26 @@ bool IniFile::Load( const std::wstring &sPath )
     return true;
 }
 
+std::string IniFile::Text() const
+{
+    std::string s;
+    for ( const auto &sec : m_mData )
+    {
+        s += "[" + sec.first + "]\r\n";
+        for ( const auto &kv : sec.second ) s += kv.first + "=" + kv.second + "\r\n";
+        s += "\r\n";
+    }
+    return s;
+}
+
 bool IniFile::Save( const std::wstring &sPath ) const
 {
     std::wstring sTemp = sPath + L".tmp";
     FILE *f = _wfopen( sTemp.c_str(), L"wb" );
     if ( !f ) return false;
-    for ( const auto &sec : m_mData )
-    {
-        fprintf( f, "[%s]\r\n", sec.first.c_str() );
-        for ( const auto &kv : sec.second )
-            fprintf( f, "%s=%s\r\n", kv.first.c_str(), kv.second.c_str() );
-        fprintf( f, "\r\n" );
-    }
-    bool bOk = fclose( f ) == 0;
+    std::string s = Text();
+    bool bOk = fwrite( s.data(), 1, s.size(), f ) == s.size();
+    bOk = fclose( f ) == 0 && bOk;
     // Atomic replace so a crash mid-write never leaves a truncated config.
     return bOk && MoveFileExW( sTemp.c_str(), sPath.c_str(), MOVEFILE_REPLACE_EXISTING );
 }

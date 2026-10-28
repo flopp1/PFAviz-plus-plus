@@ -28,7 +28,7 @@ BEGIN
     DEFPUSHBUTTON   "OK",IDOK,177,151,50,14
 END
 
-IDD_PP1_VISUAL DIALOGEX 0, 0, 302, 304
+IDD_PP1_VISUAL DIALOGEX 0, 0, 302, 338
 STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_DISABLED | WS_BORDER
 FONT 8, "MS Shell Dlg", 400, 0, 0x0
 BEGIN
@@ -44,39 +44,37 @@ BEGIN
     CONTROL         "&Don't hide controls toolbar in full screen mode",IDC_SHOWCONTROLS,
                     "Button",BS_AUTOCHECKBOX | WS_TABSTOP,7,78,161,10
     CONTROL         "Hide the toolbar's speed bo&xes",IDC_HIDESPEEDBOXES,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,175,78,120,10
-    LTEXT           "Track colors:",IDC_STATIC,7,96,42,8
-    CONTROL         "",IDC_COLOR1,"Button",BS_OWNERDRAW,53,94,13,12,WS_EX_CLIENTEDGE
-    CONTROL         "",IDC_COLOR2,"Button",BS_OWNERDRAW,68,94,13,12,WS_EX_CLIENTEDGE
-    CONTROL         "",IDC_COLOR3,"Button",BS_OWNERDRAW,83,94,13,12,WS_EX_CLIENTEDGE
-    CONTROL         "",IDC_COLOR4,"Button",BS_OWNERDRAW,98,94,13,12,WS_EX_CLIENTEDGE
-    CONTROL         "",IDC_COLOR5,"Button",BS_OWNERDRAW,113,94,13,12,WS_EX_CLIENTEDGE
-    CONTROL         "",IDC_COLOR6,"Button",BS_OWNERDRAW,128,94,13,12,WS_EX_CLIENTEDGE
-    LTEXT           "Background color:",IDC_STATIC,155,96,58,8
-    CONTROL         "",IDC_BKGCOLOR,"Button",BS_OWNERDRAW,217,94,13,12,WS_EX_CLIENTEDGE
-    CONTROL         "Loop &colors",IDC_LOOPCOLORS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,240,95,55,10
-    LTEXT           "Stats box:",IDC_STATIC,7,115,42,8
-    PUSHBUTTON      "S&tatistics...",IDC_STATSBOX,53,112,60,14
-    LTEXT           "",IDC_STATSCOUNT,119,115,120,8
-    LTEXT           "&Window size:",IDC_STATIC,7,135,44,8
-    EDITTEXT        IDC_WINWIDTH,53,133,34,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "x",IDC_STATIC,91,135,8,8
-    EDITTEXT        IDC_WINHEIGHT,101,133,34,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "",IDC_WINSIZEMAX,141,135,155,8
-    GROUPBOX        "Background",IDC_STATIC,7,153,288,74
-    CONTROL         "Show a background &image (over the background color, in the notes area):",IDC_BKGON,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,165,276,10
-    EDITTEXT        IDC_BKGIMAGE,13,178,222,14,ES_AUTOHSCROLL
-    PUSHBUTTON      "Br&owse...",IDC_BKGBROWSE,239,178,50,14
-    LTEXT           "&Fit:",IDC_STATIC,13,198,14,8
-    COMBOBOX        IDC_BKGFIT,30,196,74,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    LTEXT           "O&pacity:",IDC_STATIC,114,198,30,8
-    EDITTEXT        IDC_BKGOPACITY,146,196,28,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "%",IDC_STATIC,178,198,10,8
-    CONTROL         "Hide the key dividers and measure &lines",IDC_HIDELINES,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,213,276,10
-    GROUPBOX        "Clean drawing (leaves out quirks of the original's note drawing)",IDC_STATIC,7,231,288,52
-    CONTROL         "Draw every note at least one pixel t&all",IDC_CLEAN_MINHEIGHT,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,243,276,10
-    CONTROL         "Keep short notes on screen until they reach the key&board",IDC_CLEAN_KEEPBOTTOM,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,255,276,10
-    CONTROL         "Round note &edges evenly, so lower layers never show past notes above",IDC_CLEAN_EDGES,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,267,276,10
-    PUSHBUTTON      "&Restore Defaults",IDC_RESTOREDEFAULTS,226,287,69,14
+    LTEXT           "Track colors:",IDC_STATIC,7,96,44,8
+    EDITTEXT        IDC_COLORCOUNT,53,94,30,13,ES_AUTOHSCROLL | ES_NUMBER
+    CONTROL         "",IDC_COLORCOUNTSPIN,"msctls_updown32",UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_ARROWKEYS | UDS_SETBUDDYINT | UDS_NOTHOUSANDS,83,94,11,13
+    CONTROL         "Loop &colors",IDC_LOOPCOLORS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,99,95,50,10
+    CONTROL         "Color b&y key",IDC_COLORBYKEY,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,151,95,56,10
+    CONTROL         "",IDC_PALETTE,"Button",BS_OWNERDRAW | WS_TABSTOP,7,111,288,32
+    LTEXT           "Background:",IDC_STATIC,212,96,42,8
+    CONTROL         "",IDC_BKGCOLOR,"Button",BS_OWNERDRAW,256,94,13,12,WS_EX_CLIENTEDGE
+    LTEXT           "Stats box:",IDC_STATIC,7,149,42,8
+    PUSHBUTTON      "S&tatistics...",IDC_STATSBOX,53,146,60,14
+    LTEXT           "",IDC_STATSCOUNT,119,149,120,8
+    LTEXT           "&Window size:",IDC_STATIC,7,169,44,8
+    EDITTEXT        IDC_WINWIDTH,53,167,34,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "x",IDC_STATIC,91,169,8,8
+    EDITTEXT        IDC_WINHEIGHT,101,167,34,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "",IDC_WINSIZEMAX,141,169,155,8
+    GROUPBOX        "Background",IDC_STATIC,7,187,288,74
+    CONTROL         "Show a background &image (over the background color, in the notes area):",IDC_BKGON,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,199,276,10
+    EDITTEXT        IDC_BKGIMAGE,13,212,222,14,ES_AUTOHSCROLL
+    PUSHBUTTON      "Br&owse...",IDC_BKGBROWSE,239,212,50,14
+    LTEXT           "&Fit:",IDC_STATIC,13,232,14,8
+    COMBOBOX        IDC_BKGFIT,30,230,74,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "O&pacity:",IDC_STATIC,114,232,30,8
+    EDITTEXT        IDC_BKGOPACITY,146,230,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "%",IDC_STATIC,178,232,10,8
+    CONTROL         "Hide the key dividers and measure &lines",IDC_HIDELINES,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,247,276,10
+    GROUPBOX        "Clean drawing (leaves out quirks of the original's note drawing)",IDC_STATIC,7,265,288,52
+    CONTROL         "Draw every note at least one pixel t&all",IDC_CLEAN_MINHEIGHT,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,277,276,10
+    CONTROL         "Keep short notes on screen until they reach the key&board",IDC_CLEAN_KEEPBOTTOM,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,289,276,10
+    CONTROL         "Round note &edges evenly, so lower layers never show past notes above",IDC_CLEAN_EDGES,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,301,276,10
+    PUSHBUTTON      "&Restore Defaults",IDC_RESTOREDEFAULTS,226,321,69,14
 END
 
 IDD_PP2_AUDIO DIALOGEX 0, 0, 300, 212

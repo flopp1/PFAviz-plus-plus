@@ -120,7 +120,7 @@ void SplashScreen::InitState()
     m_bMute = cPlayback.GetMute();
     m_dVolume = cPlayback.GetVolume();
 
-    SetChannelColors( std::vector< unsigned >( cVisual.colors, cVisual.colors + 16 ) );
+    SetChannelColors( std::vector< unsigned >( cVisual.colors, cVisual.colors + cVisual.iColorCount ) );
 
     m_OutDevice.OpenConfigured();
     m_OutDevice.SetVolume( 1.0 );

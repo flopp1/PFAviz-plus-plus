@@ -72,7 +72,7 @@ void Config::LoadConfigValues()
     if ( ini.GetInt( "General", "ConfigVersion", 1 ) < 3 ) m_PerformanceSettings.bLodCache = true;
 }
 
-bool Config::SaveConfigValues()
+bool Config::SaveConfigValues( bool bIfChanged )
 {
     std::wstring sFolder = GetFolder();
     if ( sFolder.empty() ) return false;
@@ -86,7 +86,11 @@ bool Config::SaveConfigValues()
     m_ExportSettings.Save( ini );
     m_PlaybackSettings.Save( ini );
     m_ViewSettings.Save( ini );
-    return ini.Save( sFolder + L"\\config.ini" );
+    std::string sText = ini.Text();
+    if ( bIfChanged && sText == m_sSaved ) return true;
+    if ( !ini.Save( sFolder + L"\\config.ini" ) ) return false;
+    m_sSaved = sText;
+    return true;
 }
 
 //-----------------------------------------------------------------------------
@@ -137,14 +141,22 @@ void VisualSettings::LoadDefaultValues()
     bHideLines = false;
     bHideSpeedBoxes = false;
     bLoopColors = false;
+    bColorByKey = false;
     int R, G, B, S = 80, V = 100;
-    int iColors = sizeof( colors ) / sizeof( colors[0] );
+    const int iColors = 16;     // the original's 16, as it made them
     for ( int i = 10, count = 0; count < iColors; i = ( i + 7 ) % iColors, count++ )
     {
         Util::HSVtoRGB( 360 * i / iColors, S, V, R, G, B );
         colors[count] = RGB( R, G, B );
     }
     std::swap( colors[2], colors[4] );
+    // The rest, for a longer palette: hues a golden angle apart, in two shades
+    for ( int i = iColors; i < MaxColors; i++ )
+    {
+        Util::HSVtoRGB( (int)( i * 137.508 ) % 360, i % 2 ? 65 : 85, i % 2 ? 90 : 100, R, G, B );
+        colors[i] = RGB( R, G, B );
+    }
+    iColorCount = iColors;
 }
 
 static unsigned ParseRGB( const std::string &s, unsigned uDefault )
@@ -191,7 +203,8 @@ void VisualSettings::Load( const IniFile &ini )
     }
     iFirstKey = std::clamp( ini.GetInt( "Visual", "FirstKey", iFirstKey ), 0, 255 );
     iLastKey = std::clamp( ini.GetInt( "Visual", "LastKey", iLastKey ), 0, 255 );
-    for ( int i = 0; i < 16; i++ )
+    iColorCount = std::clamp( ini.GetInt( "Visual", "ColorCount", iColorCount ), 1, MaxColors );
+    for ( int i = 0; i < MaxColors; i++ )
         colors[i] = ParseRGB( ini.GetString( "Visual", "Color" + std::to_string( i ) ), colors[i] );
     iBkgColor = ParseRGB( ini.GetString( "Visual", "BkgColor" ), iBkgColor );
     sBkgImage = Util::Utf8ToWide( ini.GetString( "Visual", "BkgImage" ) );
@@ -201,6 +214,7 @@ void VisualSettings::Load( const IniFile &ini )
     uClean = (unsigned)ini.GetInt( "Visual", "CleanDrawing", (int)uClean ) & 7;
     bHideLines = ini.GetBool( "Visual", "HideLines", bHideLines );
     bLoopColors = ini.GetBool( "Visual", "LoopColors", bLoopColors );
+    bColorByKey = ini.GetBool( "Visual", "ColorByKey", bColorByKey );
     bHideSpeedBoxes = ini.GetBool( "Visual", "HideSpeedBoxes", bHideSpeedBoxes );
 }
 
@@ -214,7 +228,8 @@ void VisualSettings::Save( IniFile &ini ) const
     ini.Set( "Visual", "StatOrder", sOrder );
     ini.SetInt( "Visual", "FirstKey", iFirstKey );
     ini.SetInt( "Visual", "LastKey", iLastKey );
-    for ( int i = 0; i < 16; i++ )
+    ini.SetInt( "Visual", "ColorCount", iColorCount );
+    for ( int i = 0; i < std::max( iColorCount, 16 ); i++ )     // (at least the 16 of old, so a lower count keeps them)
         ini.Set( "Visual", "Color" + std::to_string( i ), FormatRGB( colors[i] ) );
     ini.Set( "Visual", "BkgColor", FormatRGB( iBkgColor ) );
     ini.SetInt( "Visual", "BkgImageOn", bBkgImage );
@@ -224,6 +239,7 @@ void VisualSettings::Save( IniFile &ini ) const
     ini.SetInt( "Visual", "CleanDrawing", uClean );
     ini.SetInt( "Visual", "HideLines", bHideLines );
     ini.SetInt( "Visual", "LoopColors", bLoopColors );
+    ini.SetInt( "Visual", "ColorByKey", bColorByKey );
     ini.SetInt( "Visual", "HideSpeedBoxes", bHideSpeedBoxes );
 }
 

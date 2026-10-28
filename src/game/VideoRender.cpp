@@ -140,14 +140,14 @@ void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
         r.BeginScene();
         Scene::DrawBackground( &r, g, m_Colors );
         meter.DrawMeasureLines( &r, g, m_Colors, meter.GetCurrentTick( llTime ) );
+        engine.SetKeyColors( m_bColorByKey ? m_aKeyColors : nullptr );
         engine.DrawNotes( &r, g, m_vTrackSettings );
         if ( m_bShowKB )
         {
             int aSlot[256];
             engine.GetKeySlots( aSlot );
             const ChannelSettings *pKeyColor[256];
-            for ( int i = 0; i < 256; i++ )
-                pKeyColor[i] = aSlot[i] < 0 ? nullptr : &m_vTrackSettings[aSlot[i] >> 4].aChannels[aSlot[i] & 15];
+            for ( int i = 0; i < 256; i++ ) pKeyColor[i] = KeyColor( i, aSlot[i] );
             Scene::DrawKeys( &r, g, m_Colors, pKeyColor );
         }
         Scene::DrawBorder( &r, g, m_Colors );

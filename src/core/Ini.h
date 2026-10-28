@@ -9,6 +9,7 @@ class IniFile
 public:
     bool Load( const std::wstring &sPath );
     bool Save( const std::wstring &sPath ) const;
+    std::string Text() const;           // the file's contents, as Save writes them
 
     bool Has( const std::string &sSection, const std::string &sKey ) const;
     std::string GetString( const std::string &sSection, const std::string &sKey, const std::string &sDefault = "" ) const;

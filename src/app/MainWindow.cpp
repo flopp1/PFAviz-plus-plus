@@ -258,6 +258,11 @@ LRESULT WINAPI WndProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
             SetTimer( hWnd, IDT_DEVICECHANGE, 200, nullptr );
             break;
         case WM_TIMER:
+            if ( wParam == IDT_SAVECONFIG )
+            {
+                Config::GetConfig().SaveConfigValues( true );
+                return 0;
+            }
             if ( wParam != IDT_DEVICECHANGE ) break;
             KillTimer( hWnd, IDT_DEVICECHANGE );
             Config::GetConfig().LoadMIDIDevices();

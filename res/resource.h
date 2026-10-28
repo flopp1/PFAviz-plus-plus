@@ -53,6 +53,7 @@
 #define ID_VIEW_RESETDEVICE             40100
 #define IDC_INACTIVITYTIMER             40103
 #define IDT_DEVICECHANGE                40104
+#define IDT_SAVECONFIG                  40106
 #define IDC_POSNCTRL                    40105
 #define ID_VIEW_MOVEANDZOOM             40109
 #define ID_VIEW_CANCELMOVEANDZOOM       40114
@@ -105,6 +106,10 @@
 #define IDC_HIDELINES                   1115
 #define IDC_HIDESPEEDBOXES              1116
 #define IDC_LOOPCOLORS                  1121
+#define IDC_COLORCOUNT                  1122
+#define IDC_COLORCOUNTSPIN              1123
+#define IDC_PALETTE                     1124
+#define IDC_COLORBYKEY                  1125
 #define IDC_NSPEEDLABEL                 1117
 #define IDC_PERF_LOADSTATS              1071
 #define IDC_PERF_KDMAPI                 1072
