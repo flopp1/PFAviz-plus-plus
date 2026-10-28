@@ -53,13 +53,11 @@ namespace
     {
         typedef BOOL ( WINAPI *PFN_BOOL )();
         typedef VOID ( WINAPI *PFN_SEND )( DWORD );
-        typedef BOOL ( WINAPI *PFN_VER )( DWORD *, DWORD *, DWORD *, DWORD * );
         typedef unsigned long long ( WINAPI *PFN_VOICES )();     // 64 bits: Maestro returns one (OmniMIDI's 32 are the low half)
         typedef float ( WINAPI *PFN_RENDERTIME )();
         HMODULE hMod = nullptr;
         PFN_BOOL pIsAvailable = nullptr, pInit = nullptr, pTerminate = nullptr;
         PFN_SEND pSend = nullptr;
-        PFN_VER pVersion = nullptr;
         PFN_VOICES pActiveVoices = nullptr;
         PFN_RENDERTIME pRenderingTime = nullptr;
         bool bAvailable = false;
@@ -82,7 +80,6 @@ namespace
                 k.pInit = ( PFN_BOOL )GetProcAddress( k.hMod, "InitializeKDMAPIStream" );
                 k.pTerminate = ( PFN_BOOL )GetProcAddress( k.hMod, "TerminateKDMAPIStream" );
                 k.pSend = ( PFN_SEND )GetProcAddress( k.hMod, "SendDirectData" );
-                k.pVersion = ( PFN_VER )GetProcAddress( k.hMod, "ReturnKDMAPIVer" );
                 k.pActiveVoices = ( PFN_VOICES )GetProcAddress( k.hMod, "GetVoiceCount" );
                 if ( !k.pActiveVoices ) k.pActiveVoices = ( PFN_VOICES )GetProcAddress( k.hMod, "GetActiveVoices" );
                 k.pRenderingTime = ( PFN_RENDERTIME )GetProcAddress( k.hMod, "GetRenderingTime" );
@@ -147,13 +144,6 @@ std::wstring MidiOutputs::KdmapiStatus()
     if ( !k.hMod ) return L"Not available: OmniMIDI.dll was not found in System32 or next to PFAviz++.exe.";
     if ( !k.bAvailable ) return L"Not available: OmniMIDI.dll was found but does not report KDMAPI as available.";
     std::wstring s = L"Available";
-    DWORD a = 0, b = 0, c = 0, d = 0;
-    if ( k.pVersion && k.pVersion( &a, &b, &c, &d ) )
-    {
-        wchar_t buf[64];
-        swprintf( buf, 64, L" (version %lu.%lu.%lu.%lu)", a, b, c, d );
-        s += buf;
-    }
     s += L". It is used instead of the device above when \"Prefer KDMAPI\" is checked in the Performance tab.";
     return s;
 }
