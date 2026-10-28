@@ -447,6 +447,7 @@ void PlaybackEngine::SenderThread()
     SetThreadPriority( GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL );
     HANDLE hTimer = CreateWaitTimer();
     double dEma = 0.0;
+    unsigned uSentEpoch = m_Clock.Epoch();
 
     while ( !m_bStop.load( std::memory_order_relaxed ) )
     {
@@ -454,7 +455,7 @@ void PlaybackEngine::SenderThread()
         {
             if ( m_pOut ) m_pOut->AllNotesOff();
             m_pOut.reset();
-            m_pOut = MidiOutputs::OpenConfigured( m_pSong->bTuning31 );
+            m_pOut = MidiOutputs::OpenConfigured( m_pSong->bTuning31, m_pSong->bTuning31PitchBend );
             if ( m_pOut ) m_pOut->SetVolume( 1.0 );
             {
                 std::lock_guard< std::mutex > lock( m_mxName );
@@ -473,6 +474,11 @@ void PlaybackEngine::SenderThread()
 
         if ( s.uEpoch == m_Clock.Epoch() )
         {
+            if ( s.uEpoch != uSentEpoch )
+            {
+                if ( m_pOut ) m_pOut->ResetPlaybackState();
+                uSentEpoch = s.uEpoch;
+            }
             if ( !s.bImmediate )
             {
                 long long llNow = m_Clock.Now();

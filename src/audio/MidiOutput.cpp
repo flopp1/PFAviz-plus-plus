@@ -1,5 +1,6 @@
 #include "audio/MidiOutput.h"
 #include "audio/Tuning31.h"
+#include "audio/PitchBendTuning.h"
 
 #include <mmsystem.h>
 
@@ -171,8 +172,21 @@ namespace
                 if ( !m_pOut->SendSysEx( message, sizeof( message ) ) ) return false;
             return true;
         }
-        void Send( uint32_t message ) override { m_pOut->Send( message ); }
-        void SendBatch( const uint32_t *messages, size_t n ) override { m_pOut->SendBatch( messages, n ); }
+        void Send( uint32_t message ) override
+        {
+            unsigned type = message & 0xF0, channel = message & 0x0F;
+            if ( type == 0x80 || type == 0x90 || type == 0xA0 )
+            {
+                auto pitch = Tuning31::Pitch( ( message >> 8 ) & 0xFF, channel );
+                if ( pitch.second < 128 ) m_pOut->Send( ( message & ~0xFF0Fu ) | pitch.first | ( uint32_t( pitch.second ) << 8 ) );
+            }
+            else if ( channel != 9 && type >= 0xB0 && type <= 0xE0 )
+            {
+                unsigned base = Tuning31::GroupBase( channel );
+                for ( unsigned lane = 0; lane < 3; lane++ ) m_pOut->Send( ( message & ~0x0Fu ) | ( base + lane ) );
+            }
+            else m_pOut->Send( message );
+        }
         void SetVolume( double volume ) override { m_pOut->SetVolume( volume ); }
         const std::wstring &Name() const override { return m_pOut->Name(); }
         bool IsKdmapi() const override { return m_pOut->IsKdmapi(); }
@@ -236,7 +250,7 @@ std::wstring MidiOutputs::ConfiguredName()
     return std::wstring();
 }
 
-std::unique_ptr< MidiOutput > MidiOutputs::OpenConfigured( bool bTuning31 )
+std::unique_ptr< MidiOutput > MidiOutputs::OpenConfigured( bool bTuning31, bool bPitchBend )
 {
     Config &config = Config::GetConfig();
     std::unique_ptr< MidiOutput > output;
@@ -251,6 +265,7 @@ std::unique_ptr< MidiOutput > MidiOutputs::OpenConfigured( bool bTuning31 )
         output = OpenWinMM( iDevice );
     }
     if ( !output || !bTuning31 ) return output;
+    if ( bPitchBend ) return std::make_unique< PitchBendTunedOutput >( std::move( output ) );
     auto tuned = std::make_unique< TunedOutput >( std::move( output ) );
     if ( !tuned->Init() ) return nullptr;
     return tuned;

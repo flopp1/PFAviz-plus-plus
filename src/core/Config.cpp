@@ -422,6 +422,7 @@ void PerformanceSettings::LoadDefaultValues()
     iPlaybackThreads = 0;
     bPreferKDMAPI = true;
     bTuning31 = false;
+    bTuning31PitchBend = false;
     bVelocitySkip = false;
     iSkipLagMs = 100;
     bVelocityFloor = false;
@@ -444,6 +445,7 @@ void PerformanceSettings::Load( const IniFile &ini )
     iPlaybackThreads = std::clamp( ini.GetInt( "Performance", "PlaybackThreads", iWorkerThreads ), 0, 256 );
     bPreferKDMAPI = ini.GetBool( "Performance", "PreferKDMAPI", bPreferKDMAPI );
     bTuning31 = ini.GetBool( "Performance", "Tuning31", bTuning31 );
+    bTuning31PitchBend = ini.GetBool( "Performance", "Tuning31PitchBend", bTuning31PitchBend );
     bVelocitySkip = ini.GetBool( "Performance", "VelocitySkip", bVelocitySkip );
     iSkipLagMs = std::clamp( ini.GetInt( "Performance", "SkipLagMs", iSkipLagMs ), 1, 10000 );
     bVelocityFloor = ini.GetBool( "Performance", "VelocityFloor", bVelocityFloor );
@@ -465,6 +467,7 @@ void PerformanceSettings::Save( IniFile &ini ) const
     ini.SetInt( "Performance", "PlaybackThreads", iPlaybackThreads );
     ini.SetInt( "Performance", "PreferKDMAPI", bPreferKDMAPI );
     ini.SetInt( "Performance", "Tuning31", bTuning31 );
+    ini.SetInt( "Performance", "Tuning31PitchBend", bTuning31PitchBend );
     ini.SetInt( "Performance", "VelocitySkip", bVelocitySkip );
     ini.SetInt( "Performance", "SkipLagMs", iSkipLagMs );
     ini.SetInt( "Performance", "VelocityFloor", bVelocityFloor );

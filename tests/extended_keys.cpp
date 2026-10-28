@@ -27,10 +27,11 @@ static std::vector< uint8_t > Midi( bool extended )
     return file;
 }
 
-static void CheckSong( bool extended, bool full, bool lz, int fused )
+static void CheckSong( bool extended, bool full, bool lz, int fused, bool tuning )
 {
     auto file = Midi( extended );
     LoadProgress progress;
+    progress.bTuning31 = tuning;
     progress.bFullVisual = full;
     progress.bLzVisual = lz;
     progress.iFusedRead = fused;
@@ -40,6 +41,7 @@ static void CheckSong( bool extended, bool full, bool lz, int fused )
     if ( !song ) std::fwprintf( stderr, L"%ls\n", error.c_str() );
     assert( song );
     const int keys = extended ? 256 : 128;
+    assert( song->bTuning31 == tuning );
     assert( song->info.iMinNote == 0 && song->info.iMaxNote == keys - 1 );
     assert( song->info.llNoteCount == keys );
     assert( stats.llOutOfRange == 0 && stats.llMalformedTracks == 0 );
@@ -97,12 +99,20 @@ static void CheckSong( bool extended, bool full, bool lz, int fused )
     assert( reference.Parse( file.data(), file.size() ) );
     assert( reference.GetInfo().llNoteCount == keys );
     for ( const auto &event : reference.GetEvents() ) assert( event.iSister >= 0 );
+    for ( const auto &bins : song->aSendOns )
+    {
+        uint64_t ons = 0;
+        for ( size_t bin = 0; bin < bins.Bins(); bin++ ) ons += bins.Total( bin );
+        assert( ons == (uint64_t)( tuning ? keys : 128 ) );
+    }
     for ( bool collapse : { false, true } )
+    for ( int floor : { 0, 101 } )
     {
         PlaybackDecoder decoder( *song );
         decoder.Reset( 0 );
         PlaybackDecoder::Params params;
         params.bCollapse = collapse;
+        params.iMinVelocity = floor;
         std::vector< uint32_t > messages;
         for ( int attempt = 0; decoder.NextTime( 0 ) != LLONG_MAX; attempt++ )
         {
@@ -112,11 +122,32 @@ static void CheckSong( bool extended, bool full, bool lz, int fused )
             size_t n = decoder.Fill( out, 64, 2000000, 0, params, due );
             messages.insert( messages.end(), out, out + n );
         }
-        assert( messages.size() == 256 );
+        if ( extended && tuning && full && fused == 0 )
+        {
+            PlaybackDecoder mainLane( *song ), lane( *song );
+            mainLane.Reset( 0 );
+            PlaybackDecoder *lanes[] = { &mainLane, &lane };
+            PlaybackDecoder::LaneOut outputs[2];
+            std::vector< uint32_t > parallelMessages;
+            for ( int attempt = 0; mainLane.NextTime( 0 ) != LLONG_MAX; attempt++ )
+            {
+                assert( attempt < 10 );
+                PlaybackDecoder::Batch batch;
+                assert( mainLane.PlanBatch( 2, 2000000, song->stream.llRawBytes + 1, 0, batch ) );
+                mainLane.RunMainLane( batch, params, outputs[0] );
+                lane.RunLane( batch, 1, params, outputs[1] );
+                mainLane.FinishBatch( batch, lanes, outputs, 2,
+                    []( const std::function< void( int ) > &fn ) { fn( 1 ); },
+                    [&]( const uint32_t *out, size_t n, long long ) { parallelMessages.insert( parallelMessages.end(), out, out + n ); } );
+            }
+            assert( parallelMessages == messages );
+        }
+        const size_t playedKeys = tuning ? keys : 128;
+        assert( messages.size() == ( floor ? 0 : playedKeys * 2 ) );
         for ( size_t i = 0; i < messages.size(); i++ )
         {
-            assert( ( ( messages[i] >> 8 ) & 0xFF ) == i % 128 );
-            assert( ( messages[i] >> 16 ) == ( i < 128 ? 100 : 0 ) );
+            assert( ( ( messages[i] >> 8 ) & 0xFF ) == i % playedKeys );
+            assert( ( messages[i] >> 16 ) == ( i < playedKeys ? 100 : 0 ) );
         }
     }
 }
@@ -169,6 +200,34 @@ int wmain( int argc, wchar_t **argv )
         return 0;
     }
 
+    {
+        auto file = Midi( false );
+        LoadProgress progress;
+        progress.bTuning31 = progress.bTuning31PitchBend = true;
+        LoadStats stats;
+        std::wstring error;
+        auto song = Loader::LoadMemory( file.data(), file.size(), 2, progress, stats, error );
+        assert( song && song->bTuning31PitchBend );
+        const std::vector< uint32_t > history = { 0x000065B0, 0x000064B0, 0x003006B0, 0x007F65B0, 0x007F64B0, 0x006000E0 };
+        song->vChase.clear();
+        for ( uint32_t message : history ) song->vChase.push_back( { 100, message } );
+        song->vChase.push_back( { 2000, 0x000006B0 } );
+        PlaybackDecoder decoder( *song );
+        std::vector< uint32_t > chase;
+        decoder.Seek( 1000, 0, chase );
+        assert( chase.size() >= history.size() );
+        assert( std::equal( history.begin(), history.end(), chase.end() - history.size() ) );
+    }
+    PerformanceSettings performance;
+    performance.LoadDefaultValues();
+    assert( !performance.bTuning31PitchBend );
+    performance.bTuning31PitchBend = true;
+    IniFile performanceIni;
+    performance.Save( performanceIni );
+    PerformanceSettings restoredPerformance;
+    restoredPerformance.LoadDefaultValues();
+    restoredPerformance.Load( performanceIni );
+    assert( restoredPerformance.bTuning31PitchBend );
     VisualSettings settings;
     settings.LoadDefaultValues();
     settings.eKeysShown = VisualSettings::All256;
@@ -195,11 +254,12 @@ int wmain( int argc, wchar_t **argv )
         previous = x;
     }
     for ( bool extended : { false, true } )
+    for ( bool tuning : { false, true } )
         for ( int fused : { 0, 1 } )
         {
-            CheckSong( extended, true, false, fused );
-            CheckSong( extended, false, false, fused );
-            CheckSong( extended, false, true, fused );
+            CheckSong( extended, true, false, fused, tuning );
+            CheckSong( extended, false, false, fused, tuning );
+            CheckSong( extended, false, true, fused, tuning );
         }
     std::puts( "Extended key regression checks passed" );
     return 0;

@@ -92,7 +92,7 @@ void Song::BuildSendCounts( int iThreads )
         Part &part = vParts[k];
         uint64_t aCount[2][128] = {};
         uint64_t llCC = 0;                                  // controller events in the bin
-        std::vector< size_t > vSeen( 2048, SIZE_MAX );     // per channel and key: the last tick with a note-on
+        std::vector< size_t > vSeen( 4096, SIZE_MAX );     // per channel and key: the last tick with a note-on
         size_t b = part.bFirst = (size_t)( es.times.Get( u0 ) / B );
         auto Flush = [&]() {
             for ( int c = 0; c < 2; c++ )
@@ -140,9 +140,10 @@ void Song::BuildSendCounts( int iThreads )
                     continue;
                 }
                 unsigned v = op == 2 ? 0 : *r.p++;
-                if ( op == 0 && v && !( v & 0x80 ) && bCount )
+                if ( op == 0 && ( v & 0x7F ) && ( !( v & 0x80 ) || ( bTuning31 && ( h & 0x0F ) != 9 ) ) && bCount )
                 {
-                    uint32_t uCh = ( h & 0x0F ) << 7;
+                    uint32_t uCh = ( ( h & 0x0F ) << 8 ) | ( v & 0x80 );
+                    v &= 0x7F;
                     uint64_t n = 0, nFirst = 0;
                     unsigned key;
                     do

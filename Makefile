@@ -58,3 +58,13 @@ clean:
 
 $(OUT)/extended_keys.exe: tests/extended_keys.cpp $(OBJS)
 	$(CXX) $(CXXFLAGS) $(filter-out -mwindows,$(LDFLAGS)) -mconsole $^ -o $@ $(LDLIBS)
+
+$(OUT)/tuning31-routing.exe: tests/tuning31-routing.cpp src/audio/MidiOutput.cpp src/audio/MidiOutput.h src/audio/Tuning31.h
+	$(CXX) $(filter-out -municode,$(CXXFLAGS)) -static $< -o $@ -lwinmm
+
+-include $(OUT)/tuning31-routing.d
+
+$(OUT)/tuning31-bend.exe: tests/tuning31-bend.cpp src/audio/MidiOutput.cpp src/audio/MidiOutput.h src/audio/Tuning31.h src/audio/PitchBendTuning.h src/audio/PitchBendRange.h
+	$(CXX) $(filter-out -municode,$(CXXFLAGS)) -static $< -o $@ -lwinmm
+
+-include $(OUT)/tuning31-bend.d

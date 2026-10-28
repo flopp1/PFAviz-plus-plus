@@ -301,6 +301,7 @@ struct EventCounts
 struct Song
 {
     bool bTuning31 = false;
+    bool bTuning31PitchBend = false;
     RefMidiInfo info;                       // llFirstNote is set by the pairing pass
     std::vector< RefTrackInfo > vTracks;
     std::vector< RefMetaEvent > vMeta;      // tempo (length 3) and time signatures (length 4), global order, with times

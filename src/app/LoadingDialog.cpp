@@ -35,6 +35,7 @@ namespace
         LoadJob *pJob = static_cast< LoadJob * >( p );
         const PerformanceSettings &cPerf = Config::GetConfig().GetPerformanceSettings();
         pJob->progress.bTuning31 = cPerf.bTuning31;
+        pJob->progress.bTuning31PitchBend = cPerf.bTuning31PitchBend;
         pJob->progress.bLzVisual = cPerf.bCompactVisual;
         pJob->progress.bNoteStats = ( Config::GetConfig().GetVisualSettings().uStats & VisualSettings::NoteStats ) != 0;
         pJob->progress.bFirstPairingOnly = cPerf.bIgnoreWeird;

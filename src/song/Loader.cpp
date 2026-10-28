@@ -407,7 +407,7 @@ namespace
                 if ( pEnd - p < iDataBytes ) { MORE( true ) if ( COUNT ) pScan->info.bMalformed = true; break; }
                 uint8_t aData[2] = { p[0], iDataBytes == 2 ? std::min< uint8_t >( p[1], 0x7F ) : (uint8_t)0 };
                 p += iDataBytes;
-                if ( aData[0] >= 0x80 && iType != 0x8 && iType != 0x9 )
+                if ( aData[0] >= 0x80 && iType != 0x8 && iType != 0x9 && iType != 0xA )
                 {
                     if ( COUNT ) { llOutOfRange++; llTotalTicks = std::max( llTotalTicks, llTick ); }
                     continue;
@@ -652,6 +652,7 @@ namespace
         }
         auto song = std::make_unique< Song >();
         song->bTuning31 = prog.bTuning31;
+        song->bTuning31PitchBend = prog.bTuning31PitchBend;
         RefMidiInfo &info = song->info;
         info.iFormatType = (int)BE( pHdr, 2 );
         info.iDivision = (int)BE( pHdr + 4, 2 );

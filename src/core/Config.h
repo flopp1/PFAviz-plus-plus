@@ -133,6 +133,7 @@ struct PerformanceSettings
     int iPlaybackThreads;       // the most threads decoding playback; 0 = auto
     bool bPreferKDMAPI;
     bool bTuning31;
+    bool bTuning31PitchBend;
     bool bVelocitySkip;         // skip quiet note-ons while the output lags (off: every event is sent)
     int iSkipLagMs;             // the lag above which velocity skipping starts
     bool bVelocityFloor;        // always skip note-ons quieter than iMinVelocity

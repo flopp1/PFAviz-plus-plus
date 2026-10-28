@@ -622,6 +622,8 @@ namespace
                 CheckDlgButton( hWnd, IDC_PERF_INSTANCING, cPerf.bGpuInstancing ? BST_CHECKED : BST_UNCHECKED );
                 SetDlgItemInt( hWnd, IDC_PERF_CACHEMB, (UINT)cPerf.iBlockCacheMB, FALSE );
                 CheckDlgButton( hWnd, IDC_PERF_TUNING31, cPerf.bTuning31 ? BST_CHECKED : BST_UNCHECKED );
+                CheckDlgButton( hWnd, IDC_PERF_TUNING31BEND, cPerf.bTuning31PitchBend ? BST_CHECKED : BST_UNCHECKED );
+                EnableWindow( GetDlgItem( hWnd, IDC_PERF_TUNING31BEND ), cPerf.bTuning31 );
                 CheckDlgButton( hWnd, IDC_PERF_KDMAPI, cPerf.bPreferKDMAPI ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_PERF_COLLAPSE, cPerf.bCollapseStacks ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_PERF_VELFLOOR, cPerf.bVelocityFloor ? BST_CHECKED : BST_UNCHECKED );
@@ -636,6 +638,8 @@ namespace
             case WM_COMMAND:
             {
                 int iCode = HIWORD( wParam );
+                if ( LOWORD( wParam ) == IDC_PERF_TUNING31 && iCode == BN_CLICKED )
+                    EnableWindow( GetDlgItem( hWnd, IDC_PERF_TUNING31BEND ), IsDlgButtonChecked( hWnd, IDC_PERF_TUNING31 ) == BST_CHECKED );
                 if ( LOWORD( wParam ) == IDC_PERF_VIDEO )
                 {
                     if ( iCode == BN_CLICKED ) DoVideoExport( GetParent( hWnd ) );
@@ -705,6 +709,7 @@ namespace
                     cPerf.bGpuInstancing = IsDlgButtonChecked( hWnd, IDC_PERF_INSTANCING ) == BST_CHECKED;
                     cPerf.iBlockCacheMB = (int)uCache;
                     cPerf.bTuning31 = IsDlgButtonChecked( hWnd, IDC_PERF_TUNING31 ) == BST_CHECKED;
+                    cPerf.bTuning31PitchBend = IsDlgButtonChecked( hWnd, IDC_PERF_TUNING31BEND ) == BST_CHECKED;
                     cPerf.bPreferKDMAPI = IsDlgButtonChecked( hWnd, IDC_PERF_KDMAPI ) == BST_CHECKED;
                     cVideo.bLimitFPS = IsDlgButtonChecked( hWnd, IDC_LIMITFPS ) == BST_CHECKED;
 

@@ -111,7 +111,7 @@ BEGIN
     CONTROL         "Start songs &paused after loading",IDC_STARTPAUSED,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,100,200,10
 END
 
-IDD_PP5_PERFORMANCE DIALOGEX 0, 0, 300, 330
+IDD_PP5_PERFORMANCE DIALOGEX 0, 0, 300, 346
 STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_DISABLED | WS_CAPTION
 CAPTION "Property Page"
 FONT 8, "MS Shell Dlg", 400, 0, 0x0
@@ -128,7 +128,7 @@ BEGIN
     CONTROL         "LOD c&ache (faster drawing of dense songs, built in the background)",IDC_PERF_LOD,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,82,270,10
     CONTROL         "End weird notes at their &first note-off (keep the first pairing)",IDC_PERF_IGNOREWEIRD,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,96,270,10
     CONTROL         "&GPU instancing for notes (less CPU work per note; not pixel-exact)",IDC_PERF_INSTANCING,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,110,270,10
-    GROUPBOX        "Playback",IDC_STATIC,7,128,286,164
+    GROUPBOX        "Playback",IDC_STATIC,7,128,286,180
     LTEXT           "&Decoding threads:",IDC_STATIC,13,142,64,8
     EDITTEXT        IDC_PERF_PLAYTHREADS,80,140,30,14,ES_AUTOHSCROLL | ES_NUMBER
     LTEXT           "",IDC_PERF_PLAYTHREADSNOTE,114,142,174,8
@@ -146,10 +146,11 @@ BEGIN
     EDITTEXT        IDC_PERF_MAXSENDS,80,240,50,14,ES_AUTOHSCROLL | ES_NUMBER
     LTEXT           "messages/s (quietest notes skipped first)",IDC_STATIC,134,242,154,8
     CONTROL         "Apply 256-key 31-EDO tuning",IDC_PERF_TUNING31,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,260,275,10
-    LTEXT           "Reload MIDI after changing; output must support MTS tuning.",IDC_STATIC,25,275,263,8
-    GROUPBOX        "Display",IDC_STATIC,7,297,286,28
-    CONTROL         "&Limit frame rate",IDC_LIMITFPS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,310,100,10
-    PUSHBUTTON      "Render &video...",IDC_PERF_VIDEO,120,307,80,14
+    CONTROL         "Use pitch-bends tuning instead of MTS for compatibility. Broken.",IDC_PERF_TUNING31BEND,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,25,275,263,10
+    LTEXT           "31EDO needs a MIDI reload. Apply pitch bend tuning for KDMAPI.",IDC_STATIC,25,291,263,8
+    GROUPBOX        "Display",IDC_STATIC,7,313,286,28
+    CONTROL         "&Limit frame rate",IDC_LIMITFPS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,326,100,10
+    PUSHBUTTON      "Render &video...",IDC_PERF_VIDEO,120,323,80,14
 END
 
 IDD_STATS DIALOGEX 0, 0, 300, 252

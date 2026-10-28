@@ -16,6 +16,7 @@ public:
     virtual void SendBatch( const uint32_t *pMsgs, size_t n ) { for ( size_t i = 0; i < n; i++ ) Send( pMsgs[i] ); }
     virtual bool SendSysEx( const uint8_t *pData, size_t n ) { return false; }
     virtual void SetVolume( double dVolume ) {}
+    virtual void ResetPlaybackState() {}
     virtual const std::wstring &Name() const = 0;
     virtual bool IsKdmapi() const { return false; }
 
@@ -35,7 +36,7 @@ namespace MidiOutputs
     std::unique_ptr< MidiOutput > OpenKdmapi();
     std::unique_ptr< MidiOutput > OpenWinMM( int iDevice );
     // The device chosen in the settings: KDMAPI when preferred and available, else the WinMM device
-    std::unique_ptr< MidiOutput > OpenConfigured( bool bTuning31 = false );
+    std::unique_ptr< MidiOutput > OpenConfigured( bool bTuning31 = false, bool bPitchBend = false );
     // The name OpenConfigured would open now (empty when nothing would open)
     std::wstring ConfiguredName();
 }

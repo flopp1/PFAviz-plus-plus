@@ -74,6 +74,20 @@ void PlaybackDecoder::Chase( long long llTarget, std::vector< uint32_t > &vOut )
     for ( uint32_t ch = 0; ch < 16; ch++ ) vOut.push_back( 0xB0 | ch | ( 121 << 8 ) );
 
     const std::vector< ChaseEvent > &vChase = m_Song.vChase;
+    if ( m_Song.bTuning31 && m_Song.bTuning31PitchBend )
+    {
+        for ( uint32_t ch = 0; ch < 16; ch++ )
+        {
+            for ( const Default &d : aDefault ) vOut.push_back( 0xB0 | ch | ( d.iItem << 8 ) | ( d.iValue << 16 ) );
+            vOut.push_back( 0xC0 | ch );
+        }
+        for ( const ChaseEvent &event : vChase )
+        {
+            if ( event.llTime > llTarget ) break;
+            vOut.push_back( event.uMsg );
+        }
+        return;
+    }
     size_t iNew = (size_t)( std::upper_bound( vChase.begin(), vChase.end(), llTarget,
                                               []( long long t, const ChaseEvent &e ) { return t < e.llTime; } ) - vChase.begin() );
     // Back from the target: an item's first event is its value; a CC 121 settles the items it resets
@@ -284,14 +298,14 @@ size_t PlaybackDecoder::Notes( uint32_t uTrack, uint32_t uBase, const uint8_t *p
                                size_t u, uint32_t uMinVel, const Params &p )
 {
     bEnd = false;
-    if ( uBase & 0x8000 )
+    if ( ( uBase & 0x8000 ) && ( !m_Song.bTuning31 || ( uBase & 0x0F ) == 9 ) )
     {
         size_t i = 0;
         while ( i < iMax )
             if ( pk[i++] & 0x80 ) { bEnd = true; break; }
         return i;
     }
-    uint32_t ch = uBase & 0x0F, uKeys = ch << 7, uVel = uBase >> 16;
+    uint32_t ch = uBase & 0x0F, uKeys = ( ch << 8 ) | ( ( uBase >> 8 ) & 0x80 ), uVel = uBase >> 16;
     size_t i = 0, n = rn;
     // Every key sent as it is: the run's length (to its last key, or iMax), then the messages
     auto SendAll = [&]( uint32_t uOut ) {
@@ -323,7 +337,7 @@ size_t PlaybackDecoder::Notes( uint32_t uTrack, uint32_t uBase, const uint8_t *p
         // muted or not: a note that was sounding when its channel was muted still ends
         const bool bMuted = p.bMute || ( m_pMuteMask && ( ( m_pMuteMask[uTrack].load( std::memory_order_relaxed ) >> ch ) & 1 ) );
         const bool bBelow = uVel < uMinVel;
-        const uint32_t uOutVel = m_aVelLut[uVel], uOut = ( uBase & 0xFF ) | ( uOutVel << 16 );
+        const uint32_t uOutVel = m_aVelLut[uVel], uOut = ( uBase & 0x80FF ) | ( uOutVel << 16 );
         if ( !bCollapse && !bCounting && !bMuted && !bBelow )
         {
             SendAll( uOut );
@@ -431,7 +445,8 @@ bool PlaybackDecoder::FillTick( uint32_t *__restrict pOut, size_t iCap, size_t &
             return i;
         },
         [&]( uint32_t, uint32_t uMsg ) {
-            pOut[n++] = uMsg;
+            if ( ( uMsg & 0xF0 ) != 0xA0 || !( uMsg & 0x8000 ) || ( m_Song.bTuning31 && ( uMsg & 0x0F ) != 9 ) )
+                pOut[n++] = uMsg;
             iRead++;
             if ( bCounting ) m_dTokens -= 1.0;
             if ( --iRoom ) return true;
@@ -616,9 +631,9 @@ void PlaybackDecoder::FinishBatch( const Batch &b, PlaybackDecoder *const *aLane
 {
     // Per channel and key: offs owed (note-ons not sent: pending skips and held notes, which drop
     // offs alike), voices sounding and the tick of the last. Lane 0 is this decoder's own: exact.
-    std::vector< uint64_t > vOwed( 2048 ), vVoices( 2048 );
-    std::vector< size_t > vVoiceTick( 2048 );
-    for ( int i = 0; i < 2048; i++ )
+    std::vector< uint64_t > vOwed( 4096 ), vVoices( 4096 );
+    std::vector< size_t > vVoiceTick( 4096 );
+    for ( int i = 0; i < 4096; i++ )
     {
         const KeyState &ks = m_aKey[i];
         vOwed[i] = ks.uPending + ( ks.uHeld - ks.uVoices );
@@ -626,7 +641,7 @@ void PlaybackDecoder::FinishBatch( const Batch &b, PlaybackDecoder *const *aLane
         vVoiceTick[i] = ks.uVoiceTick;
     }
     // Each later lane owes, per key, the first of the offs it sent, as many as are owed then
-    std::vector< uint32_t > vQuota( (size_t)iLanes * 2048 );
+    std::vector< uint32_t > vQuota( (size_t)iLanes * 4096 );
     std::vector< uint64_t > vLeft( iLanes );   // offs each lane drops
     // A lane that sent offs on the fast path did not count them. Its quota needs them only up to what
     // can be owed by then (carried in, plus what the lanes before it left owing), so they are counted
@@ -637,8 +652,8 @@ void PlaybackDecoder::FinishBatch( const Batch &b, PlaybackDecoder *const *aLane
         for ( int k = 1; k < iLanes; k++ )
         {
             PlaybackDecoder &L = *aLanes[k];
-            uint32_t *pBound = &vQuota[(size_t)k * 2048];
-            for ( int i = 0; i < 2048; i++ )
+            uint32_t *pBound = &vQuota[(size_t)k * 4096];
+            for ( int i = 0; i < 4096; i++ )
             {
                 const KeyState &ks = L.m_aKey[i];
                 if ( L.m_llFastOffs && vMax[i] ) { pBound[i] = (uint32_t)std::min< uint64_t >( vMax[i], UINT32_MAX ); bCount = true; }
@@ -649,21 +664,21 @@ void PlaybackDecoder::FinishBatch( const Batch &b, PlaybackDecoder *const *aLane
     if ( bCount )
         parallel( [&]( int k ) {
             PlaybackDecoder &L = *aLanes[k];
-            uint32_t *pBound = &vQuota[(size_t)k * 2048];
+            uint32_t *pBound = &vQuota[(size_t)k * 4096];
             size_t iKeys = 0;
-            for ( int i = 0; i < 2048; i++ ) iKeys += pBound[i] != 0;
+            for ( int i = 0; i < 4096; i++ ) iKeys += pBound[i] != 0;
             if ( !L.m_llFastOffs || !iKeys ) return;
             for ( KeyState &ks : L.m_aKey ) ks.uSentOffs = 0;
             for ( uint32_t m : aOut[k].vMsgs )
             {
-                size_t i = ( ( m & 0x0F ) << 7 ) | ( ( m >> 8 ) & 0x7F );
+                size_t i = ( ( m & 0x0F ) << 8 ) | ( ( m >> 8 ) & 0xFF );
                 if ( IsOff( m ) && pBound[i] && ++L.m_aKey[i].uSentOffs == pBound[i] )
                 {
                     pBound[i] = 0;
                     if ( !--iKeys ) break;
                 }
             }
-            for ( int i = 0; i < 2048; i++ ) pBound[i] = 0;
+            for ( int i = 0; i < 4096; i++ ) pBound[i] = 0;
         } );
     // The bucket at the batch's end is the last lane's (with what read anything): earlier lanes'
     // leftovers belong to earlier song time, and spending them later could exceed the budget
@@ -672,8 +687,8 @@ void PlaybackDecoder::FinishBatch( const Batch &b, PlaybackDecoder *const *aLane
     for ( int k = 1; k < iLanes; k++ )
     {
         PlaybackDecoder &L = *aLanes[k];
-        uint32_t *pQuota = &vQuota[(size_t)k * 2048];
-        for ( int i = 0; i < 2048; i++ )
+        uint32_t *pQuota = &vQuota[(size_t)k * 4096];
+        for ( int i = 0; i < 4096; i++ )
         {
             const KeyState &ks = L.m_aKey[i];
             if ( vOwed[i] && ks.uSentOffs )
@@ -703,7 +718,7 @@ void PlaybackDecoder::FinishBatch( const Batch &b, PlaybackDecoder *const *aLane
             if ( !q ) return;
             // The lane's first offs of each owing key, in order, dropped here on the lane's thread; once
             // all are, the rest moves down as it is
-            uint32_t *pQuota = &vQuota[(size_t)k * 2048];
+            uint32_t *pQuota = &vQuota[(size_t)k * 4096];
             LaneOut &o = aOut[k];
             uint32_t *pm = o.vMsgs.data();
             size_t r = 0, w = 0, g = 0, G = o.vGroups.size(), N = o.vMsgs.size();
@@ -716,7 +731,7 @@ void PlaybackDecoder::FinishBatch( const Batch &b, PlaybackDecoder *const *aLane
                     uint32_t m = pm[r];
                     if ( IsOff( m ) )
                     {
-                        uint32_t &c = pQuota[( ( m & 0x0F ) << 7 ) | ( ( m >> 8 ) & 0x7F )];
+                        uint32_t &c = pQuota[( ( m & 0x0F ) << 8 ) | ( ( m >> 8 ) & 0xFF )];
                         if ( c ) { c--; q--; continue; }
                     }
                     pm[w++] = m;
@@ -741,7 +756,7 @@ void PlaybackDecoder::FinishBatch( const Batch &b, PlaybackDecoder *const *aLane
         for ( const auto &g : aOut[k].vGroups ) { emit( pm, g.first, g.second ); pm += g.first; }
     }
     // The carried state becomes this decoder's: owed offs as pending skips (they drop offs alike)
-    for ( int i = 0; i < 2048; i++ )
+    for ( int i = 0; i < 4096; i++ )
     {
         KeyState &ks = m_aKey[i];
         ks.uPending = (uint32_t)std::min< uint64_t >( vOwed[i], UINT32_MAX );
