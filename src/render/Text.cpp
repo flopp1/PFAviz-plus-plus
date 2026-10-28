@@ -203,7 +203,9 @@ namespace
             RECT rc = { iMargin, iMargin, iMargin + iRcW, iMargin + iRcH };
             SetTextColor( m_hDC, RGB( 255, 255, 255 ) );
             SetBkMode( m_hDC, TRANSPARENT );
-            ::DrawTextW( m_hDC, sStr.c_str(), (int)sStr.size(), &rc, dwFormat );
+            // Not clipped to the rect: a glyph's ink can pass its advance (Wine's substitute fonts cut the
+            // last letter of right-aligned text otherwise); the margins hold it
+            ::DrawTextW( m_hDC, sStr.c_str(), (int)sStr.size(), &rc, dwFormat | DT_NOCLIP );
             GdiFlush();
 
             int x0 = iW, y0 = iH, x1 = -1, y1 = -1;
