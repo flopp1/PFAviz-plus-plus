@@ -121,8 +121,54 @@ static void CheckSong( bool extended, bool full, bool lz, int fused )
     }
 }
 
-int wmain()
+int wmain( int argc, wchar_t **argv )
 {
+    if ( argc > 1 )
+    {
+        LoadProgress progress;
+        LoadStats stats;
+        std::wstring error;
+        std::puts( "Loading supplied MIDI file" );
+        std::fflush( stdout );
+        auto song = Loader::LoadFile( argv[1], 2, progress, stats, error );
+        if ( !song ) std::fwprintf( stderr, L"%ls\n", error.c_str() );
+        assert( song );
+        std::printf( "Loaded %lld notes, keys %d-%d\n", song->info.llNoteCount, song->info.iMinNote, song->info.iMaxNote );
+        Renderer renderer;
+        assert( SUCCEEDED( renderer.InitOffscreen( 1280, 720 ) ) );
+        if ( GetProcAddress( GetModuleHandleW( L"ntdll.dll" ), "wine_get_version" ) ) assert( !renderer.UsingD3DXFonts() );
+        ViewInputs view;
+        view.iBufferWidth = 1280;
+        view.iBufferHeight = 720;
+        view.eKeysShown = VisualSettings::All256;
+        view.llStartTime = song->info.llFirstNote;
+        auto globals = Scene::ComputeGlobals( view );
+        FastEngine engine( *song, 2 );
+        engine.SetLod( true, true );
+        engine.AdvanceEnd( view.llStartTime + view.llTimeSpan );
+        engine.Process( view.llStartTime );
+        std::vector< TrackSettings > tracks( song->vTracks.size() );
+        assert( SUCCEEDED( renderer.BeginScene() ) );
+        engine.DrawNotes( &renderer, globals, tracks );
+        int slots[256];
+        engine.GetKeySlots( slots );
+        const ChannelSettings *keyColors[256] = {};
+        for ( int key = 0; key < 256; key++ )
+            if ( slots[key] >= 0 ) keyColors[key] = &tracks[slots[key] >> 4].aChannels[slots[key] & 15];
+        SceneColors colors;
+        Scene::DrawKeys( &renderer, globals, colors, keyColors );
+        assert( SUCCEEDED( renderer.BeginText() ) );
+        RECT rect = { 10, 10, 1000, 80 };
+        assert( SUCCEEDED( renderer.DrawText( L"Extended MIDI playback", Renderer::Small, &rect, 0, 0xFFFFFFFF ) ) );
+        assert( SUCCEEDED( renderer.EndText() ) );
+        assert( SUCCEEDED( renderer.EndScene() ) );
+        std::vector< DWORD > pixels;
+        assert( renderer.ReadBack( pixels ) && pixels.size() == 1280 * 720 );
+        std::puts( "Supplied MIDI loading and rendering checks passed" );
+
+        return 0;
+    }
+
     VisualSettings settings;
     settings.LoadDefaultValues();
     settings.eKeysShown = VisualSettings::All256;
