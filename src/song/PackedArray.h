@@ -34,6 +34,10 @@ public:
 
     // Builds n values; get(i) must be non-decreasing in i. Blocks are built in parallel.
     void Build( size_t n, const std::function< uint64_t( size_t ) > &get, int iThreads );
+    // The same, a block at a time: fill( i0, i1, pOut ) writes values [i0, i1) (at most BlockSize), so
+    // a source that is cheap to walk but dear to seek (a tempo map, a bitmap) seeks once per block.
+    // Each block is filled twice.
+    void BuildBlocks( size_t n, const std::function< void( size_t, size_t, uint64_t * ) > &fill, int iThreads );
 
     size_t Size() const { return m_n; }
     uint64_t Get( size_t i ) const

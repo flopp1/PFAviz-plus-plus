@@ -39,11 +39,12 @@ static inline unsigned ReadBE( const unsigned char *p, int n )
     return v;
 }
 
-// Variable-length quantity, at most 4 bytes (SMF spec). Returns false if truncated or longer than 4 bytes.
+// Variable-length quantity, at most 5 bytes (the SMF spec says 4; some writers encode 32-bit values in 5).
+// Returns false if truncated or longer than 5 bytes.
 static bool ReadVarLen( const unsigned char *&p, const unsigned char *pEnd, long long &llOut )
 {
     llOut = 0;
-    for ( int i = 0; i < 4; i++ )
+    for ( int i = 0; i < 5; i++ )
     {
         if ( p >= pEnd ) return false;
         unsigned char c = *p++;

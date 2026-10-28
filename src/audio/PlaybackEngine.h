@@ -100,6 +100,7 @@ private:
     bool RunBatch( int iLanes, const PlaybackDecoder::Params &p, long long llNow, unsigned uEpoch, HANDLE hTimer );
     Slice *WriteSlot();
     void Commit();
+    void WaitForSpace();
 
     std::shared_ptr< const Song > m_pSong;
     PlaybackClock &m_Clock;

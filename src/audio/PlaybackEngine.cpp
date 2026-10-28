@@ -181,6 +181,16 @@ PlaybackEngine::Slice *PlaybackEngine::WriteSlot()
 void PlaybackEngine::Commit()
 {
     m_iWrite.store( ( m_iWrite.load( std::memory_order_relaxed ) + 1 ) % RingSize, std::memory_order_release );
+    WakeByAddressSingle( &m_iWrite );
+}
+
+// The ring full: until the sender takes a slice (at most 1 ms, so seeks and stops are seen). Woken, not
+// polled: a crash fills the ring in about a millisecond, and a sleep each time held playback to a
+// fraction of what decoding and the output could do (ColderNess at 96 M msgs/s, its threads idle)
+void PlaybackEngine::WaitForSpace()
+{
+    int iRead = m_iRead.load( std::memory_order_acquire );
+    if ( ( m_iWrite.load( std::memory_order_relaxed ) + 1 ) % RingSize == iRead ) WaitOnAddress( &m_iRead, &iRead, sizeof( iRead ), 1 );
 }
 
 //-----------------------------------------------------------------------------
@@ -222,7 +232,7 @@ void PlaybackEngine::DecoderThread()
                 for ( size_t i = 0; i < vChase.size() && !m_bStop; )
                 {
                     Slice *s = WriteSlot();
-                    if ( !s ) { WaitUs( hTimer, 300 ); continue; }
+                    if ( !s ) { WaitForSpace(); continue; }
                     size_t n = std::min( vChase.size() - i, SliceMsgs );
                     std::copy( vChase.begin() + i, vChase.begin() + i + n, s->aMsgs );
                     s->uEpoch = uEpoch;
@@ -237,7 +247,7 @@ void PlaybackEngine::DecoderThread()
         }
 
         Slice *s = WriteSlot();
-        if ( !s ) { WaitUs( hTimer, 500 ); continue; }
+        if ( !s ) { WaitForSpace(); continue; }
 
         p.dSpeed = std::max( m_Clock.Speed(), 1e-6 );
         p.bMute = m_bMute.load( std::memory_order_relaxed );
@@ -420,7 +430,7 @@ bool PlaybackEngine::RunBatch( int iLanes, const PlaybackDecoder::Params &p, lon
                 {
                     // A seek or stop while the ring is full: the rest is not needed
                     if ( m_bStop.load( std::memory_order_relaxed ) || m_Clock.Epoch() != uEpoch ) { bAbort = true; return; }
-                    WaitUs( hTimer, 300 );
+                    WaitForSpace();
                 }
                 pCur->uEpoch = uEpoch;
                 pCur->llDue = llDue;
@@ -483,8 +493,9 @@ void PlaybackEngine::SenderThread()
         if ( m_bNotesOff.exchange( false, std::memory_order_acq_rel ) && m_pOut )
             m_pOut->AllNotesOff();
 
-        int r = m_iRead.load( std::memory_order_relaxed );
-        if ( r == m_iWrite.load( std::memory_order_acquire ) ) { WaitUs( hTimer, 500 ); continue; }
+        // Nothing to send: until the decoder commits a slice (at most 1 ms, for the flags above)
+        int r = m_iRead.load( std::memory_order_relaxed ), w = m_iWrite.load( std::memory_order_acquire );
+        if ( r == w ) { WaitOnAddress( &m_iWrite, &w, sizeof( w ), 1 ); continue; }
         Slice &s = m_pRing[r];
 
         if ( s.uEpoch == m_Clock.Epoch() )
@@ -528,6 +539,7 @@ void PlaybackEngine::SenderThread()
         m_llRingSamples.fetch_add( 1, std::memory_order_relaxed );
         if ( iFill > m_iRingMax.load( std::memory_order_relaxed ) ) m_iRingMax.store( iFill, std::memory_order_relaxed );
         m_iRead.store( ( r + 1 ) % RingSize, std::memory_order_release );
+        WakeByAddressSingle( &m_iRead );
     }
 
     if ( m_pOut ) m_pOut->AllNotesOff();

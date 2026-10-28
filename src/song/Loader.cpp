@@ -4,10 +4,12 @@
 #include <windows.h>
 #include <psapi.h>
 #include <atomic>
+#include <chrono>
 #include <climits>
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <deque>
 #include <mutex>
 #include <thread>
 #include <vector>
@@ -207,10 +209,12 @@ namespace
         uint64_t llPackedBytes = 0;
     };
 
+    // Up to 5 bytes: the spec's limit is 4 (28 bits), but some writers encode 32-bit values in 5 (nut3's
+    // track starts, past tick 2^28)
     inline bool ReadVarLen( const uint8_t *&p, const uint8_t *pEnd, long long &llOut )
     {
         llOut = 0;
-        for ( int i = 0; i < 4; i++ )
+        for ( int i = 0; i < 5; i++ )
         {
             if ( p >= pEnd ) return false;
             uint8_t c = *p++;
@@ -608,13 +612,10 @@ namespace
         bool bSequential = pFile && pFile->SeekPenalty();
         stats.bSeekPenalty = pFile && pFile->SeekPenalty();
         stats.bSequentialRead = bSequential;
-        // Fused single read (4.0, 4.2a) when the emit pass could not be served from the page cache
-        bool bFused = prog.iFusedRead > 0 || pReader;
-        if ( prog.iFusedRead < 0 && bSequential )
-        {
-            MEMORYSTATUSEX ms = { sizeof( ms ) };
-            bFused = GlobalMemoryStatusEx( &ms ) && (double)llSize > 0.6 * (double)ms.ullAvailPhys;
-        }
+        // Fused single read (4.0, 4.2a) on a disk with a seek penalty, always: cached, it loads as fast as
+        // the two-pass read; and the two-pass emit pass needs the file still cached, which the load's own
+        // memory can evict (nut3, 7.7 GB peaking at 21 GB: the second read took 68 s from the disk)
+        bool bFused = prog.iFusedRead > 0 || pReader || ( prog.iFusedRead < 0 && bSequential );
         stats.bFusedRead = bFused;
         auto Cancelled = [&]() { return prog.bCancel.load( std::memory_order_relaxed ); };
         auto WaitBytes = [&]( uint64_t llEnd ) {
@@ -697,106 +698,158 @@ namespace
                 return vScans[a]->llEnd - vScans[a]->llBegin > vScans[b]->llEnd - vScans[b]->llBegin; } );
             prog.llTracksFound = vScans.size();
         }
-        // An archive: the tracks as they come out of it, one thread reading at a time. A track up to
-        // StreamWhole is read whole and counted with the reader free for the next; a longer one is
-        // counted in windows as it is read (ScanTrack< Stream >)
-        const size_t StreamWhole = 16 << 20;
-        std::wstring sStreamError;
-        bool bStreamEnd = false;
-        uint64_t llStreamPos = 0;
-        auto StreamTrack = [&]( std::vector< uint8_t > &vBuf ) {
-            std::unique_lock< std::mutex > lock( mtx );
-            auto Fail = [&]() {
-                bStreamEnd = true;
-                if ( sStreamError.empty() ) sStreamError = pReader->sError;
-                return false;
-            };
-            auto Fill = [&]( uint8_t *p, size_t n ) {
-                size_t got = 0;
-                while ( got < n )
-                {
-                    size_t r = pReader->ReadData( p + got, n - got );
-                    if ( !r ) break;
-                    got += r;
-                }
-                return got;
-            };
-            auto Progress = [&]() {
-                prog.aDone[LoadProgress::Reading] = pReader->Done();
-                prog.aDone[LoadProgress::Counting] = pReader->Done();
-            };
+        // An archive: one thread decompresses (ReadTracks, its own) while the workers count. It cuts the
+        // tracks into pieces of up to PieceBytes, with at most about QueueBytes of them waiting: a track
+        // of one piece is counted whole (Fused) by any worker; a longer one by the worker that takes it,
+        // piece by piece as they come (ScanTrack< Stream >). Decompression is the floor, so it never
+        // waits on counting (the workers used to take turns at the reader, a long track counted in turn)
+        const size_t PieceBytes = 16 << 20, PoolBytes = 1 << 20;    // a piece from PoolBytes: a PieceBytes buffer, reused
+        const uint64_t QueueBytes = 256 << 20;
+        struct Piece { std::unique_ptr< uint8_t[] > p; size_t iCap = 0, n = 0; bool bLast = false; };   // (not zeroed)
+        struct Job                              // a track
+        {
             TrackScan *pScan = nullptr;
             int iTrack = -1;
-            uint64_t llLen = 0;
-            while ( !pScan )
+            std::deque< Piece > q;              // its pieces read, not yet taken
+            bool bEnd = false;                  // no more will come (its last read, or the reader stopped)
+        };
+        std::mutex mq;
+        std::condition_variable cvJob, cvPiece, cvSpace;
+        std::deque< std::shared_ptr< Job > > qJobs;     // tracks not yet taken
+        std::vector< std::unique_ptr< uint8_t[] > > vPool;
+        uint64_t llQueued = 0;                  // capacity of the pieces waiting or being counted
+        bool bReadDone = false;
+        std::wstring sStreamError;
+        auto ReadTracks = [&]() {
+            uint64_t llStreamPos = 0;
+            std::shared_ptr< Job > job;
+            for ( ;; )
             {
-                if ( bStreamEnd || Cancelled() ) return false;
+                if ( Cancelled() ) break;
                 char aType[4];
-                if ( !pReader->NextChunk( aType, llLen ) ) return Fail();
+                uint64_t llLen = 0;
+                if ( !pReader->NextChunk( aType, llLen ) ) break;
                 llStreamPos += 8;
                 if ( memcmp( aType, "MTrk", 4 ) != 0 ) { llStreamPos += llLen; continue; }  // unknown chunk: skipped
-                iTrack = (int)vScans.size();
-                pScan = NewScan( llStreamPos, llStreamPos + llLen );
+                job = std::make_shared< Job >();
+                {
+                    std::lock_guard< std::mutex > lock( mtx );
+                    job->iTrack = (int)vScans.size();
+                    job->pScan = NewScan( llStreamPos, llStreamPos + llLen );
+                    prog.llTracksFound = vScans.size();
+                }
                 llStreamPos += llLen;
-                prog.llTracksFound = vScans.size();
-            }
-            if ( llLen <= StreamWhole )
-            {
-                vBuf.resize( (size_t)llLen );
-                size_t got = Fill( vBuf.data(), vBuf.size() );
-                if ( !pReader->sError.empty() ) return Fail();
-                Progress();
-                lock.unlock();
-                ScanTrack< Fused >( vBuf.data(), vBuf.data() + got, Checkpoint{ 0, 0, 0, 0 }, UINT64_MAX, iTrack, pScan, nullptr, nullptr );
-            }
-            else
-            {
-                StreamState st( pScan->llLongTicks );
-                std::vector< uint8_t > vWin( StreamWhole );
-                size_t iHave = 0;
                 uint64_t llLeft = llLen;
-                for ( ;; )
+                bool bFirst = true;
+                do
                 {
-                    if ( Cancelled() ) return false;
-                    size_t iWant = (size_t)std::min< uint64_t >( vWin.size() - iHave, llLeft ), n = Fill( vWin.data() + iHave, iWant );
-                    if ( !pReader->sError.empty() ) return Fail();
-                    iHave += n;
-                    llLeft = n < iWant ? 0 : llLeft - n;   // short: the file ended inside the track
-                    ScanTrack< Stream >( vWin.data(), vWin.data() + iHave, Checkpoint{ 0, 0, 0, 0 }, UINT64_MAX, iTrack, pScan, nullptr, nullptr,
-                                         0, nullptr, &st, llLeft == 0 );
-                    Progress();
-                    if ( st.bDone ) break;
-                    memmove( vWin.data(), vWin.data() + st.iUsed, iHave - st.iUsed );
-                    iHave -= st.iUsed;
-                    if ( iHave == vWin.size() ) vWin.resize( vWin.size() * 2 );   // an event longer than the window
-                }
-                // What follows the track's end
-                while ( llLeft )
-                {
-                    size_t n = Fill( vWin.data(), (size_t)std::min< uint64_t >( vWin.size(), llLeft ) );
-                    if ( !n ) break;
-                    llLeft -= n;
-                }
-                if ( !pReader->sError.empty() ) return Fail();
-                Progress();
+                    size_t iWant = (size_t)std::min< uint64_t >( llLeft, PieceBytes );
+                    Piece piece;
+                    {
+                        std::unique_lock< std::mutex > lock( mq );
+                        // (rechecked now and then: a cancel is not signalled, and the workers may stop freeing)
+                        while ( llQueued + iWant > QueueBytes && llQueued && !Cancelled() ) cvSpace.wait_for( lock, std::chrono::milliseconds( 50 ) );
+                        piece.iCap = iWant >= PoolBytes ? PieceBytes : iWant;
+                        llQueued += piece.iCap;
+                        if ( iWant >= PoolBytes && !vPool.empty() ) { piece.p = std::move( vPool.back() ); vPool.pop_back(); }
+                    }
+                    if ( !piece.p ) piece.p.reset( new uint8_t[piece.iCap] );
+                    while ( piece.n < iWant )
+                    {
+                        size_t r = pReader->ReadData( piece.p.get() + piece.n, iWant - piece.n );
+                        if ( !r ) break;
+                        piece.n += r;
+                    }
+                    llLeft = piece.n < iWant ? 0 : llLeft - piece.n;   // short: the file ended inside the track
+                    piece.bLast = !llLeft;
+                    prog.aDone[LoadProgress::Reading] = pReader->Done();
+                    prog.aDone[LoadProgress::Counting] = pReader->Done();
+                    std::lock_guard< std::mutex > lock( mq );
+                    job->q.push_back( std::move( piece ) );
+                    job->bEnd = !llLeft;
+                    if ( bFirst ) { qJobs.push_back( job ); cvJob.notify_one(); }
+                    cvPiece.notify_all();
+                    bFirst = false;
+                } while ( llLeft && pReader->sError.empty() && !Cancelled() );
+                if ( !pReader->sError.empty() ) break;
             }
-            prog.llEvents += pScan->llChannelEvents;
-            prog.llNotes += pScan->info.llNoteCount;
-            prog.llTracksDone++;
-            return true;
+            std::lock_guard< std::mutex > lock( mq );
+            sStreamError = pReader->sError;
+            if ( job ) job->bEnd = true;
+            bReadDone = true;
+            cvJob.notify_all();
+            cvPiece.notify_all();
+        };
+        auto CountTracks = [&]() {
+            std::vector< uint8_t > vWin;    // a long track's unfinished event, then the next piece
+            auto Release = [&]( Piece &piece ) {
+                std::lock_guard< std::mutex > lock( mq );
+                llQueued -= piece.iCap;
+                if ( piece.iCap == PieceBytes ) vPool.push_back( std::move( piece.p ) );
+                cvSpace.notify_one();
+            };
+            for ( ;; )
+            {
+                std::shared_ptr< Job > job;
+                {
+                    std::unique_lock< std::mutex > lock( mq );
+                    cvJob.wait( lock, [&]() { return !qJobs.empty() || bReadDone || Cancelled(); } );
+                    if ( qJobs.empty() || Cancelled() ) return;
+                    job = std::move( qJobs.front() );
+                    qJobs.pop_front();
+                }
+                TrackScan *pScan = job->pScan;
+                StreamState st( pScan->llLongTicks );
+                size_t iHave = 0;
+                for ( bool bFirst = true;; bFirst = false )
+                {
+                    Piece piece;
+                    {
+                        std::unique_lock< std::mutex > lock( mq );
+                        cvPiece.wait( lock, [&]() { return !job->q.empty() || job->bEnd || Cancelled(); } );
+                        if ( job->q.empty() ) break;    // the reader stopped (an error, or cancelled)
+                        piece = std::move( job->q.front() );
+                        job->q.pop_front();
+                    }
+                    if ( bFirst && piece.bLast )
+                        ScanTrack< Fused >( piece.p.get(), piece.p.get() + piece.n, Checkpoint{ 0, 0, 0, 0 }, UINT64_MAX, job->iTrack, pScan, nullptr, nullptr );
+                    else if ( !st.bDone && !Cancelled() )   // (what follows the track's end is dropped)
+                    {
+                        // The piece itself, or after the unfinished event of the one before
+                        const uint8_t *pB = piece.p.get();
+                        size_t iSize = piece.n;
+                        if ( iHave )
+                        {
+                            vWin.resize( iHave + piece.n );
+                            memcpy( vWin.data() + iHave, piece.p.get(), piece.n );
+                            pB = vWin.data();
+                            iSize = iHave + piece.n;
+                        }
+                        ScanTrack< Stream >( pB, pB + iSize, Checkpoint{ 0, 0, 0, 0 }, UINT64_MAX, job->iTrack, pScan, nullptr, nullptr,
+                                             0, nullptr, &st, piece.bLast );
+                        iHave = st.bDone ? 0 : iSize - st.iUsed;
+                        if ( iHave && pB == vWin.data() ) memmove( vWin.data(), vWin.data() + st.iUsed, iHave );
+                        else if ( iHave ) vWin.assign( pB + st.iUsed, pB + iSize );
+                    }
+                    bool bLast = piece.bLast;
+                    Release( piece );
+                    if ( bLast ) break;
+                }
+                prog.llEvents += pScan->llChannelEvents;
+                prog.llNotes += pScan->info.llNoteCount;
+                prog.llTracksDone++;
+            }
         };
         if ( pReader )
         {
             prog.aTotal[LoadProgress::Reading] = pReader->Total();
             prog.aTotal[LoadProgress::Counting] = pReader->Total();
         }
-        Parallel::For( iThreads, (size_t)iThreads, [&]( size_t, int ) {
-            if ( pReader )
-            {
-                std::vector< uint8_t > vBuf;
-                while ( StreamTrack( vBuf ) ) {}
-                return;
-            }
+        std::thread reader;
+        if ( pReader ) reader = std::thread( ReadTracks );
+        int iWorkers = pReader ? std::max( 1, iThreads - 1 ) : iThreads;   // (an archive: the reader is one)
+        Parallel::For( iWorkers, (size_t)iWorkers, [&]( size_t, int ) {
+            if ( pReader ) { CountTracks(); return; }
             for ( ;; )
             {
                 TrackScan *pScan = nullptr;
@@ -835,6 +888,7 @@ namespace
                 if ( bSequential ) prog.aDone[LoadProgress::Reading] = pFile->Resident();
             }
         } );
+        if ( reader.joinable() ) reader.join();
         if ( bSequential ) pFile->StopSequentialRead();
         if ( bSequential ) stats.dReaderSeconds = pFile->ReaderMicroSecs() / 1e6;
         if ( bFused && pFile ) pFile->Close(); // nothing reads the file after the fused count pass
@@ -922,12 +976,14 @@ namespace
         prog.aTotal[LoadProgress::Merging] = 4;
         EventStream &es = song->stream;
         es.llEvents = llEvents;
-        // Transient (global order): every group's track, and each tick's first group
-        std::vector< uint64_t > vTickGroupStart;
+        // Transient (global order): every group's track
         std::vector< uint32_t > vGroupTrack;
         stats.llEvents = llEvents;
         stats.llGroups = G;
 
+        // The unique ticks: a bitmap over the ticks with each word's rank (kept until the tick and time
+        // tables are built, which read the ticks from it), or when that would be too large, a sorted
+        // list. (A list beside the bitmap took 8 bytes a tick: 8 GB of nut3's 26.5 GB peak.)
         std::vector< int64_t > vUnique;
         std::vector< uint64_t > vBits, vWordRank;
         uint64_t llWords = (uint64_t)llMaxTick / 64 + 1;
@@ -947,14 +1003,6 @@ namespace
             uint64_t r = 0;
             for ( uint64_t w = 0; w < llWords; w++ ) { vWordRank[w] = r; r += __builtin_popcountll( vBits[w] ); }
             vWordRank[llWords] = r;
-            vUnique.resize( r );
-            Parallel::For( iThreads, (size_t)( ( llWords + 4095 ) / 4096 ), [&]( size_t c, int ) {
-                for ( uint64_t w = c * 4096; w < std::min< uint64_t >( llWords, ( c + 1 ) * 4096 ); w++ )
-                {
-                    uint64_t b = vBits[w], k = vWordRank[w];
-                    while ( b ) { vUnique[k++] = (int64_t)( w * 64 + __builtin_ctzll( b ) ); b &= b - 1; }
-                }
-            } );
         }
         else
         {
@@ -963,7 +1011,22 @@ namespace
             std::sort( vUnique.begin(), vUnique.end() );
             vUnique.erase( std::unique( vUnique.begin(), vUnique.end() ), vUnique.end() );
         }
-        const uint64_t U = vUnique.size();
+        const uint64_t U = bBitmap ? vWordRank[llWords] : vUnique.size();
+        // The ticks ranked [u, u + n), into pOut
+        auto TicksAt = [&]( uint64_t u, size_t n, uint64_t *pOut ) {
+            if ( !bBitmap ) { for ( size_t i = 0; i < n; i++ ) pOut[i] = (uint64_t)vUnique[u + i]; return; }
+            if ( !n ) return;
+            uint64_t w = (uint64_t)( std::upper_bound( vWordRank.begin(), vWordRank.begin() + llWords, u ) - vWordRank.begin() ) - 1;
+            uint64_t b = vBits[w];
+            for ( uint64_t k = u - vWordRank[w]; k; k-- ) b &= b - 1;   // the bits ranked below u
+            for ( size_t i = 0; i < n; )
+            {
+                while ( !b ) b = vBits[++w];
+                pOut[i++] = w * 64 + __builtin_ctzll( b );
+                b &= b - 1;
+            }
+        };
+        auto TickAt = [&]( uint64_t u ) { uint64_t t; TicksAt( u, 1, &t ); return (int64_t)t; };
         auto Rank = [&]( int64_t t ) -> uint64_t {
             if ( bBitmap )
             {
@@ -999,21 +1062,26 @@ namespace
         llStep = llPhase;
         Step( bBitmap ? L"unique ticks (bitmap)" : L"unique ticks (sort)" );
 
-        // Groups per unique tick, then each group's track in global (tick, track) order
-        std::vector< uint32_t > vCount( U, 0 );
+        // Groups per unique tick, then each group's track in global (tick, track) order. One array,
+        // vStart (U + 1), holds each tick's group count (at the tick after it), then their sums, the
+        // ticks' first groups; placing the groups moves each tick's to its next tick's, and one move
+        // puts them back. 32-bit when the groups fit (the old count and start arrays took 12 bytes a
+        // tick, a tick-dense song having a group or two a tick: nut3's billion ticks)
+        std::vector< uint8_t > vHdr;
+        struct Slice { uint64_t llHdr, llRaw; };
+        std::vector< Slice > vSlices;
+        auto MergeGroups = [&]( auto &vStart ) -> bool {
+        using Index = typename std::remove_reference_t< decltype( vStart ) >::value_type;
+        vStart.assign( U + 1, 0 );
         Parallel::For( iThreads, vScans.size(), [&]( size_t t, int ) {
             uint64_t u = 0;
             for ( TickCursor c( *vScans[t] ); !c.Done(); )
             {
                 u = RankFrom( c.Next(), u );
-                __atomic_fetch_add( &vCount[u], 1u, __ATOMIC_RELAXED );
+                __atomic_fetch_add( &vStart[u + 1], Index( 1 ), __ATOMIC_RELAXED );
             }
         } );
-        vTickGroupStart.resize( U + 1 );
-        uint64_t acc = 0;
-        for ( uint64_t u = 0; u < U; u++ ) { vTickGroupStart[u] = acc; acc += vCount[u]; }
-        vTickGroupStart[U] = acc;
-        std::fill( vCount.begin(), vCount.end(), 0 );
+        for ( uint64_t u = 0; u < U; u++ ) vStart[u + 1] += vStart[u];
         vGroupTrack.resize( G );
         song->vTrackLastU.assign( vScans.size(), UINT64_MAX );
         for ( size_t t = 0; t < vScans.size(); t++ )
@@ -1029,7 +1097,7 @@ namespace
         Parallel::For( iThreads, iRanges, [&]( size_t r, int ) {
             uint64_t u0 = U * r / iRanges, u1 = U * ( r + 1 ) / iRanges;
             if ( u0 >= u1 ) return;
-            int64_t t0 = vUnique[u0], t1 = u1 < U ? vUnique[u1] : INT64_MAX;
+            int64_t t0 = TickAt( u0 ), t1 = u1 < U ? TickAt( u1 ) : INT64_MAX;
             for ( size_t t = 0; t < vScans.size(); t++ )
             {
                 TickCursor c = TickCursor::At( *vScans[t], t0 );
@@ -1037,15 +1105,14 @@ namespace
                 while ( !c.Done() && c.Peek() < t1 )
                 {
                     u = RankFrom( c.Next(), u );
-                    vGroupTrack[vTickGroupStart[u] + vCount[u]++] = (uint32_t)t;
+                    vGroupTrack[vStart[u]++] = (uint32_t)t;
                     if ( __builtin_add_overflow( vTickRaw[u], vScans[t]->vGroups[c.g - 1].uSize, &vTickRaw[u] ) ) bTickTooBig = true;
                 }
             }
         } );
-        vCount.clear(); vCount.shrink_to_fit();
-        if ( bTickTooBig ) { sError = L"A tick holds too many events."; return nullptr; }
-        vBits.clear(); vBits.shrink_to_fit();
-        vWordRank.clear(); vWordRank.shrink_to_fit();
+        memmove( vStart.data() + 1, vStart.data(), U * sizeof( Index ) );
+        vStart[0] = 0;
+        if ( bTickTooBig ) { sError = L"A tick holds too many events."; return false; }
         prog.aDone[LoadProgress::Merging] = 3;
         Step( L"group order" );
 
@@ -1054,9 +1121,6 @@ namespace
         // the first tick that starts in each chunk, and slices cut at the first tick that starts in each
         // SliceBytes of the stream, which the build fills in parallel. Per tick range (as above): its
         // header and raw bytes, then from their sums its headers, seek points and slices.
-        std::vector< uint8_t > vHdr;
-        struct Slice { uint64_t llHdr, llRaw; };
-        std::vector< Slice > vSlices;
         {
             uint64_t llEst = G;
             for ( uint32_t n : vTickRaw ) llEst += n;
@@ -1066,14 +1130,14 @@ namespace
             // Calls fn( u, header ) for the range's groups in order, after onTick( u ) at each tick's start
             auto Walk = [&]( size_t r, auto &&onTick, auto &&fn ) {
                 uint64_t u0 = U * r / iRanges, u1 = U * ( r + 1 ) / iRanges;
-                for ( uint64_t u = u0, g = vTickGroupStart[u0]; u < u1; u++ )
+                for ( uint64_t u = u0, g = vStart[u0]; u < u1; u++ )
                 {
                     onTick( u );
-                    for ( uint32_t uPrev = 0; g < vTickGroupStart[u + 1]; g++ )
+                    for ( uint32_t uPrev = 0; g < vStart[u + 1]; g++ )
                     {
                         uint32_t t = vGroupTrack[g];
-                        uint64_t llGap = g == vTickGroupStart[u] ? t : t - uPrev - 1;
-                        fn( ( llGap << 1 ) | ( g + 1 == vTickGroupStart[u + 1] ? 1 : 0 ) );
+                        uint64_t llGap = g == vStart[u] ? t : t - uPrev - 1;
+                        fn( ( llGap << 1 ) | ( g + 1 == vStart[u + 1] ? 1 : 0 ) );
                         uPrev = t;
                     }
                 }
@@ -1121,8 +1185,14 @@ namespace
         }
         vTickRaw.clear(); vTickRaw.shrink_to_fit();
         vGroupTrack.clear(); vGroupTrack.shrink_to_fit();
-        vTickGroupStart.clear(); vTickGroupStart.shrink_to_fit();
+        vStart.clear(); vStart.shrink_to_fit();
         Step( L"group headers" );
+        return true;
+        };
+        bool bMerged;
+        if ( G < ( uint64_t( 1 ) << 32 ) ) { std::vector< uint32_t > v; bMerged = MergeGroups( v ); }
+        else { std::vector< uint64_t > v; bMerged = MergeGroups( v ); }
+        if ( !bMerged ) return nullptr;
 
         // Meta in global order, tempo map, TimeTable, packed tick table
         for ( size_t t = 0; t < vScans.size(); t++ ) song->vMeta.insert( song->vMeta.end(), vScans[t]->vMeta.begin(), vScans[t]->vMeta.end() );
@@ -1133,9 +1203,11 @@ namespace
         for ( RefMetaEvent &m : song->vMeta ) m.llMicroSec = tempo.At( m.llTick );
         for ( auto &v : song->vTrackMeta ) for ( RefMetaEvent &m : v ) m.llMicroSec = tempo.At( m.llTick );
         info.llTotalMicroSecs = tempo.At( info.llTotalTicks );
-        es.ticks.Build( U, [&]( size_t u ) { return (uint64_t)vUnique[u]; }, iThreads );
-        es.times.Build( U, [&]( size_t u ) { return (uint64_t)tempo.At( vUnique[u] ); }, iThreads );
+        es.ticks.BuildBlocks( U, [&]( size_t u0, size_t u1, uint64_t *p ) { TicksAt( u0, u1 - u0, p ); }, iThreads );
+        es.times.BuildBlocks( U, [&]( size_t u0, size_t u1, uint64_t *p ) { TicksAt( u0, u1 - u0, p ); tempo.AtSorted( p, u1 - u0, p ); }, iThreads );
         vUnique.clear(); vUnique.shrink_to_fit();
+        vBits.clear(); vBits.shrink_to_fit();
+        vWordRank.clear(); vWordRank.shrink_to_fit();
         prog.aDone[LoadProgress::Merging] = 4;
         Step( L"tempo, tick, time tables" );
         stats.adStageSeconds[LoadProgress::Merging] = Seconds( llPhase );

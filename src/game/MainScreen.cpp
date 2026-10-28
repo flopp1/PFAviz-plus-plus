@@ -447,39 +447,59 @@ GameState::GameError MainScreen::Logic()
     long long llElapsed = m_Timer.GetMicroSecs();
     m_Timer.Start();
 
+    // The synth's stats every SynthStepUs: the latest values, and rates between the newest sample and
+    // the oldest of the ring (half a second back once it is full)
+    m_llSynthUs += llElapsed;
+    m_llSynthStepUs += llElapsed;
+    if ( m_pPlayback && m_llSynthStepUs >= SynthStepUs )
+    {
+        m_llSynthStepUs = 0;
+        m_iSynth = ( m_iSynth + 1 ) % SynthSamples;
+        m_iSynthCount = std::min( m_iSynthCount + 1, SynthSamples );
+        m_aSynth[m_iSynth] = { m_llSynthUs, m_pPlayback->GetStats() };
+        m_Stats = m_aSynth[m_iSynth].s;
+        if ( m_iSynthCount > 1 )
+        {
+            const SynthSample &oldest = m_aSynth[( m_iSynth + SynthSamples - m_iSynthCount + 1 ) % SynthSamples];
+            const PlaybackEngine::Stats &a = oldest.s, &b = m_Stats;
+            double dUs = (double)( m_llSynthUs - oldest.llUs );
+            double dSecs = dUs / 1000000.0;
+            m_dDecodedPerSec = ( b.llDecoded - a.llDecoded ) / dSecs;
+            m_dDecoderBusy = std::min( 1.0, ( b.llDecodeBusyUs - a.llDecodeBusyUs ) / dUs );
+            m_dSenderBusy = std::min( 1.0, ( b.llSendBusyUs - a.llSendBusyUs ) / dUs );
+            uint64_t llSamples = b.llRingSamples - a.llRingSamples;
+            m_dRingAvg = llSamples ? ( b.llRingSum - a.llRingSum ) / (double)llSamples / PlaybackEngine::RingSlices : 0.0;
+            m_dSentPerSec = ( b.llSent - a.llSent ) / dSecs;
+            m_dSkippedPerSec = ( b.llSkipped - a.llSkipped ) / dSecs;
+            m_dCollapsedPerSec = ( b.llCollapsed - a.llCollapsed ) / dSecs;
+            // Peaks: each sample holds its own step's (GetStats resets them); the window's is the highest
+            int iRingMax = 0;
+            m_iLanes = 1;
+            for ( int i = 0; i < m_iSynthCount - 1; i++ )
+            {
+                const PlaybackEngine::Stats &s = m_aSynth[( m_iSynth + SynthSamples - i ) % SynthSamples].s;
+                iRingMax = std::max( iRingMax, s.iRingMax );
+                m_iLanes = std::max( m_iLanes, s.iLanes );
+            }
+            m_dRingMax = iRingMax / (double)PlaybackEngine::RingSlices;
+        }
+        m_iSynthVoices = -1;
+        m_dSynthCpu = -1.0;
+        if ( ( m_uStats & VisualSettings::VoiceStats ) && m_pPlayback->OutputName() == MidiOutputs::KdmapiName() )
+        {
+            unsigned uVoices = 0;
+            float fCpu = 0.0f;
+            if ( MidiOutputs::KdmapiActiveVoices( uVoices ) ) m_iSynthVoices = (int)uVoices;
+            if ( MidiOutputs::KdmapiRenderingTime( fCpu ) ) m_dSynthCpu = fCpu;
+        }
+    }
+
     // Compute FPS every half a second
     m_llFPSTime += llElapsed;
     m_iFPSCount++;
     if ( m_llFPSTime >= 500000 )
     {
         m_dFPS = m_iFPSCount / ( m_llFPSTime / 1000000.0 );
-        if ( m_pPlayback )
-        {
-            m_Stats = m_pPlayback->GetStats();
-            double dSecs = m_llFPSTime / 1000000.0;
-            m_dDecodedPerSec = ( m_Stats.llDecoded - m_PrevStats.llDecoded ) / dSecs;
-            m_dDecoderBusy = std::min( 1.0, ( m_Stats.llDecodeBusyUs - m_PrevStats.llDecodeBusyUs ) / (double)m_llFPSTime );
-            m_dSenderBusy = std::min( 1.0, ( m_Stats.llSendBusyUs - m_PrevStats.llSendBusyUs ) / (double)m_llFPSTime );
-            uint64_t llSamples = m_Stats.llRingSamples - m_PrevStats.llRingSamples;
-            m_dRingAvg = llSamples ? ( m_Stats.llRingSum - m_PrevStats.llRingSum ) / (double)llSamples / PlaybackEngine::RingSlices : 0.0;
-            m_dRingMax = m_Stats.iRingMax / (double)PlaybackEngine::RingSlices;
-            m_PrevStats = m_Stats;
-            m_dSentPerSec = ( m_Stats.llSent - m_llStatSent ) / ( m_llFPSTime / 1000000.0 );
-            m_dSkippedPerSec = ( m_Stats.llSkipped - m_llStatSkipped ) / ( m_llFPSTime / 1000000.0 );
-            m_dCollapsedPerSec = ( m_Stats.llCollapsed - m_llStatCollapsed ) / ( m_llFPSTime / 1000000.0 );
-            m_llStatCollapsed = m_Stats.llCollapsed;
-            m_llStatSent = m_Stats.llSent;
-            m_llStatSkipped = m_Stats.llSkipped;
-            m_iSynthVoices = -1;
-            m_dSynthCpu = -1.0;
-            if ( ( m_uStats & VisualSettings::VoiceStats ) && m_pPlayback->OutputName() == MidiOutputs::KdmapiName() )
-            {
-                unsigned uVoices = 0;
-                float fCpu = 0.0f;
-                if ( MidiOutputs::KdmapiActiveVoices( uVoices ) ) m_iSynthVoices = (int)uVoices;
-                if ( MidiOutputs::KdmapiRenderingTime( fCpu ) ) m_dSynthCpu = fCpu;
-            }
-        }
         m_llFPSTime = m_iFPSCount = 0;
         for ( int i = 0; i < PartCount; i++ )
         {
@@ -540,8 +560,10 @@ GameState::GameError MainScreen::Logic()
     long long llNewPos = ( ( m_llStartTime - llFirstTime ) * 1000 ) / ( llLastTime - llFirstTime );
     if ( llOldPos != llNewPos ) cPlayback.SetPosition( static_cast< int >( llNewPos ) );
 
-    // At the end the clock stops, but the NPS window keeps sliding in real time so it falls to 0
-    if ( m_llStartTime >= llMaxTime ) m_llPastEndUs = std::min< long long >( m_llPastEndUs + llElapsed, 2000000 );
+    // At the end the clock stops, but the NPS window keeps sliding at the playback speed, as song time
+    // would, so it falls to 0 as the window does
+    if ( m_llStartTime >= llMaxTime )
+        m_llPastEndUs = std::min< long long >( m_llPastEndUs + (long long)( llElapsed * m_Clock.Speed() ), 2000000 );
     else m_llPastEndUs = 0;
 
     // Song's over
@@ -770,7 +792,7 @@ void MainScreen::RenderStatus( Renderer *pRenderer, LPRECT prcStatus, long long 
         // The playback pipeline: a busy decoder with an empty ring is the decoder's limit; a full ring with
         // a busy sender is the output's (a rising send cost: the synth pushing back)
         Rate( aValue[VS::StatDecoded], m_dDecodedPerSec );
-        if ( m_Stats.iLanes > 1 ) swprintf( aValue[VS::StatDecoderBusy], 48, L"%.0f%% ×%d", m_dDecoderBusy * 100.0, m_Stats.iLanes );    // x threads
+        if ( m_iLanes > 1 ) swprintf( aValue[VS::StatDecoderBusy], 48, L"%.0f%% ×%d", m_dDecoderBusy * 100.0, m_iLanes );    // x threads
         else swprintf( aValue[VS::StatDecoderBusy], 48, L"%.0f%%", m_dDecoderBusy * 100.0 );
         swprintf( aValue[VS::StatSenderBusy], 48, L"%.0f%%", m_dSenderBusy * 100.0 );
         swprintf( aValue[VS::StatRing], 48, L"%.0f%% avg, %.0f%% max", m_dRingAvg * 100.0, m_dRingMax * 100.0 );

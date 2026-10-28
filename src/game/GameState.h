@@ -188,14 +188,19 @@ private:
     long long m_llFPSTime;
     double m_dFPS;
 
-    // Debug statistics (Performance tab option; not shown by default)
-    uint64_t m_llStatSent = 0, m_llStatSkipped = 0;
+    // Debug statistics (Performance tab option; not shown by default). The synth's are sampled every
+    // SynthStepUs, and its rates taken over the last SynthSamples - 1 steps (half a second)
+    static const long long SynthStepUs = 100000;
+    static const int SynthSamples = 6;
+    struct SynthSample { long long llUs = 0; PlaybackEngine::Stats s; };
+    SynthSample m_aSynth[SynthSamples];     // a ring; m_iSynth is the newest
+    int m_iSynth = 0, m_iSynthCount = 0;
+    long long m_llSynthUs = 0, m_llSynthStepUs = 0;
     double m_dSentPerSec = 0.0, m_dSkippedPerSec = 0.0, m_dCollapsedPerSec = 0.0;
-    uint64_t m_llStatCollapsed = 0;
-    // The playback pipeline over the last half second: messages decoded per second, the share of the
-    // time each thread worked, and the ring's average and peak fill (share of its slices)
-    PlaybackEngine::Stats m_PrevStats;
+    // The playback pipeline over that window: messages decoded per second, the share of the time each
+    // thread worked, and the ring's average and peak fill (share of its slices)
     double m_dDecodedPerSec = 0.0, m_dDecoderBusy = 0.0, m_dSenderBusy = 0.0, m_dRingAvg = 0.0, m_dRingMax = 0.0;
+    int m_iLanes = 1;                   // the most decoding threads in that window
     // Frame time parts (playback statistics): outside Render (Logic, messages, waiting), DrawNotes,
     // the rest of the scene, Present. Sums and maxima of the current half second, then shown.
     enum FramePart { PartOutside, PartNotes, PartScene, PartPresent, PartCount };

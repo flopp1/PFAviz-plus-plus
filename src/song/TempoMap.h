@@ -16,7 +16,11 @@ struct TempoMap
     long long At( long long llTick ) const
     {
         auto it = std::upper_bound( vSegs.begin(), vSegs.end(), llTick, []( long long t, const Seg &s ) { return t < s.llTick; } );
-        const Seg &s = ( it == vSegs.begin() ) ? vSegs.front() : *( it - 1 );
+        return In( ( it == vSegs.begin() ) ? vSegs.front() : *( it - 1 ), llTick );
+    }
+    // The time of a tick in segment s
+    long long In( const Seg &s, long long llTick ) const
+    {
         if ( iDivision & 0x8000 )
         {
             int iFramesPerSec100 = -( ( iDivision | static_cast< int >( 0xFFFF0000 ) ) >> 8 ) * 100;
@@ -26,6 +30,19 @@ struct TempoMap
             return s.llMicroSec + ( 100000000LL * ( llTick - s.llTick ) ) / llTicksPerSec100;
         }
         return s.llMicroSec + ( s.llMicroSecsPerBeat * ( llTick - s.llTick ) ) / iDivision;
+    }
+
+    // At() for n ticks in ascending order: one search, then the segments walked forwards
+    void AtSorted( const uint64_t *pTicks, size_t n, uint64_t *pOut ) const
+    {
+        if ( !n ) return;
+        size_t s = (size_t)( std::upper_bound( vSegs.begin(), vSegs.end(), (long long)pTicks[0], []( long long t, const Seg &x ) { return t < x.llTick; } ) - vSegs.begin() );
+        for ( size_t i = 0; i < n; i++ )
+        {
+            long long t = (long long)pTicks[i];
+            while ( s < vSegs.size() && vSegs[s].llTick <= t ) s++;
+            pOut[i] = (uint64_t)In( vSegs[s ? s - 1 : 0], t );
+        }
     }
 
     // Last tick whose time is <= llTime (time is non-decreasing in tick)

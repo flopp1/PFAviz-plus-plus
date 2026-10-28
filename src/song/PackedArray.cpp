@@ -13,6 +13,11 @@ static unsigned BitsFor( uint64_t v )
 
 void PackedMonotone::Build( size_t n, const std::function< uint64_t( size_t ) > &get, int iThreads )
 {
+    BuildBlocks( n, [&]( size_t i0, size_t i1, uint64_t *p ) { for ( size_t i = i0; i < i1; i++ ) *p++ = get( i ); }, iThreads );
+}
+
+void PackedMonotone::BuildBlocks( size_t n, const std::function< void( size_t, size_t, uint64_t * ) > &fill, int iThreads )
+{
     m_n = n;
     size_t iBlocks = ( n + BlockSize - 1 ) / BlockSize;
     std::vector< uint64_t > vBase( iBlocks, 0 ), vBitOffset( iBlocks + 1, 0 );
@@ -20,9 +25,10 @@ void PackedMonotone::Build( size_t n, const std::function< uint64_t( size_t ) > 
 
     Parallel::For( iThreads, iBlocks, [&]( size_t b, int ) {
         size_t i0 = b * BlockSize, i1 = std::min( n, i0 + BlockSize );
-        uint64_t llBase = get( i0 ), llLast = get( i1 - 1 );
-        vBase[b] = llBase;
-        vWidth[b] = (uint8_t)BitsFor( llLast - llBase );
+        uint64_t a[BlockSize];
+        fill( i0, i1, a );
+        vBase[b] = a[0];
+        vWidth[b] = (uint8_t)BitsFor( a[i1 - i0 - 1] - a[0] );
     } );
     for ( size_t b = 0; b < iBlocks; b++ )
     {
@@ -36,10 +42,12 @@ void PackedMonotone::Build( size_t n, const std::function< uint64_t( size_t ) > 
         unsigned w = vWidth[b];
         if ( !w ) return;
         size_t i0 = b * BlockSize, i1 = std::min( n, i0 + BlockSize );
+        uint64_t a[BlockSize];
+        fill( i0, i1, a );
         uint64_t llBit = vBitOffset[b];
         for ( size_t i = i0; i < i1; i++, llBit += w )
         {
-            uint64_t v = get( i ) - vBase[b];
+            uint64_t v = a[i - i0] - vBase[b];
             uint64_t *pWord = &m_vBits[llBit >> 6];
             unsigned s = llBit & 63;
             __atomic_fetch_or( pWord, v << s, __ATOMIC_RELAXED );

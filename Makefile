@@ -16,7 +16,7 @@ CXXFLAGS := -std=c++20 -municode -DUNICODE -D_UNICODE -DWIN32_LEAN_AND_MEAN -DNO
 ARCHIVE_LIBS := -Lvendor/archive/lib -larchive -lzstd -llzma -llz4 -lbz2 -lzs -lbcrypt
 
 LDFLAGS  := -municode -mwindows -static
-LDLIBS   := -ld3d9 -lwinmm -lcomctl32 -lcomdlg32 -lshell32 -lole32 -luuid -lgdi32 -luser32 -lavrt -lwindowscodecs $(ARCHIVE_LIBS)
+LDLIBS   := -ld3d9 -lwinmm -lcomctl32 -lcomdlg32 -lshell32 -lole32 -luuid -lgdi32 -luser32 -lavrt -lsynchronization -lwindowscodecs $(ARCHIVE_LIBS)
 
 ifeq ($(debug),1)
     CXXFLAGS += -O0 -g
