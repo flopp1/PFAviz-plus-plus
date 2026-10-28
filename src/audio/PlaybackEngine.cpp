@@ -299,7 +299,10 @@ void PlaybackEngine::DecoderThread()
         }
         if ( llDue <= llHorizon ) continue;     // progress without messages (a silent beat)
 
-        // Nothing due yet
+        // Nothing due yet. With the ring empty too, everything decoded has gone out: no lag (the sender
+        // only sets it as slices go out, and lag skipping went on skipping against the last: ColderNess's
+        // crash at 30 ns a message showed a 220 ms median lag with the sender a quarter busy)
+        if ( m_iRead.load( std::memory_order_acquire ) == m_iWrite.load( std::memory_order_relaxed ) ) m_llLagUs.store( 0, std::memory_order_relaxed );
         long long llWait = 1000;
         if ( llDue != LLONG_MAX && !m_Clock.Paused() )
             llWait = std::min< long long >( 1000, (long long)( ( llDue - llHorizon ) / p.dSpeed ) + 1 );
@@ -513,6 +516,9 @@ void PlaybackEngine::SenderThread()
                 long long llNow = m_Clock.Now();
                 if ( s.llDue > llNow )
                 {
+                    // Early: no lag (else the last late slice's stays while this waits; see the decoder's
+                    // wait for the other case)
+                    m_llLagUs.store( 0, std::memory_order_relaxed );
                     if ( m_Clock.Paused() ) { WaitUs( hTimer, 1000 ); continue; }
                     long long llWall = (long long)( ( s.llDue - llNow ) / std::max( m_Clock.Speed(), 1e-6 ) );
                     WaitUs( hTimer, llWall > 1000 ? 1000 : llWall > 300 ? llWall - 200 : llWall );
