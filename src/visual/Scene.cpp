@@ -88,10 +88,11 @@ FrameGlobals Scene::ComputeGlobals( const ViewInputs &in )
         g.iStartNote = 0;
         g.iEndNote = 127;
     }
-    else if ( in.eKeysShown == 4 )
+    else if ( in.eKeysShown == 4 ) // All 256 keys (31-EDO): the mark on the middle white key (74 on each side)
     {
         g.iStartNote = 0;
         g.iEndNote = 255;
+        g.iMiddleC = 127;
     }
 
     // Screen X info
@@ -276,7 +277,7 @@ void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneCol
                 pRenderer->DrawRect( fCurX + fKeyGap1, fCurY + fTopCY, g.fWhiteCX - fKeyGap, 2.0f,
                     csKBB.iDarkRGB, csKBB.iDarkRGB, csKBW.iVeryDarkRGB, csKBW.iVeryDarkRGB );
 
-                if ( i == Notes::C4 )
+                if ( i == g.iMiddleC )
                 {
                     float fMXGap = floor( g.fWhiteCX * 0.25f + 0.5f );
                     float fMCX = g.fWhiteCX - fMXGap * 2.0f - fKeyGap;
@@ -291,7 +292,7 @@ void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneCol
                     csKBWhite.iDarkRGB, csKBWhite.iDarkRGB, csKBWhite.iPrimaryRGB, csKBWhite.iPrimaryRGB );
                 pRenderer->DrawRect( fCurX + fKeyGap1 , fCurY + fTopCY + fNearCY - 2.0f, g.fWhiteCX - fKeyGap, 2.0f, csKBWhite.iDarkRGB );
 
-                if ( i == Notes::C4 )
+                if ( i == g.iMiddleC )
                 {
                     float fMXGap = floor( g.fWhiteCX * 0.25f + 0.5f );
                     float fMCX = g.fWhiteCX - fMXGap * 2.0f - fKeyGap;
@@ -307,7 +308,7 @@ void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneCol
 
     // Draw the sharps
     iStartRender = ( g.iStartNote != Notes::A0 && !Notes::IsSharp( g.iStartNote ) && g.iStartNote > 0 && Notes::IsSharp( g.iStartNote - 1 ) ? g.iStartNote - 1 : g.iStartNote );
-    iEndRender = ( g.iEndNote != Notes::C8 && !Notes::IsSharp( g.iEndNote ) && g.iEndNote < 255 && Notes::IsSharp( g.iEndNote + 1 ) ? g.iEndNote + 1 : g.iEndNote );
+    iEndRender = ( g.iEndNote != Notes::C8 && !Notes::IsSharp( g.iEndNote ) && g.iEndNote != 127 && g.iEndNote < 255 && Notes::IsSharp( g.iEndNote + 1 ) ? g.iEndNote + 1 : g.iEndNote );
     fStartX = ( Notes::IsSharp( g.iStartNote ) ? g.fWhiteCX * SharpRatio / 2.0f : 0.0f );
 
     float fSharpTop = SharpRatio * 0.7f;
@@ -384,6 +385,7 @@ void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneCol
                                      fSharpTopX1, fCurY - fNewNear + fSharpCY * 0.65f,
                                      csKBSharp.iPrimaryRGB, csKBSharp.iPrimaryRGB, csKBSharp.iDarkRGB, csKBSharp.iDarkRGB );
             }
+
         }
 }
 

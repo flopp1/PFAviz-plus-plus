@@ -40,11 +40,12 @@ static void CheckSong( bool extended, bool full, bool lz, int fused, bool tuning
     auto song = Loader::LoadMemory( file.data(), file.size(), 2, progress, stats, error );
     if ( !song ) std::fwprintf( stderr, L"%ls\n", error.c_str() );
     assert( song );
-    const int keys = extended ? 256 : 128;
+    // Keys past 127 are kept only with 31-EDO tuning; otherwise dropped as the original does (each key's on and off)
+    const int keys = extended && tuning ? 256 : 128;
     assert( song->bTuning31 == tuning );
     assert( song->info.iMinNote == 0 && song->info.iMaxNote == keys - 1 );
     assert( song->info.llNoteCount == keys );
-    assert( stats.llOutOfRange == 0 && stats.llMalformedTracks == 0 );
+    assert( stats.llOutOfRange == ( extended && !tuning ? 256u : 0u ) && stats.llMalformedTracks == 0 );
     for ( int key = 0; key < keys; key++ )
     {
         assert( song->aKeyNoteCounts[key] == 1 );
@@ -97,7 +98,7 @@ static void CheckSong( bool extended, bool full, bool lz, int fused, bool tuning
     }
     RefMidi reference;
     assert( reference.Parse( file.data(), file.size() ) );
-    assert( reference.GetInfo().llNoteCount == keys );
+    assert( reference.GetInfo().llNoteCount == 128 );     // the original's parser: keys past 127 dropped
     for ( const auto &event : reference.GetEvents() ) assert( event.iSister >= 0 );
     for ( const auto &bins : song->aSendOns )
     {

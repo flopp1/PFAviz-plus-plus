@@ -60,6 +60,7 @@ struct ViewInputs
 struct FrameGlobals
 {
     int iStartNote, iEndNote;
+    int iMiddleC = 60;                // the key with the middle C mark (Notes::C4; in the 256-key view key 127, the middle white key)
     float fNotesX, fNotesY, fNotesCX, fNotesCY;
     int iAllWhiteKeys;
     float fWhiteCX;

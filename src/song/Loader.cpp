@@ -290,8 +290,11 @@ namespace
     // Stream: Fused over [pTrack, pEnd), a window of the track (bLast: the rest of it), stopping before an
     //         event the window cuts (*pState: where it stopped, and what carries over)
     // A window ends inside an event when a read runs past it (MORE): back to the event's start
+    // EXT (31-EDO tuning, LoadProgress::bTuning31): note keys past 127 are kept as keys 128-255 (the
+    // stream carries the key's top bit as the run's velocity bit 7); otherwise they are dropped like
+    // every other data byte past 127, as the original does
 #define MORE( c ) if ( MODE == Stream && !bLast && ( c ) ) { p = pEventStart; llTick = llTickBefore; iRunning = iRunningBefore; bMore = true; break; }
-    template < int MODE >
+    template < int MODE, bool EXT = false >
     void ScanTrack( const uint8_t *pTrack, const uint8_t *pEnd, const Checkpoint &start, uint64_t llStopGroup, int iTrack,
                     TrackScan *pScan, const GroupRec *pGroups, uint8_t *pPayload, uint64_t llFirstWrite = 0, uint8_t *pDiscard = nullptr,
                     StreamState *pState = nullptr, bool bLast = true )
@@ -407,7 +410,7 @@ namespace
                 if ( pEnd - p < iDataBytes ) { MORE( true ) if ( COUNT ) pScan->info.bMalformed = true; break; }
                 uint8_t aData[2] = { p[0], iDataBytes == 2 ? std::min< uint8_t >( p[1], 0x7F ) : (uint8_t)0 };
                 p += iDataBytes;
-                if ( aData[0] >= 0x80 && iType != 0x8 && iType != 0x9 && iType != 0xA )
+                if ( aData[0] >= 0x80 && !( EXT && iType >= 0x8 && iType <= 0xA ) )
                 {
                     if ( COUNT ) { llOutOfRange++; llTotalTicks = std::max( llTotalTicks, llTick ); }
                     continue;
@@ -433,7 +436,7 @@ namespace
                 }
 
                 unsigned op = OpOf( iType, aData[1] );
-                unsigned uBank = ( iType == 0x8 || iType == 0x9 ) ? aData[0] & 0x80 : 0;
+                unsigned uBank = EXT && ( iType == 0x8 || iType == 0x9 ) ? aData[0] & 0x80 : 0;
                 if ( op == 2 && uBank ) op = 1;
                 unsigned uVelocity = aData[1] | uBank;
                 Reserve();
@@ -442,7 +445,7 @@ namespace
                     uint32_t uKey = ( op << 12 ) | ( iChannel << 8 ) | ( op == 2 ? 0 : uVelocity );
                     if ( uKey == uRunKey )
                     {
-                        if ( WRITE ) { pLastKey = pDst; *pDst++ = aData[0] & 0x7F; }
+                        if ( WRITE ) { pLastKey = pDst; *pDst++ = EXT ? aData[0] & 0x7F : aData[0]; }
                         if ( COUNT ) uSize += 1;
                     }
                     else
@@ -455,7 +458,7 @@ namespace
                             *pDst++ = (uint8_t)( ( op << 5 ) | iChannel );
                             if ( op != 2 ) *pDst++ = (uint8_t)uVelocity;
                             pLastKey = pDst;
-                            *pDst++ = aData[0] & 0x7F;
+                            *pDst++ = EXT ? aData[0] & 0x7F : aData[0];
                         }
                         if ( COUNT ) uSize += ( op == 2 ? 2 : 3 );
                     }
@@ -747,7 +750,8 @@ namespace
                 if ( !pReader->sError.empty() ) return Fail();
                 Progress();
                 lock.unlock();
-                ScanTrack< Fused >( vBuf.data(), vBuf.data() + got, Checkpoint{ 0, 0, 0, 0 }, UINT64_MAX, iTrack, pScan, nullptr, nullptr );
+                if ( prog.bTuning31 ) ScanTrack< Fused, true >( vBuf.data(), vBuf.data() + got, Checkpoint{ 0, 0, 0, 0 }, UINT64_MAX, iTrack, pScan, nullptr, nullptr );
+                else ScanTrack< Fused >( vBuf.data(), vBuf.data() + got, Checkpoint{ 0, 0, 0, 0 }, UINT64_MAX, iTrack, pScan, nullptr, nullptr );
             }
             else
             {
@@ -762,8 +766,11 @@ namespace
                     if ( !pReader->sError.empty() ) return Fail();
                     iHave += n;
                     llLeft = n < iWant ? 0 : llLeft - n;   // short: the file ended inside the track
-                    ScanTrack< Stream >( vWin.data(), vWin.data() + iHave, Checkpoint{ 0, 0, 0, 0 }, UINT64_MAX, iTrack, pScan, nullptr, nullptr,
-                                         0, nullptr, &st, llLeft == 0 );
+                    if ( prog.bTuning31 )
+                        ScanTrack< Stream, true >( vWin.data(), vWin.data() + iHave, Checkpoint{ 0, 0, 0, 0 }, UINT64_MAX, iTrack, pScan, nullptr, nullptr,
+                                                   0, nullptr, &st, llLeft == 0 );
+                    else ScanTrack< Stream >( vWin.data(), vWin.data() + iHave, Checkpoint{ 0, 0, 0, 0 }, UINT64_MAX, iTrack, pScan, nullptr, nullptr,
+                                              0, nullptr, &st, llLeft == 0 );
                     Progress();
                     if ( st.bDone ) break;
                     memmove( vWin.data(), vWin.data() + st.iUsed, iHave - st.iUsed );
@@ -826,8 +833,14 @@ namespace
                 }
                 if ( !pScan ) return;
                 WaitBytes( pScan->llEnd );
-                if ( bFused ) ScanTrack< Fused >( pData + pScan->llBegin, pData + pScan->llEnd, Checkpoint{ 0, 0, 0, 0 }, UINT64_MAX, iTrack, pScan, nullptr, nullptr );
-                else ScanTrack< Count >( pData + pScan->llBegin, pData + pScan->llEnd, Checkpoint{ 0, 0, 0, 0 }, UINT64_MAX, iTrack, pScan, nullptr, nullptr );
+                const uint8_t *pB = pData + pScan->llBegin, *pE = pData + pScan->llEnd;
+                if ( prog.bTuning31 )
+                {
+                    if ( bFused ) ScanTrack< Fused, true >( pB, pE, Checkpoint{ 0, 0, 0, 0 }, UINT64_MAX, iTrack, pScan, nullptr, nullptr );
+                    else ScanTrack< Count, true >( pB, pE, Checkpoint{ 0, 0, 0, 0 }, UINT64_MAX, iTrack, pScan, nullptr, nullptr );
+                }
+                else if ( bFused ) ScanTrack< Fused >( pB, pE, Checkpoint{ 0, 0, 0, 0 }, UINT64_MAX, iTrack, pScan, nullptr, nullptr );
+                else ScanTrack< Count >( pB, pE, Checkpoint{ 0, 0, 0, 0 }, UINT64_MAX, iTrack, pScan, nullptr, nullptr );
                 prog.llEvents += pScan->llChannelEvents;
                 prog.llNotes += pScan->info.llNoteCount;
                 prog.llTracksDone++;
@@ -1324,8 +1337,11 @@ namespace
                     const Seg &sg = vSegs[i];
                     TrackScan &s = *vScans[sg.uTrack];
                     Checkpoint start = sg.uCp == 0 ? Checkpoint{ 0, 0, 0, 0 } : s.vCps[sg.uCp - 1];
-                    ScanTrack< Emit >( pData + s.llBegin, pData + s.llEnd, start, sg.llStop, (int)sg.uTrack, nullptr, s.vGroups.data(), pRaw.get(), sg.llFirst,
-                                       vDiscard[iThread].get() );
+                    if ( prog.bTuning31 )
+                        ScanTrack< Emit, true >( pData + s.llBegin, pData + s.llEnd, start, sg.llStop, (int)sg.uTrack, nullptr, s.vGroups.data(), pRaw.get(), sg.llFirst,
+                                                 vDiscard[iThread].get() );
+                    else ScanTrack< Emit >( pData + s.llBegin, pData + s.llEnd, start, sg.llStop, (int)sg.uTrack, nullptr, s.vGroups.data(), pRaw.get(), sg.llFirst,
+                                            vDiscard[iThread].get() );
                 } );
             }
             vCur.swap( vCurEnd );
