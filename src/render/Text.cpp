@@ -290,7 +290,8 @@ namespace
 TextRenderer *TextRenderer::Create( IDirect3DDevice9 *pDevice )
 {
     // PFAVIZ_GDITEXT=1 (developer switch): the GDI fallback even where D3DX is installed
-    if ( !getenv( "PFAVIZ_GDITEXT" ) )
+    bool bWine = GetProcAddress( GetModuleHandleW( L"ntdll.dll" ), "wine_get_version" ) != nullptr;
+    if ( !getenv( "PFAVIZ_GDITEXT" ) && !bWine )
     {
         D3DXText *pD3DX = new D3DXText();
         if ( pD3DX->Init( pDevice ) ) return pD3DX;

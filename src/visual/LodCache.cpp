@@ -223,7 +223,7 @@ std::shared_ptr< LodCache::Segment > LodCache::Build( long long llIndex, int iTh
     pSeg->llIndex = llIndex;
     pSeg->llStartUs = t0;
     std::atomic< bool > bCancelled{ false };
-    Parallel::For( iThreads, 128, [&]( size_t k, int ) {
+    Parallel::For( iThreads, 256, [&]( size_t k, int ) {
         const KeyStore &ks = pStore->aKeys[k];
         if ( !ks.Size() ) return;
         size_t i0 = ks.LowerBoundStart( LowerBoundTime( t0 ) ), i1 = ks.LowerBoundStart( LowerBoundTime( t1 ) );
@@ -300,7 +300,7 @@ std::shared_ptr< LodCache::Segment > LodCache::Build( long long llIndex, int iTh
         vLong.shrink_to_fit();
     } );
     if ( bCancelled ) return nullptr;
-    for ( int k = 0; k < 128; k++ )
+    for ( int k = 0; k < 256; k++ )
         pSeg->iBytes += pSeg->av[k].capacity() * sizeof( Entry ) + pSeg->avLong[k].capacity() * sizeof( pSeg->avLong[k][0] );
     return pSeg;
 }

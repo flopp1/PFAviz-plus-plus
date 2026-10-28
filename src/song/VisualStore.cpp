@@ -240,7 +240,7 @@ void KeyStore::ToLz()
     m_llLzId = ++g_llLzIds;
     // The key's share of the block cache, in decoded groups (at least 4)
     m_pLzCache.reset( new LzCache() );
-    size_t iEntries = g_iLzCacheBytes / 128 / ( sizeof( LzNote ) << GroupShift );
+    size_t iEntries = g_iLzCacheBytes / 256 / ( sizeof( LzNote ) << GroupShift );
     m_pLzCache->v.resize( std::max< size_t >( 4, std::min< size_t >( iEntries, iGroups ) ) );
     m_bLz = true;
 }
@@ -1694,7 +1694,7 @@ namespace
 
     void CompactStore( VisualStore &vs, const PackedMonotone &times, const std::vector< uint8_t > *pHidden, int iThreads, bool bDups )
     {
-        Parallel::For( iThreads, 128, [&]( size_t k, int ) {
+        Parallel::For( iThreads, 256, [&]( size_t k, int ) {
             KeyStore tmp;
             CompactKey( vs.aKeys[k], tmp, times, pHidden, bDups );
             vs.aKeys[k] = std::move( tmp );     // frees the Full layout of this key at once
@@ -1855,7 +1855,7 @@ namespace
         static const uint64_t SegmentBytes = EventStream::ChunkSize;
         static const uint64_t GiantBytes = 4 * EventStream::ChunkSize;
 
-        DecodeLanes( const EventStream &es, const int aOwner[128], int iWorkers, int iLanes ) : m_es( es ), m_iWorkers( iWorkers )
+        DecodeLanes( const EventStream &es, const int aOwner[256], int iWorkers, int iLanes ) : m_es( es ), m_iWorkers( iWorkers )
         {
             size_t U = es.UniqueTicks();
             m_vCuts.push_back( 0 );
@@ -1874,12 +1874,12 @@ namespace
             m_vGiant.resize( iSegments );
             for ( size_t g = 0; g < iSegments; g++ ) m_vGiant[g] = vRaw[g + 1] - vRaw[g] > GiantBytes;
             iLanes = std::max( 1, std::min( iLanes, iWorkers ) );
-            for ( int k = 0; k < 128; k++ ) m_aRoute[k] = (int8_t)aOwner[k];
+            for ( int k = 0; k < 256; k++ ) m_aRoute[k] = (int16_t)aOwner[k];
             for ( int l = 0; l < iLanes; l++ )
             {
                 m_vLanes.emplace_back( new Lane( iWorkers, ( iWorkers - l + iLanes - 1 ) / iLanes, iSegments ) );
                 // A giant segment: every lane, each for the keys of its own workers (worker w: lane w % L)
-                for ( int k = 0; k < 128; k++ ) m_vLanes.back()->aRouteGiant[k] = (int8_t)( aOwner[k] >= 0 && aOwner[k] % iLanes == l ? aOwner[k] : -1 );
+                for ( int k = 0; k < 256; k++ ) m_vLanes.back()->aRouteGiant[k] = (int16_t)( aOwner[k] >= 0 && aOwner[k] % iLanes == l ? aOwner[k] : -1 );
             }
         }
 
@@ -1913,7 +1913,7 @@ namespace
                 size_t n = 0;
                 // The stream's grammar (Song.h) parsed here rather than through Walk: per key byte, one
                 // table lookup gives the worker, or -1 (not routed by this lane)
-                const int8_t *pRoute = bGiant ? ln.aRouteGiant : m_aRoute;
+                const int16_t *pRoute = bGiant ? ln.aRouteGiant : m_aRoute;
                 bool bOk = true;
                 {
                     const EventStream::SeekPoint &sp = m_es.SeekPointFor( (size_t)u0 );
@@ -1939,14 +1939,14 @@ namespace
                             unsigned op = h >> 5;
                             if ( op > 2 ) { r.p += ( op == 5 || op == 6 ) ? 1 : 2; uOrd++; continue; }
                             // NoteOn (op 0, velocity > 0) or NoteOff (op 1, or 2: a NoteOn of velocity 0)
-                            if ( op != 2 ) r.p++;
+                            unsigned bank = op == 2 ? 0 : *r.p++ & 0x80;
                             uint8_t cCh = (uint8_t)( ( h & 0x0F ) | ( op == 0 ? 0x80 : 0 ) );
                             unsigned k;
                             do
                             {
                                 r.Need();
                                 k = *r.p++;
-                                unsigned key = k & 0x7F;
+                                unsigned key = ( k & 0x7F ) | bank;
                                 int w = pRoute[key];
                                 if ( w >= 0 && bEmit )
                                 {
@@ -2044,7 +2044,7 @@ namespace
                 for ( Batch &bt : aSlots ) bt.vPer.resize( iWorkers );
             }
             int iMine;                          // workers reading this lane's giant segments
-            int8_t aRouteGiant[128];            // per key: its worker, in a giant segment (-1: another lane's)
+            int16_t aRouteGiant[256];            // per key: its worker, in a giant segment (-1: another lane's)
             std::mutex mx;
             std::condition_variable cv;
             Batch aSlots[Window];
@@ -2076,7 +2076,7 @@ namespace
 
         const EventStream &m_es;
         int m_iWorkers;
-        int8_t m_aRoute[128];                       // per key: its worker (-1: none)
+        int16_t m_aRoute[256];                       // per key: its worker (-1: none)
         std::vector< uint64_t > m_vCuts;            // segment g is ticks [m_vCuts[g], m_vCuts[g + 1])
         std::vector< bool > m_vGiant;
         std::vector< std::unique_ptr< Lane > > m_vLanes;
@@ -2375,7 +2375,7 @@ private:
     std::vector< std::unique_ptr< KB > > &m_vBuilders;
     const std::vector< std::pair< uint64_t, uint32_t > > &m_vTrackEnds;
     const std::vector< int > &m_vKeys;
-    int m_aMine[128];
+    int m_aMine[256];
     size_t m_iTracks = 0;
     std::vector< Light > m_vLight;          // by track, then this thread's key
     std::vector< KeyState > m_vPool;
@@ -2408,7 +2408,7 @@ void BuildJumpTables( VisualStore &vs, size_t U, int iThreads )
         if ( pOffs ) for ( uint32_t i = 0; i < uCount; i++ ) fn( pOffs[i].llU, OrderKey( v.uSlot, pOffs[i].uOrd ) );
         else fn( v.llEndU, OrderKey( v.uSlot, v.uEndRank ) );
     };
-    Parallel::For( iThreads, 128, [&]( size_t k, int ) {
+    Parallel::For( iThreads, 256, [&]( size_t k, int ) {
         const KeyStore &ks = vs.aKeys[k];
         NoteView a[KeyStore::BlockSize];
         Run on, off;
@@ -2437,7 +2437,7 @@ void BuildJumpTables( VisualStore &vs, size_t U, int iThreads )
         if ( on.n ) { Add( vOns[on.u], on.n ); Max( vLast[on.u], llLast ); }
         if ( off.n ) Add( vOffs[off.u], off.n );
     } );
-    Parallel::For( iThreads, 128, [&]( size_t k, int ) {
+    Parallel::For( iThreads, 256, [&]( size_t k, int ) {
         const KeyStore &ks = vs.aKeys[k];
         NoteView a[KeyStore::BlockSize];
         Run before;
@@ -2508,7 +2508,7 @@ bool PairAll( const Song &song, VisualStore &vs, int iThreads, std::atomic< uint
 
     // Keys over threads, largest first onto the least loaded thread
     std::vector< int > vOrder;
-    for ( int k = 0; k < 128; k++ )
+    for ( int k = 0; k < 256; k++ )
         if ( song.aKeyNoteCounts[k] ) vOrder.push_back( k );
     std::sort( vOrder.begin(), vOrder.end(), [&]( int a, int b ) { return song.aKeyNoteCounts[a] > song.aKeyNoteCounts[b]; } );
     int iWorkers = std::max( 1, std::min< int >( Parallel::ThreadCount( iThreads ), (int)vOrder.size() ) );
@@ -2521,11 +2521,11 @@ bool PairAll( const Song &song, VisualStore &vs, int iThreads, std::atomic< uint
         vLoad[t] += song.aKeyNoteCounts[k] + 1;
     }
 
-    std::vector< std::unique_ptr< KeyBuilder > > vBuilders( bStream ? 0 : 128 );
-    std::vector< std::unique_ptr< StreamKey > > vStreamKeys( bStream ? 128 : 0 );
-    std::vector< KeyStore > vCompact( bStream ? 128 : 0 );
-    std::vector< std::unique_ptr< StreamCompactor > > vStream( bStream ? 128 : 0 );
-    for ( int k = 0; k < 128; k++ )
+    std::vector< std::unique_ptr< KeyBuilder > > vBuilders( bStream ? 0 : 256 );
+    std::vector< std::unique_ptr< StreamKey > > vStreamKeys( bStream ? 256 : 0 );
+    std::vector< KeyStore > vCompact( bStream ? 256 : 0 );
+    std::vector< std::unique_ptr< StreamCompactor > > vStream( bStream ? 256 : 0 );
+    for ( int k = 0; k < 256; k++ )
     {
         if ( bStream )
         {
@@ -2550,8 +2550,8 @@ bool PairAll( const Song &song, VisualStore &vs, int iThreads, std::atomic< uint
     if ( !vOrder.empty() )
     {
         // One decode shared by the workers: a lane per four threads (each parses about 250 M events/s)
-        int aOwner[128];
-        for ( int k = 0; k < 128; k++ ) aOwner[k] = -1;
+        int aOwner[256];
+        for ( int k = 0; k < 256; k++ ) aOwner[k] = -1;
         for ( int t = 0; t < iWorkers; t++ ) for ( int k : vSets[t] ) aOwner[k] = t;
         DecodeLanes dl( es, aOwner, iWorkers, std::max( 1, std::min( 4, Parallel::ThreadCount( iThreads ) / 4 ) ) );
         int iLanes = dl.Lanes();
@@ -2597,7 +2597,7 @@ bool PairAll( const Song &song, VisualStore &vs, int iThreads, std::atomic< uint
         }
     }
 
-    Parallel::For( iThreads, 128, [&]( size_t k, int ) {
+    Parallel::For( iThreads, 256, [&]( size_t k, int ) {
         if ( bStream ) { vStreamKeys[k]->Finish(); vs.aKeys[k] = std::move( vCompact[k] ); vStream[k].reset(); }
         else vBuilders[k]->Finish();
     } );
@@ -2605,7 +2605,7 @@ bool PairAll( const Song &song, VisualStore &vs, int iThreads, std::atomic< uint
 
     if ( bStream )
     {
-        for ( int k = 0; k < 128; k++ )
+        for ( int k = 0; k < 256; k++ )
         {
             const StreamKey &kb = *vStreamKeys[k];
             vs.llUnpaired += kb.UnpairedCount();
@@ -2621,9 +2621,9 @@ bool PairAll( const Song &song, VisualStore &vs, int iThreads, std::atomic< uint
         for ( const KeyStore &ks : vs.aKeys ) vs.llStored += ks.Size();
         return true;
     }
-    for ( int k = 0; k < 128; k++ ) vs.bWeird |= vBuilders[k]->Weird();
+    for ( int k = 0; k < 256; k++ ) vs.bWeird |= vBuilders[k]->Weird();
     if ( vs.bWeird && bStopOnWeird ) return true;
-    for ( int k = 0; k < 128; k++ )
+    for ( int k = 0; k < 256; k++ )
     {
         const KeyStore &ks = vs.aKeys[k];
         vs.llUnpaired += ks.UnpairedCount();
@@ -2671,13 +2671,13 @@ bool BuildVisualStore( Song &song, int iThreads, std::atomic< uint64_t > *pDone,
         adSteps[VisualStore::StepCompact] = ( Timer::NowMicroSecs() - llStart ) / 1e6;
         adPrivate[VisualStore::StepCompact] = PrivateBytes();
         llStart = Timer::NowMicroSecs();
-        if ( bLz ) Parallel::For( iThreads, 128, [&]( size_t k, int ) { song.visual.aKeys[k].ToLz(); } );
+        if ( bLz ) Parallel::For( iThreads, 256, [&]( size_t k, int ) { song.visual.aKeys[k].ToLz(); } );
         adSteps[VisualStore::StepLz] = ( Timer::NowMicroSecs() - llStart ) / 1e6;
         adPrivate[VisualStore::StepLz] = PrivateBytes();
     }
     else
     {
-        Parallel::For( iThreads, 128, [&]( size_t k, int ) { song.visual.aKeys[k].BuildFullTrees( song.stream.times ); } );
+        Parallel::For( iThreads, 256, [&]( size_t k, int ) { song.visual.aKeys[k].BuildFullTrees( song.stream.times ); } );
         adSteps[VisualStore::StepCompact] = ( Timer::NowMicroSecs() - llStart ) / 1e6;
         adPrivate[VisualStore::StepCompact] = PrivateBytes();
     }

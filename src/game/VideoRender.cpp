@@ -143,10 +143,10 @@ void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
         engine.DrawNotes( &r, g, m_vTrackSettings );
         if ( m_bShowKB )
         {
-            int aSlot[128];
+            int aSlot[256];
             engine.GetKeySlots( aSlot );
-            const ChannelSettings *pKeyColor[128];
-            for ( int i = 0; i < 128; i++ )
+            const ChannelSettings *pKeyColor[256];
+            for ( int i = 0; i < 256; i++ )
                 pKeyColor[i] = aSlot[i] < 0 ? nullptr : &m_vTrackSettings[aSlot[i] >> 4].aChannels[aSlot[i] & 15];
             Scene::DrawKeys( &r, g, m_Colors, pKeyColor );
         }

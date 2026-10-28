@@ -187,7 +187,7 @@ private:
         uint32_t uPending = 0, uHeld = 0, uVoices = 0, uVoiceOut = 0, uVoiceCall = 0;
         uint32_t uSentOffs = 0;         // offs a lane sent, for the stitch (FinishBatch counts them again after any on the fast path)
     };
-    KeyState m_aKey[2048];
+    KeyState m_aKey[4096];
     uint64_t m_llPending = 0;           // the keys' uPending summed: while 0, an off needs no key state (without collapsing)
     int m_iSkipVelocity = 0;
     bool m_bCollapse = false;

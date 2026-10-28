@@ -591,10 +591,10 @@ GameState::GameError MainScreen::Render()
     long long tC = Timer::NowMicroSecs();
     if ( m_bShowKB )
     {
-        int aSlot[128];
+        int aSlot[256];
         m_pEngine->GetKeySlots( aSlot );
-        const ChannelSettings *pKeyColor[128];
-        for ( int i = 0; i < 128; i++ )
+        const ChannelSettings *pKeyColor[256];
+        for ( int i = 0; i < 256; i++ )
             pKeyColor[i] = aSlot[i] < 0 ? nullptr : &m_vTrackSettings[aSlot[i] >> 4].aChannels[aSlot[i] & 15];
         Scene::DrawKeys( m_pRenderer, m_G, m_Colors, pKeyColor );
     }

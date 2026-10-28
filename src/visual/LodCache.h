@@ -69,8 +69,8 @@ public:
     {
         long long llIndex = 0;              // covers starts in [llIndex, llIndex + 1) * SegmentUs
         long long llStartUs = 0;            // llIndex * SegmentUs
-        std::vector< Entry > av[128];       // per key, ascending position
-        std::vector< std::pair< uint32_t, long long > > avLong[128];   // per key: (entry, duration) of the LongDur entries
+        std::vector< Entry > av[256];       // per key, ascending position
+        std::vector< std::pair< uint32_t, long long > > avLong[256];   // per key: (entry, duration) of the LongDur entries
         size_t iBytes = 0;
 
         long long Start( const Entry &e ) const { return llStartUs + (long long)( e.uPosStart >> Entry::StartShift ); }

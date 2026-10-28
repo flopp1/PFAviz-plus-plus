@@ -47,7 +47,7 @@ namespace Clean
 struct ViewInputs
 {
     int iBufferWidth = 0, iBufferHeight = 0;
-    int eKeysShown = 0;               // VisualSettings::KeysShown (0 all 88, 1 song, 2 custom, 3 all 128)
+    int eKeysShown = 0;
     int iFirstKey = 21, iLastKey = 108;
     int iSongMinNote = 0, iSongMaxNote = 127;
     float fOffsetX = 0.0f, fOffsetY = 0.0f, fZoomX = 1.0f;   // already include the temporary move/zoom
@@ -60,6 +60,7 @@ struct ViewInputs
 struct FrameGlobals
 {
     int iStartNote, iEndNote;
+    int iMiddleC = 60;                // the key with the middle C mark (Notes::C4; in the 256-key view key 127, the middle white key)
     float fNotesX, fNotesY, fNotesCX, fNotesCY;
     int iAllWhiteKeys;
     float fWhiteCX;
@@ -92,7 +93,7 @@ namespace Scene
 
     void DrawBackground( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c ); // field + vertical lines
     // pKeyColor[i] is the colour of the note lighting key i, or nullptr when the key is not lit
-    void DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c, const ChannelSettings *const pKeyColor[128] );
+    void DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c, const ChannelSettings *const pKeyColor[256] );
     void DrawBorder( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c );
 }
 

@@ -76,7 +76,7 @@ public:
     void Jump( long long llTarget, long long llClampedStart, long long llEndTime );
     void DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const std::vector< TrackSettings > &vTracks );
     // Track * 16 + channel of the note lighting each key, or -1 (hidden channels included, R8)
-    void GetKeySlots( int aSlot[128] ) const;
+    void GetKeySlots( int aSlot[256] ) const;
 
     const FrameStats &LastStats() const { return m_Stats; }
 
@@ -134,7 +134,7 @@ private:
     bool m_bResumed = false;
     long long m_llProcessed = LLONG_MIN;
     long long m_llEndHW = LLONG_MIN;
-    uint64_t m_aCpos[128] = {};         // jump set lower bound per key (the original's backward walk, 6.4)
+    uint64_t m_aCpos[256] = {};         // jump set lower bound per key (the original's backward walk, 6.4)
     // The walk cutoff, independent of the store: 0 every note, 1 no note, 2 from (start, rank) on
     int m_iCut = 0;
     uint64_t m_llCutU = 0;
@@ -145,7 +145,7 @@ private:
     std::vector< uint8_t > m_vMask;                 // current hidden slots
     std::shared_ptr< const VisualStore > m_pView;   // built for m_vViewMask
     std::vector< uint8_t > m_vViewMask;
-    uint64_t m_aViewCpos[128] = {};
+    uint64_t m_aViewCpos[256] = {};
     unsigned m_uViewCposGen = ~0u;              // jump the view's positions were computed for
     unsigned m_uViewGen = 0;                    // bumped whenever m_pView changes
     unsigned m_uViewCposView = ~0u;             // the view generation they were computed in
@@ -169,11 +169,11 @@ private:
     long long m_llCacheSpan = -1;
     int m_iCacheLo = 0, m_iCacheHi = 0;
 
-    std::vector< Owner > m_aOwners[128];
-    std::vector< Renderer::SCREEN_VERTEX > m_aVerts[128];   // the owners' rects as quads (Renderer::DrawQuads), in owner order; only grows
-    std::vector< Renderer::NoteInstance > m_aInst[128];     // the same as instances (Renderer::InstancingOn); only grows
-    size_t m_aVertCount[128] = {};                          // vertices (instances) in use in m_aVerts (m_aInst)
-    std::vector< uint32_t > m_aVertStart[128];              // first vertex (instance) of each owner (+ end)
+    std::vector< Owner > m_aOwners[256];
+    std::vector< Renderer::SCREEN_VERTEX > m_aVerts[256];   // the owners' rects as quads (Renderer::DrawQuads), in owner order; only grows
+    std::vector< Renderer::NoteInstance > m_aInst[256];     // the same as instances (Renderer::InstancingOn); only grows
+    size_t m_aVertCount[256] = {};                          // vertices (instances) in use in m_aVerts (m_aInst)
+    std::vector< uint32_t > m_aVertStart[256];              // first vertex (instance) of each owner (+ end)
     FrameStats m_Stats;
     bool m_bPixelStats = false;
     bool m_bMergeRows = true;

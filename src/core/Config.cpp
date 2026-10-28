@@ -162,7 +162,7 @@ static std::string FormatRGB( unsigned c )
 
 void VisualSettings::Load( const IniFile &ini )
 {
-    eKeysShown = static_cast< KeysShown >( std::clamp( ini.GetInt( "Visual", "KeysShown", eKeysShown ), 0, 3 ) );
+    eKeysShown = static_cast< KeysShown >( std::clamp( ini.GetInt( "Visual", "KeysShown", eKeysShown ), 0, 4 ) );
     bAlwaysShowControls = ini.GetBool( "Visual", "AlwaysShowControls", bAlwaysShowControls );
     if ( ini.Has( "Visual", "Stats" ) ) uStats = (unsigned)ini.GetInt( "Visual", "Stats", (int)uStats ) & AllStats;
     else
@@ -188,8 +188,8 @@ void VisualSettings::Load( const IniFile &ini )
         for ( int i = 0; i < StatCount; i++ )
             if ( !abSeen[DefaultStatOrder[i]] ) aStatOrder[n++] = DefaultStatOrder[i];
     }
-    iFirstKey = std::clamp( ini.GetInt( "Visual", "FirstKey", iFirstKey ), 0, 127 );
-    iLastKey = std::clamp( ini.GetInt( "Visual", "LastKey", iLastKey ), 0, 127 );
+    iFirstKey = std::clamp( ini.GetInt( "Visual", "FirstKey", iFirstKey ), 0, 255 );
+    iLastKey = std::clamp( ini.GetInt( "Visual", "LastKey", iLastKey ), 0, 255 );
     for ( int i = 0; i < 16; i++ )
         colors[i] = ParseRGB( ini.GetString( "Visual", "Color" + std::to_string( i ) ), colors[i] );
     iBkgColor = ParseRGB( ini.GetString( "Visual", "BkgColor" ), iBkgColor );
@@ -421,6 +421,8 @@ void PerformanceSettings::LoadDefaultValues()
     iWorkerThreads = 0;
     iPlaybackThreads = 0;
     bPreferKDMAPI = true;
+    bTuning31 = false;
+    bTuning31PitchBend = false;
     bVelocitySkip = false;
     iSkipLagMs = 100;
     bVelocityFloor = false;
@@ -442,6 +444,8 @@ void PerformanceSettings::Load( const IniFile &ini )
     // Playback used the worker threads setting before it had its own
     iPlaybackThreads = std::clamp( ini.GetInt( "Performance", "PlaybackThreads", iWorkerThreads ), 0, 256 );
     bPreferKDMAPI = ini.GetBool( "Performance", "PreferKDMAPI", bPreferKDMAPI );
+    bTuning31 = ini.GetBool( "Performance", "Tuning31", bTuning31 );
+    bTuning31PitchBend = ini.GetBool( "Performance", "Tuning31PitchBend", bTuning31PitchBend );
     bVelocitySkip = ini.GetBool( "Performance", "VelocitySkip", bVelocitySkip );
     iSkipLagMs = std::clamp( ini.GetInt( "Performance", "SkipLagMs", iSkipLagMs ), 1, 10000 );
     bVelocityFloor = ini.GetBool( "Performance", "VelocityFloor", bVelocityFloor );
@@ -462,6 +466,8 @@ void PerformanceSettings::Save( IniFile &ini ) const
     ini.SetInt( "Performance", "WorkerThreads", iWorkerThreads );
     ini.SetInt( "Performance", "PlaybackThreads", iPlaybackThreads );
     ini.SetInt( "Performance", "PreferKDMAPI", bPreferKDMAPI );
+    ini.SetInt( "Performance", "Tuning31", bTuning31 );
+    ini.SetInt( "Performance", "Tuning31PitchBend", bTuning31PitchBend );
     ini.SetInt( "Performance", "VelocitySkip", bVelocitySkip );
     ini.SetInt( "Performance", "SkipLagMs", iSkipLagMs );
     ini.SetInt( "Performance", "VelocityFloor", bVelocityFloor );

@@ -25,7 +25,7 @@ struct VisualSettings
     void Save( IniFile &ini ) const;
 
     // All = the 88 piano keys (the original's "Show all 88 keys"); All128 = every MIDI key (the default)
-    enum KeysShown { All, Song, Custom, All128 } eKeysShown;
+    enum KeysShown { All, Song, Custom, All128, All256 } eKeysShown;
     int iFirstKey, iLastKey;
     bool bAlwaysShowControls;
     // The stats box's lines (Visual > Statistics...); uStats has bit 1 << Stat for each one shown, and
@@ -132,6 +132,8 @@ struct PerformanceSettings
     int iWorkerThreads;         // loading and drawing (and video rendering); 0 = auto
     int iPlaybackThreads;       // the most threads decoding playback; 0 = auto
     bool bPreferKDMAPI;
+    bool bTuning31;
+    bool bTuning31PitchBend;
     bool bVelocitySkip;         // skip quiet note-ons while the output lags (off: every event is sent)
     int iSkipLagMs;             // the lag above which velocity skipping starts
     bool bVelocityFloor;        // always skip note-ons quieter than iMinVelocity

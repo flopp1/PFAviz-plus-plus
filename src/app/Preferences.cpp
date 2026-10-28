@@ -27,7 +27,7 @@ namespace
     // Visual
     //-------------------------------------------------------------------------
 
-    const int aKeyModeIds[4] = { IDC_SHOWALLKEYS, IDC_SHOWSONGKEYS, IDC_SHOWCUSTOMKEYS, IDC_SHOWALL128KEYS }; // by KeysShown
+    const int aKeyModeIds[5] = { IDC_SHOWALLKEYS, IDC_SHOWSONGKEYS, IDC_SHOWCUSTOMKEYS, IDC_SHOWALL128KEYS, IDC_SHOWALL256KEYS }; // by KeysShown
 
     VOID EnableCustomKeys( HWND hWnd, BOOL bEnable )
     {
@@ -214,7 +214,7 @@ namespace
         g_Stats.uStats = cVisual.uStats;
         std::copy( cVisual.aStatOrder, cVisual.aStatOrder + VisualSettings::StatCount, g_Stats.aOrder );
         ShowStatsCount( hWnd );
-        for ( int i = 0; i < 4; i++ )
+        for ( int i = 0; i < 5; i++ )
             CheckDlgButton( hWnd, aKeyModeIds[i], i == cVisual.eKeysShown ? BST_CHECKED : BST_UNCHECKED );
         EnableCustomKeys( hWnd, cVisual.eKeysShown == VisualSettings::Custom );
         CheckDlgButton( hWnd, IDC_SHOWCONTROLS, cVisual.bAlwaysShowControls ? BST_CHECKED : BST_UNCHECKED );
@@ -272,7 +272,7 @@ namespace
         switch ( msg )
         {
             case WM_INITDIALOG:
-                for ( int i = 0; i < 128; i++ )
+                for ( int i = 0; i < 256; i++ )
                 {
                     SendDlgItemMessageW( hWnd, IDC_FIRSTKEY, CB_ADDSTRING, 0, ( LPARAM )Notes::NoteName( i ) );
                     SendDlgItemMessageW( hWnd, IDC_LASTKEY, CB_ADDSTRING, 0, ( LPARAM )Notes::NoteName( i ) );
@@ -302,7 +302,7 @@ namespace
                     case IDC_SHOWCUSTOMKEYS:
                         EnableCustomKeys( hWnd, TRUE );
                         return TRUE;
-                    case IDC_SHOWALLKEYS: case IDC_SHOWSONGKEYS: case IDC_SHOWALL128KEYS:
+                    case IDC_SHOWALLKEYS: case IDC_SHOWSONGKEYS: case IDC_SHOWALL128KEYS: case IDC_SHOWALL256KEYS:
                         EnableCustomKeys( hWnd, FALSE );
                         return TRUE;
                     case IDC_STATSBOX:
@@ -409,7 +409,7 @@ namespace
                     }
 
                     cVisual.eKeysShown = VisualSettings::All128;
-                    for ( int i = 0; i < 4; i++ )
+                    for ( int i = 0; i < 5; i++ )
                         if ( IsDlgButtonChecked( hWnd, aKeyModeIds[i] ) == BST_CHECKED )
                             cVisual.eKeysShown = static_cast< VisualSettings::KeysShown >( i );
                     cVisual.bAlwaysShowControls = IsDlgButtonChecked( hWnd, IDC_SHOWCONTROLS ) == BST_CHECKED;
@@ -621,6 +621,9 @@ namespace
                 CheckDlgButton( hWnd, IDC_PERF_LOD, cPerf.bLodCache ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_PERF_INSTANCING, cPerf.bGpuInstancing ? BST_CHECKED : BST_UNCHECKED );
                 SetDlgItemInt( hWnd, IDC_PERF_CACHEMB, (UINT)cPerf.iBlockCacheMB, FALSE );
+                CheckDlgButton( hWnd, IDC_PERF_TUNING31, cPerf.bTuning31 ? BST_CHECKED : BST_UNCHECKED );
+                CheckDlgButton( hWnd, IDC_PERF_TUNING31BEND, cPerf.bTuning31PitchBend ? BST_CHECKED : BST_UNCHECKED );
+                EnableWindow( GetDlgItem( hWnd, IDC_PERF_TUNING31BEND ), cPerf.bTuning31 );
                 CheckDlgButton( hWnd, IDC_PERF_KDMAPI, cPerf.bPreferKDMAPI ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_PERF_COLLAPSE, cPerf.bCollapseStacks ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_PERF_VELFLOOR, cPerf.bVelocityFloor ? BST_CHECKED : BST_UNCHECKED );
@@ -635,6 +638,8 @@ namespace
             case WM_COMMAND:
             {
                 int iCode = HIWORD( wParam );
+                if ( LOWORD( wParam ) == IDC_PERF_TUNING31 && iCode == BN_CLICKED )
+                    EnableWindow( GetDlgItem( hWnd, IDC_PERF_TUNING31BEND ), IsDlgButtonChecked( hWnd, IDC_PERF_TUNING31 ) == BST_CHECKED );
                 if ( LOWORD( wParam ) == IDC_PERF_VIDEO )
                 {
                     if ( iCode == BN_CLICKED ) DoVideoExport( GetParent( hWnd ) );
@@ -703,6 +708,8 @@ namespace
                     cPerf.bLodCache = IsDlgButtonChecked( hWnd, IDC_PERF_LOD ) == BST_CHECKED;
                     cPerf.bGpuInstancing = IsDlgButtonChecked( hWnd, IDC_PERF_INSTANCING ) == BST_CHECKED;
                     cPerf.iBlockCacheMB = (int)uCache;
+                    cPerf.bTuning31 = IsDlgButtonChecked( hWnd, IDC_PERF_TUNING31 ) == BST_CHECKED;
+                    cPerf.bTuning31PitchBend = IsDlgButtonChecked( hWnd, IDC_PERF_TUNING31BEND ) == BST_CHECKED;
                     cPerf.bPreferKDMAPI = IsDlgButtonChecked( hWnd, IDC_PERF_KDMAPI ) == BST_CHECKED;
                     cVideo.bLimitFPS = IsDlgButtonChecked( hWnd, IDC_LIMITFPS ) == BST_CHECKED;
 

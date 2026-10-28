@@ -88,6 +88,7 @@
 #define IDC_LASTKEY                     1063
 #define IDC_THROUGH                     1064
 #define IDC_SHOWALL128KEYS              1065
+#define IDC_SHOWALL256KEYS              1190
 #define IDC_KDMAPISTATUS                1066
 #define IDC_PERF_THREADS                1070
 #define IDC_PERF_PLAYTHREADS            1104
@@ -106,6 +107,8 @@
 #define IDC_NSPEEDLABEL                 1117
 #define IDC_PERF_LOADSTATS              1071
 #define IDC_PERF_KDMAPI                 1072
+#define IDC_PERF_TUNING31               1118
+#define IDC_PERF_TUNING31BEND           1119
 #define IDC_PERF_SKIPPING               1073
 #define IDC_PERF_MAXLAG                 1074
 #define IDC_PERF_MAXLAGSPIN             1075
