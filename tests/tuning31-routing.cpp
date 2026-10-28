@@ -67,6 +67,15 @@ int main()
             output.Send( Note( type, 9, 64, 0 ) );
             assert( capture.notes.size() == 1 && ( capture.notes[0] & 15 ) == 9 );
         }
+        // A bend range (RPN 0) and a bend reach every lane of the group, values intact and in order, so
+        // the source channel's 31-EDO notes bend alike wherever they were routed
+        const uint32_t bend[] = { Note( 0xB0, 3, 101, 0 ), Note( 0xB0, 3, 100, 0 ), Note( 0xB0, 3, 6, 12 ), Note( 0xB0, 3, 38, 0 ),
+                                  Note( 0xE0, 3, 0x15, 0x6A ) };
+        capture.notes.clear();
+        output.SendBatch( bend, 5 );
+        assert( capture.notes.size() == 15 );
+        for ( size_t i = 0; i < 5; i++ )
+            for ( unsigned lane = 0; lane < 3; lane++ ) assert( capture.notes[i * 3 + lane] == ( ( bend[i] & ~15u ) | ( 3 + lane ) ) );
     }
     assert( capture.sysex.size() == 6 );
     for ( size_t lane = 3; lane < 6; lane++ )

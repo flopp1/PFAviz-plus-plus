@@ -48,7 +48,7 @@ size_t EventStream::MemoryBytes() const
 size_t Song::MemoryBytes() const
 {
     size_t n = stream.MemoryBytes() + vTracks.capacity() * sizeof( RefTrackInfo ) + vMeta.capacity() * sizeof( RefMetaEvent ) +
-               vChase.capacity() * sizeof( ChaseEvent ) + vTrackLastU.capacity() * 8 + visual.MemoryBytes() + noteStats.MemoryBytes() + ccCounts.MemoryBytes() +
+               ( vChase.capacity() + vParamChase.capacity() ) * sizeof( ChaseEvent ) + vTrackLastU.capacity() * 8 + visual.MemoryBytes() + noteStats.MemoryBytes() + ccCounts.MemoryBytes() +
                aSendOns[0].MemoryBytes() + aSendOns[1].MemoryBytes();
     for ( const auto &v : vTrackMeta ) n += v.capacity() * sizeof( RefMetaEvent );
     return n;
@@ -201,11 +201,14 @@ void Song::BuildSendCounts( int iThreads )
     for ( auto &part : vParts ) iChase += part.vChase.size();
     vChase.reserve( iChase );
     for ( auto &part : vParts ) { vChase.insert( vChase.end(), part.vChase.begin(), part.vChase.end() ); std::vector< ChaseEvent >().swap( part.vChase ); }
+    vParamChase.clear();
     for ( const ChaseEvent &e : vChase )
     {
         int i = ChaseItem( e.uMsg );
         uint8_t &b = aChaseUsed[e.uMsg & 0x0F][i < 0 ? 0 : i];
         if ( i >= 0 && !b ) { b = 1; uChaseItems++; }
+        unsigned cc = ( e.uMsg >> 8 ) & 0x7F;
+        if ( ( e.uMsg & 0xF0 ) == 0xB0 && ( cc == 6 || cc == 38 || ( cc >= 98 && cc <= 101 ) || cc == 121 ) ) vParamChase.push_back( e );
     }
     for ( int c = 0; c < 2; c++ )
     {

@@ -314,6 +314,7 @@ struct Song
     std::vector< uint64_t > vKnownId, vKnownEnd;
     EventStream stream;
     std::vector< ChaseEvent > vChase;       // every CC, program change, pitch bend and channel pressure (BuildSendCounts)
+    std::vector< ChaseEvent > vParamChase;  // of them, CC 6, 38, 98-101 and 121: the RPN and NRPN values (DESIGN.md 7.7)
     uint8_t aChaseUsed[16][ChaseItems] = {};    // the items vChase sets, per channel
     uint32_t uChaseItems = 0;               // how many
     VisualStore visual;                     // notes per key, paired (built by BuildVisualStore)

@@ -59,6 +59,58 @@ void PlaybackDecoder::Seek( long long llTarget, long long, std::vector< uint32_t
     ResetSendState();
 }
 
+// RPN and NRPN values (pitch bend range, tuning, ...): a data entry (CC 6, 38) sets the parameter selected
+// when it came, so these controllers are not chased by their last values (the data would go to the
+// selection last made, and a range set before a tuning RPN was lost: X-Cool's bends after a seek).
+// Per channel, each parameter set by the target is selected and given its values again, in the order
+// they were first set, then the last selection is made again. A CC 121 clears the selection.
+static void ChaseParameters( const std::vector< ChaseEvent > &vEvents, long long llTarget, std::vector< uint32_t > &vOut )
+{
+    struct Param { unsigned uId; int iMsb, iLsb; };     // uId: 0x4000 for an NRPN | number MSB << 7 | LSB
+    struct State { unsigned aRpn[2] = { 127, 127 }, aNrpn[2] = { 127, 127 }; bool bNrpn = false; std::vector< Param > v; };
+    State aState[16];
+    for ( const ChaseEvent &e : vEvents )
+    {
+        if ( e.llTime > llTarget ) break;
+        State &s = aState[e.uMsg & 0x0F];
+        unsigned cc = ( e.uMsg >> 8 ) & 0x7F, v = ( e.uMsg >> 16 ) & 0x7F;
+        switch ( cc )
+        {
+            case 101: s.aRpn[0] = v; s.bNrpn = false; break;
+            case 100: s.aRpn[1] = v; s.bNrpn = false; break;
+            case 99: s.aNrpn[0] = v; s.bNrpn = true; break;
+            case 98: s.aNrpn[1] = v; s.bNrpn = true; break;
+            case 121: s.aRpn[0] = s.aRpn[1] = s.aNrpn[0] = s.aNrpn[1] = 127; s.bNrpn = false; break;
+            case 6: case 38:
+            {
+                const unsigned *pSel = s.bNrpn ? s.aNrpn : s.aRpn;
+                if ( pSel[0] == 127 && pSel[1] == 127 ) break;  // the null parameter: no effect
+                unsigned uId = ( s.bNrpn ? 0x4000u : 0u ) | pSel[0] << 7 | pSel[1];
+                auto it = std::find_if( s.v.begin(), s.v.end(), [&]( const Param &p ) { return p.uId == uId; } );
+                if ( it == s.v.end() ) it = s.v.insert( s.v.end(), { uId, -1, -1 } );
+                ( cc == 6 ? it->iMsb : it->iLsb ) = (int)v;
+                break;
+            }
+        }
+    }
+    for ( uint32_t ch = 0; ch < 16; ch++ )
+    {
+        const State &s = aState[ch];
+        auto Select = [&]( bool bNrpn, unsigned uMsb, unsigned uLsb ) {
+            vOut.push_back( 0xB0 | ch | ( bNrpn ? 99u : 101u ) << 8 | uMsb << 16 );
+            vOut.push_back( 0xB0 | ch | ( bNrpn ? 98u : 100u ) << 8 | uLsb << 16 );
+        };
+        for ( const Param &p : s.v )
+        {
+            Select( p.uId & 0x4000, ( p.uId >> 7 ) & 0x7F, p.uId & 0x7F );
+            if ( p.iMsb >= 0 ) vOut.push_back( 0xB0 | ch | 6 << 8 | (uint32_t)p.iMsb << 16 );
+            if ( p.iLsb >= 0 ) vOut.push_back( 0xB0 | ch | 38 << 8 | (uint32_t)p.iLsb << 16 );
+        }
+        const unsigned *pSel = s.bNrpn ? s.aNrpn : s.aRpn;
+        if ( !s.v.empty() || pSel[0] != 127 || pSel[1] != 127 ) Select( s.bNrpn, pSel[0], pSel[1] );
+    }
+}
+
 // The chase (DESIGN.md 7.7): Reset All Controllers on every channel, then the last value before the
 // target of every item the song sets, in the order those were set (so a bank select stays before its
 // program change), then GM defaults for what has none: volume and pan on every channel, and bank,
@@ -91,10 +143,14 @@ void PlaybackDecoder::Chase( long long llTarget, std::vector< uint32_t > &vOut )
     size_t iNew = (size_t)( std::upper_bound( vChase.begin(), vChase.end(), llTarget,
                                               []( long long t, const ChaseEvent &e ) { return t < e.llTime; } ) - vChase.begin() );
     // Back from the target: an item's first event is its value; a CC 121 settles the items it resets
-    // that have none after it (at their reset values, sent above)
+    // that have none after it (at their reset values, sent above). The RPN and NRPN controllers are
+    // chased apart (ChaseParameters)
     uint8_t aFound[16][ChaseItems] = {};
     std::vector< size_t > vPick;
     uint32_t uLeft = m_Song.uChaseItems;
+    for ( int ch = 0; ch < 16; ch++ )
+        for ( int it : { 6, 38, 98, 99, 100, 101 } )
+            if ( m_Song.aChaseUsed[ch][it] ) { aFound[ch][it] = 1; uLeft--; }
     for ( size_t i = iNew; i-- > 0 && uLeft; )
     {
         uint32_t uMsg = vChase[i].uMsg, ch = uMsg & 0x0F;
@@ -108,6 +164,7 @@ void PlaybackDecoder::Chase( long long llTarget, std::vector< uint32_t > &vOut )
                 if ( !aFound[ch][r] ) { aFound[ch][r] = 1; uLeft -= m_Song.aChaseUsed[ch][r]; }
     }
     for ( auto it = vPick.rbegin(); it != vPick.rend(); ++it ) vOut.push_back( vChase[*it].uMsg );
+    ChaseParameters( m_Song.vParamChase, llTarget, vOut );
     for ( uint32_t ch = 0; ch < 16; ch++ )
         for ( const Default &d : aDefault )
             if ( !aFound[ch][d.iItem] && ( d.bAlways || m_Song.aChaseUsed[ch][d.iItem] ) )
