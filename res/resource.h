@@ -104,6 +104,7 @@
 #define IDC_BKGON                       1114
 #define IDC_HIDELINES                   1115
 #define IDC_HIDESPEEDBOXES              1116
+#define IDC_LOOPCOLORS                  1121
 #define IDC_NSPEEDLABEL                 1117
 #define IDC_PERF_LOADSTATS              1071
 #define IDC_PERF_KDMAPI                 1072

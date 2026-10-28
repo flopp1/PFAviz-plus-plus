@@ -151,12 +151,13 @@ ChannelSettings *MainScreen::GetChannelSettings( int iTrack, int *piTrack, int *
 void MainScreen::SetChannelColors( const unsigned aColor[16] )
 {
     const std::vector< RefTrackInfo > &vTracks = m_pSong->vTracks;
+    bool bLoop = Config::GetConfig().GetVisualSettings().bLoopColors;
     size_t iPos = 0;
     for ( size_t i = 0; i < vTracks.size(); i++ )
         for ( int j = 0; j < 16; j++ )
             if ( vTracks[i].aNoteCount[j] > 0 )
             {
-                if ( iPos < 16 ) ColorChannel( (int)i, j, aColor[iPos] );
+                if ( iPos < 16 || bLoop ) ColorChannel( (int)i, j, aColor[iPos % 16] );
                 else ColorChannel( (int)i, j, 0, true );
                 iPos++;
             }

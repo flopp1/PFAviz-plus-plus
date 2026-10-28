@@ -129,13 +129,14 @@ void SplashScreen::InitState()
 void SplashScreen::SetChannelColors( const std::vector< unsigned > &vColor )
 {
     const std::vector< RefTrackInfo > &vTracks = m_MIDI.GetTracks();
+    bool bLoop = Config::GetConfig().GetVisualSettings().bLoopColors;
     size_t iPos = 0;
     for ( size_t i = 0; i < vTracks.size(); i++ )
         for ( int j = 0; j < 16; j++ )
             if ( vTracks[i].aNoteCount[j] > 0 )
             {
-                if ( iPos < vColor.size() )
-                    m_vTrackSettings[i].aChannels[j].SetColor( vColor[iPos] );
+                if ( iPos < vColor.size() || ( bLoop && !vColor.empty() ) )
+                    m_vTrackSettings[i].aChannels[j].SetColor( vColor[iPos % vColor.size()] );
                 else
                     m_vTrackSettings[i].aChannels[j].SetColor();
                 iPos++;

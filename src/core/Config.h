@@ -56,6 +56,7 @@ struct VisualSettings
     unsigned uClean;            // Clean flags (visual/Scene.h): the original's rounding quirks left out
     bool bHideLines;            // no key dividers or measure lines over the background
     bool bHideSpeedBoxes;       // the toolbar as the original's: sliders only, without the exact speed boxes
+    bool bLoopColors;           // the track colors repeat (channel n gets colors[n % 16]); off: random after the 16th
 };
 
 struct AudioSettings
