@@ -114,6 +114,7 @@ static void CheckSong( bool extended, bool full, bool lz, int fused, bool tuning
         PlaybackDecoder::Params params;
         params.bCollapse = collapse;
         params.iMinVelocity = floor;
+        params.bTuning31 = tuning;
         std::vector< uint32_t > messages;
         for ( int attempt = 0; decoder.NextTime( 0 ) != LLONG_MAX; attempt++ )
         {
@@ -214,6 +215,7 @@ int wmain( int argc, wchar_t **argv )
         for ( uint32_t message : history ) song->vChase.push_back( { 100, message } );
         song->vChase.push_back( { 2000, 0x000006B0 } );
         PlaybackDecoder decoder( *song );
+        decoder.SetBendChase( true );        // as the engine sets it for the pitch-bend output
         std::vector< uint32_t > chase;
         decoder.Seek( 1000, 0, chase );
         assert( chase.size() >= history.size() );

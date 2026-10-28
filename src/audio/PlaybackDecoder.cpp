@@ -74,7 +74,7 @@ void PlaybackDecoder::Chase( long long llTarget, std::vector< uint32_t > &vOut )
     for ( uint32_t ch = 0; ch < 16; ch++ ) vOut.push_back( 0xB0 | ch | ( 121 << 8 ) );
 
     const std::vector< ChaseEvent > &vChase = m_Song.vChase;
-    if ( m_Song.bTuning31 && m_Song.bTuning31PitchBend )
+    if ( m_bBendChase )
     {
         for ( uint32_t ch = 0; ch < 16; ch++ )
         {
@@ -298,7 +298,7 @@ size_t PlaybackDecoder::Notes( uint32_t uTrack, uint32_t uBase, const uint8_t *p
                                size_t u, uint32_t uMinVel, const Params &p )
 {
     bEnd = false;
-    if ( ( uBase & 0x8000 ) && ( !m_Song.bTuning31 || ( uBase & 0x0F ) == 9 ) )
+    if ( ( uBase & 0x8000 ) && ( !p.bTuning31 || ( uBase & 0x0F ) == 9 ) )
     {
         size_t i = 0;
         while ( i < iMax )
@@ -445,7 +445,7 @@ bool PlaybackDecoder::FillTick( uint32_t *__restrict pOut, size_t iCap, size_t &
             return i;
         },
         [&]( uint32_t, uint32_t uMsg ) {
-            if ( ( uMsg & 0xF0 ) != 0xA0 || !( uMsg & 0x8000 ) || ( m_Song.bTuning31 && ( uMsg & 0x0F ) != 9 ) )
+            if ( ( uMsg & 0xF0 ) != 0xA0 || !( uMsg & 0x8000 ) || ( p.bTuning31 && ( uMsg & 0x0F ) != 9 ) )
                 pOut[n++] = uMsg;
             iRead++;
             if ( bCounting ) m_dTokens -= 1.0;

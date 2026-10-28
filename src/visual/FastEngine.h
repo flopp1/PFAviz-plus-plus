@@ -65,6 +65,9 @@ public:
     void SetPixelStats( bool bOn ) { m_bPixelStats = bOn; }
     // Consecutive one-colour rects of a key that meet edge to edge are drawn as one (exact; on by default)
     void SetMergeRows( bool bOn ) { m_bMergeRows = bOn; }
+    // Keys drawn, lit and walked by jumps: 256 with 31-EDO tuning on, 128 with it off (a song loaded
+    // with it keeps its keys past 127, hidden)
+    void SetKeyCount( int iKeys ) { m_iKeys = iKeys; }
     size_t LodBytes() const { return m_pLod ? m_pLod->MemoryBytes() : 0; }
     bool LodOn() const { return m_bLod; }
     bool DrawsPreviousMask() const { return m_vDrawMask != m_vMask; }   // the last frame waited for the view
@@ -177,6 +180,7 @@ private:
     FrameStats m_Stats;
     bool m_bPixelStats = false;
     bool m_bMergeRows = true;
+    int m_iKeys = 256;
 
     // DrawNotes' working vectors, kept between frames so a frame allocates nothing
     std::vector< KeyCols > m_aClass[2];

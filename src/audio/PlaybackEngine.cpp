@@ -96,6 +96,16 @@ void PlaybackEngine::Seek( long long llTarget, long long llClamped, long long ll
     m_Clock.Set( llClamped );
 }
 
+bool PlaybackEngine::SetTuning( bool bTuning31, bool bPitchBend )
+{
+    bPitchBend = bPitchBend && bTuning31;
+    if ( m_bTuning31.load( std::memory_order_relaxed ) == bTuning31 && m_bTuningBend.load( std::memory_order_relaxed ) == bPitchBend ) return false;
+    m_bTuning31.store( bTuning31, std::memory_order_relaxed );
+    m_bTuningBend.store( bPitchBend, std::memory_order_relaxed );
+    m_bReopen.store( true, std::memory_order_release );
+    return true;
+}
+
 void PlaybackEngine::AllNotesOff()
 {
     m_bNotesOff.store( true, std::memory_order_release );
@@ -206,6 +216,7 @@ void PlaybackEngine::DecoderThread()
             {
                 vChase.clear();
                 long long t0 = Timer::NowMicroSecs();
+                m_Decoder.SetBendChase( m_bTuningBend.load( std::memory_order_relaxed ) );
                 m_Decoder.Seek( llTarget, llPrev, vChase );
                 m_llDecodeBusyUs.fetch_add( Timer::NowMicroSecs() - t0, std::memory_order_relaxed );
                 for ( size_t i = 0; i < vChase.size() && !m_bStop; )
@@ -238,6 +249,7 @@ void PlaybackEngine::DecoderThread()
         p.bCollapse = m_bCollapse.load( std::memory_order_relaxed );
         p.llMaxSendsPerSec = m_llMaxSendsPerSec.load( std::memory_order_relaxed );
         p.iMinVelocity = m_iMinVelocity.load( std::memory_order_relaxed );
+        p.bTuning31 = m_bTuning31.load( std::memory_order_relaxed );
 
         long long llNow = m_Clock.Now();
 
@@ -449,22 +461,25 @@ void PlaybackEngine::SenderThread()
     double dEma = 0.0;
     unsigned uSentEpoch = m_Clock.Epoch();
 
+    // The device (or the 31-EDO mode) changed: the output opened again
+    auto Reopen = [&]() {
+        if ( !m_bReopen.exchange( false, std::memory_order_acq_rel ) ) return;
+        if ( m_pOut ) m_pOut->AllNotesOff();
+        m_pOut.reset();
+        m_pOut = MidiOutputs::OpenConfigured( m_bTuning31.load( std::memory_order_relaxed ), m_bTuningBend.load( std::memory_order_relaxed ) );
+        if ( m_pOut ) m_pOut->SetVolume( 1.0 );
+        {
+            std::lock_guard< std::mutex > lock( m_mxName );
+            m_sOutputName = m_pOut ? m_pOut->Name() : std::wstring();
+        }
+        m_bHasOutput.store( m_pOut != nullptr, std::memory_order_release );
+        dEma = 0.0;
+        m_dNsPerMsg.store( 0.0, std::memory_order_relaxed );
+    };
+
     while ( !m_bStop.load( std::memory_order_relaxed ) )
     {
-        if ( m_bReopen.exchange( false, std::memory_order_acq_rel ) )
-        {
-            if ( m_pOut ) m_pOut->AllNotesOff();
-            m_pOut.reset();
-            m_pOut = MidiOutputs::OpenConfigured( m_pSong->bTuning31, m_pSong->bTuning31PitchBend );
-            if ( m_pOut ) m_pOut->SetVolume( 1.0 );
-            {
-                std::lock_guard< std::mutex > lock( m_mxName );
-                m_sOutputName = m_pOut ? m_pOut->Name() : std::wstring();
-            }
-            m_bHasOutput.store( m_pOut != nullptr, std::memory_order_release );
-            dEma = 0.0;
-            m_dNsPerMsg.store( 0.0, std::memory_order_relaxed );
-        }
+        Reopen();
         if ( m_bNotesOff.exchange( false, std::memory_order_acq_rel ) && m_pOut )
             m_pOut->AllNotesOff();
 
@@ -476,6 +491,9 @@ void PlaybackEngine::SenderThread()
         {
             if ( s.uEpoch != uSentEpoch )
             {
+                // A seek's first slice: a reopen asked for before the seek (a 31-EDO change) happens
+                // first, so the seek's controller state goes to the new output
+                Reopen();
                 if ( m_pOut ) m_pOut->ResetPlaybackState();
                 uSentEpoch = s.uEpoch;
             }

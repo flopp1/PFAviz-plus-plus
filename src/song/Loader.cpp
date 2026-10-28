@@ -192,6 +192,7 @@ namespace
         uint32_t aKeyCounts[256] = {};
         uint64_t llChannelEvents = 0;
         uint64_t llOutOfRange = 0;          // channel events dropped for a key, controller or program past 127
+        uint64_t llKeysPast127 = 0;         // of them, note events (kept with 31-EDO tuning)
         int64_t llLongTicks = 0;            // PairSim's threshold
         std::vector< uint64_t > vKnownId;   // PairSim's, as Song::vKnownId and vKnownEnd (ticks here)
         std::vector< int64_t > vKnownEnd, vKnownDur;
@@ -371,7 +372,7 @@ namespace
         auto CloseRun = [&]() { if ( WRITE && pLastKey ) { *pLastKey |= 0x80; pLastKey = nullptr; } uRunKey = UINT32_MAX; };
         auto CloseGroup = [&]() { CloseRun(); if ( WRITE && pRunHeader ) { *pRunHeader |= 0x10; pRunHeader = nullptr; } };
         // The track info, in locals while the track is read (stores through pDst could alias pScan's)
-        uint64_t llEventCount = 0, llChannelEvents = 0, llOutOfRange = 0, llNotes = 0, llVolumeSum = 0;
+        uint64_t llEventCount = 0, llChannelEvents = 0, llOutOfRange = 0, llKeysPast127 = 0, llNotes = 0, llVolumeSum = 0;
         long long llTotalTicks = 0;
         int iMinNote = 0, iMaxNote = 0, iMaxVolume = 0;
         uint32_t aKeyCounts[256] = {};
@@ -412,7 +413,7 @@ namespace
                 p += iDataBytes;
                 if ( aData[0] >= 0x80 && !( EXT && iType >= 0x8 && iType <= 0xA ) )
                 {
-                    if ( COUNT ) { llOutOfRange++; llTotalTicks = std::max( llTotalTicks, llTick ); }
+                    if ( COUNT ) { llOutOfRange++; llKeysPast127 += iType >= 0x8 && iType <= 0xA; llTotalTicks = std::max( llTotalTicks, llTick ); }
                     continue;
                 }
 
@@ -559,6 +560,7 @@ namespace
             out.iMinNote = iMinNote; out.iMaxNote = iMaxNote; out.iMaxVolume = iMaxVolume;
             pScan->llChannelEvents += llChannelEvents;
             pScan->llOutOfRange += llOutOfRange;
+            pScan->llKeysPast127 += llKeysPast127;
             for ( int k = 0; k < 256; k++ ) pScan->aKeyCounts[k] += aKeyCounts[k];
         }
         if ( MODE == Stream )
@@ -886,6 +888,7 @@ namespace
             song->vTrackMeta[t] = vScans[t]->vMeta;
             stats.llMalformedTracks += mti.bMalformed;
             stats.llOutOfRange += vScans[t]->llOutOfRange;
+            song->llKeysPast127 += vScans[t]->llKeysPast127;
             for ( int k = 0; k < 256; k++ ) song->aKeyNoteCounts[k] += vScans[t]->aKeyCounts[k];
             const TrackScan &sc = *vScans[t];
             for ( size_t i = 0; i < sc.vKnownId.size(); i++ )

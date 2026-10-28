@@ -9,7 +9,6 @@
 #include <cstdio>
 #include <thread>
 
-#include "app/LoadingDialog.h"
 #include "app/MainWindow.h"
 #include "app/VideoExport.h"
 #include "audio/MidiOutput.h"
@@ -728,11 +727,6 @@ namespace
 
 VOID DoPreferences( HWND hWndOwner )
 {
-    // The 31-EDO options take effect when a song loads (its keys past 127, the tuned output): the open
-    // song is loaded again when they change
-    const PerformanceSettings &cPerf = Config::GetConfig().GetPerformanceSettings();
-    const bool bTuning = cPerf.bTuning31, bBend = cPerf.bTuning31PitchBend;
-
     const int aDialogs[] = { IDD_PP1_VISUAL, IDD_PP2_AUDIO, IDD_PP4_CONTROLS, IDD_PP5_PERFORMANCE };
     const DLGPROC aProcs[] = { VisualProc, AudioProc, ControlsProc, PerformanceProc };
     const wchar_t *const aTitles[] = { L"Visual", L"Audio", L"Controls", L"Performance" };
@@ -755,7 +749,4 @@ VOID DoPreferences( HWND hWndOwner )
     psh.nPages = 4;
     psh.ppsp = psp;
     PropertySheetW( &psh );
-    if ( ( cPerf.bTuning31 != bTuning || ( cPerf.bTuning31 && cPerf.bTuning31PitchBend != bBend ) ) &&
-         Config::GetConfig().GetPlaybackSettings().GetPlayMode() == PlayMode::Play && !GetOpenedFile().empty() && !IsLoading() )
-        PlayFile( GetOpenedFile() );
 }

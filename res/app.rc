@@ -147,7 +147,7 @@ BEGIN
     LTEXT           "messages/s (quietest notes skipped first)",IDC_STATIC,134,242,154,8
     CONTROL         "Apply 256-key 31-EDO tuning",IDC_PERF_TUNING31,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,260,275,10
     CONTROL         "Use pitch-bends tuning instead of MTS for compatibility. Broken.",IDC_PERF_TUNING31BEND,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,25,275,263,10
-    LTEXT           "The open song reloads when these change. Use pitch bends with KDMAPI.",IDC_STATIC,25,291,263,8
+    LTEXT           "Applies at once; reopen a song to load its keys past 127.",IDC_STATIC,25,291,263,8
     GROUPBOX        "Display",IDC_STATIC,7,313,286,28
     CONTROL         "&Limit frame rate",IDC_LIMITFPS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,326,100,10
     PUSHBUTTON      "Render &video...",IDC_PERF_VIDEO,120,323,80,14

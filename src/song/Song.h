@@ -300,8 +300,9 @@ struct EventCounts
 
 struct Song
 {
-    bool bTuning31 = false;
+    bool bTuning31 = false;                 // loaded with 31-EDO tuning: keys past 127 kept
     bool bTuning31PitchBend = false;
+    uint64_t llKeysPast127 = 0;             // note events past key 127 dropped (loaded without 31-EDO)
     RefMidiInfo info;                       // llFirstNote is set by the pairing pass
     std::vector< RefTrackInfo > vTracks;
     std::vector< RefMetaEvent > vMeta;      // tempo (length 3) and time signatures (length 4), global order, with times

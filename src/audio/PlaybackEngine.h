@@ -66,6 +66,10 @@ public:
     void SetSkipping( bool bVelocitySkip, int iSkipLagMs );
     // Stack collapsing and the send budget (messages per second, 0: none); see PlaybackDecoder::Params
     void SetSendLimits( bool bCollapse, long long llMaxSendsPerSec );
+    // 31-EDO tuning (Performance tab), applied at once: a change reopens the output in the new mode
+    // (the caller then seeks to the current time, so the new output gets the controllers there).
+    // True when it changed
+    bool SetTuning( bool bTuning31, bool bPitchBend );
     void SetMinVelocity( int iMinVelocity ) { m_iMinVelocity.store( iMinVelocity, std::memory_order_relaxed ); }     // 0: none
     // The most threads decoding may use (0: the logical core count); takes effect at the next decode
     void SetMaxThreads( int iThreads );
@@ -116,6 +120,7 @@ private:
     std::atomic< double > m_dVolumeCorrect{ 1.0 };
     std::atomic< int > m_iMetronome{ 0 }, m_iSkipLagMs{ 100 };
     std::atomic< bool > m_bVelocitySkip{ false }, m_bCollapse{ false };
+    std::atomic< bool > m_bTuning31{ false }, m_bTuningBend{ false };
     std::atomic< long long > m_llMaxSendsPerSec{ 0 };
     std::atomic< int > m_iMinVelocity{ 0 };
 

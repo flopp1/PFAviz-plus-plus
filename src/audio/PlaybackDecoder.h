@@ -45,6 +45,9 @@ public:
         long long llMaxSendsPerSec = 0;
         // Velocity floor: note-ons quieter than this are always skipped, with their offs (0: none)
         int iMinVelocity = 0;
+        // 31-EDO tuning (Performance tab): notes on keys past 127 are sent (to the tuned output); off,
+        // they are not
+        bool bTuning31 = false;
     };
 
     struct Counters
@@ -132,6 +135,11 @@ private:
     long long EventTime();
     void ResetSendState();
     void Chase( long long llTarget, std::vector< uint32_t > &vOut );
+public:
+    // Seeks chase for the pitch-bend 31-EDO output (every chase event up to the target, from GM
+    // defaults) instead of the usual way
+    void SetBendChase( bool bOn ) { m_bBendChase = bOn; }
+private:
     void BudgetTick( long long tE, const Params &p );
     bool BudgetKeep( uint32_t uVel );
     const Signature &SignatureAt( long long llTick ) const;
@@ -190,6 +198,7 @@ private:
     KeyState m_aKey[4096];
     uint64_t m_llPending = 0;           // the keys' uPending summed: while 0, an off needs no key state (without collapsing)
     int m_iSkipVelocity = 0;
+    bool m_bBendChase = false;
     bool m_bCollapse = false;
     uint32_t m_uCall = 1;
 
