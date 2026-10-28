@@ -25,6 +25,7 @@ struct SceneColors
     SceneColors();
     void SetBackground( unsigned int iBkgColor );
     ChannelSettings csBackground, csKBRed, csKBWhite, csKBSharp, csKBBackground;
+    ChannelSettings csKBHalf, csKBSharp31;    // 31-EDO layout: half sharps and flats, full sharps (full flats: csKBSharp)
 };
 
 // Inputs and outputs of MainScreen::RenderGlobals
@@ -55,6 +56,7 @@ struct ViewInputs
     long long llStartTime = 0, llTimeSpan = 3000000;
     unsigned uClean = 0;              // Clean flags (0: the original's drawing)
     bool bLines = true;               // the key dividers and measure lines
+    bool bEdo31 = false;              // the 256-key view in the 31-EDO layout (Visual tab)
 };
 
 struct FrameGlobals
@@ -68,6 +70,7 @@ struct FrameGlobals
     int iBufferWidth, iBufferHeight;
     unsigned uClean;
     bool bLines;
+    bool bEdo31 = false;              // 31-EDO layout: 8 octaves of 31 keys and C to D#, by Scene's key table
 };
 
 namespace Scene
@@ -78,6 +81,10 @@ namespace Scene
 
     FrameGlobals ComputeGlobals( const ViewInputs &in );
     float GetNoteX( const FrameGlobals &g, int iNote );
+    // The layer a key is drawn in: 0 white, 1 black (31-EDO: half sharps and flats), 2 (31-EDO only)
+    // full sharps and flats, each over the ones before. Notes are drawn in the same order
+    int KeyLayer( const FrameGlobals &g, int iNote );
+    static const int KeyLayers = 3;
 
     // RenderNote for one note (normal practice-mode drawing: opaque, outer + inner rect)
     void DrawNote( Renderer *pRenderer, const FrameGlobals &g, int iNote, long long llNoteStart, long long llNoteEnd,

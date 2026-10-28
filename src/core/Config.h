@@ -59,6 +59,7 @@ struct VisualSettings
     bool bHideLines;            // no key dividers or measure lines over the background
     bool bHideSpeedBoxes;       // the toolbar as the original's: sliders only, without the exact speed boxes
     bool bLoopColors;           // the track colors repeat (channel n gets colors[n % iColorCount]); off: random after them
+    bool bEdo31Keys;            // the 256-key view in the 31-EDO layout (31 keys an octave; Scene.cpp)
 };
 
 struct AudioSettings

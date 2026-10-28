@@ -110,6 +110,7 @@
 #define IDC_COLORCOUNTSPIN              1123
 #define IDC_PALETTE                     1124
 #define IDC_PERF_LONGBYTES              1126
+#define IDC_EDO31KEYS                   1127
 #define IDC_NSPEEDLABEL                 1117
 #define IDC_PERF_LOADSTATS              1071
 #define IDC_PERF_KDMAPI                 1072

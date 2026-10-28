@@ -141,6 +141,7 @@ void VisualSettings::LoadDefaultValues()
     bHideLines = false;
     bHideSpeedBoxes = false;
     bLoopColors = false;
+    bEdo31Keys = false;
     int R, G, B, S = 80, V = 100;
     const int iColors = 16;     // the original's 16, as it made them
     for ( int i = 10, count = 0; count < iColors; i = ( i + 7 ) % iColors, count++ )
@@ -213,6 +214,7 @@ void VisualSettings::Load( const IniFile &ini )
     uClean = (unsigned)ini.GetInt( "Visual", "CleanDrawing", (int)uClean ) & 7;
     bHideLines = ini.GetBool( "Visual", "HideLines", bHideLines );
     bLoopColors = ini.GetBool( "Visual", "LoopColors", bLoopColors );
+    bEdo31Keys = ini.GetBool( "Visual", "Edo31Keys", bEdo31Keys );
     bHideSpeedBoxes = ini.GetBool( "Visual", "HideSpeedBoxes", bHideSpeedBoxes );
 }
 
@@ -237,6 +239,7 @@ void VisualSettings::Save( IniFile &ini ) const
     ini.SetInt( "Visual", "CleanDrawing", uClean );
     ini.SetInt( "Visual", "HideLines", bHideLines );
     ini.SetInt( "Visual", "LoopColors", bLoopColors );
+    ini.SetInt( "Visual", "Edo31Keys", bEdo31Keys );
     ini.SetInt( "Visual", "HideSpeedBoxes", bHideSpeedBoxes );
 }
 

@@ -15,6 +15,36 @@ const float Scene::SharpRatio = 0.65f;
 const float Scene::KBPercent = 0.25f;
 const float Scene::KeyRatio = 0.1775f;
 
+namespace
+{
+    // The 31-EDO layout's keys, by step in the octave: left edge and width in sevenths of a white key
+    // from the octave's C, and kind. A half sharp or flat is 3/7 wide, ending (half sharp) or starting
+    // (half flat) at the edge between two white keys; a full sharp or flat 2/7 the same way, over them.
+    // Between E and F, and B and C, there are only the halves
+    enum { Natural, Half, Sharp, Flat };
+    struct Key31 { unsigned char x, cx, kind; };
+    const Key31 aKeys31[31] = {
+        {  0, 7, Natural }, {  4, 3, Half }, {  5, 2, Sharp }, {  7, 2, Flat }, {  7, 3, Half },     // C C‡ C# Db Dd
+        {  7, 7, Natural }, { 11, 3, Half }, { 12, 2, Sharp }, { 14, 2, Flat }, { 14, 3, Half },     // D
+        { 14, 7, Natural }, { 18, 3, Half }, { 21, 3, Half },                                         // E E‡ Fd
+        { 21, 7, Natural }, { 25, 3, Half }, { 26, 2, Sharp }, { 28, 2, Flat }, { 28, 3, Half },     // F
+        { 28, 7, Natural }, { 32, 3, Half }, { 33, 2, Sharp }, { 35, 2, Flat }, { 35, 3, Half },     // G
+        { 35, 7, Natural }, { 39, 3, Half }, { 40, 2, Sharp }, { 42, 2, Flat }, { 42, 3, Half },     // A
+        { 42, 7, Natural }, { 46, 3, Half }, { 49, 3, Half },                                         // B B‡ Cd
+    };
+    const int Octave31 = 49;            // sevenths of a white key
+    const int Whites31 = 58;            // 8 octaves and C, D: the last key, 255, is the D# ending at D's edge
+    const int MiddleC31 = 124;          // the mark: the 29th of the 58 white keys (C of the fifth octave), left of the exact centre
+
+    inline const Key31 &Key31Of( int iNote ) { return aKeys31[( iNote % 31 + 31 ) % 31]; }
+    // A key's left edge in white keys from key 0's
+    inline float Left31( int iNote )
+    {
+        int iOct = iNote >= 0 ? iNote / 31 : -( ( 30 - iNote ) / 31 );
+        return ( iOct * Octave31 + Key31Of( iNote ).x ) / 7.0f;
+    }
+}
+
 //-----------------------------------------------------------------------------
 // Colours
 //-----------------------------------------------------------------------------
@@ -50,6 +80,9 @@ SceneColors::SceneColors()
     csKBRed.SetColor( 0x000D0A98, 0.5f );
     csKBWhite.SetColor( 0x00FFFFFF, 0.8f, 0.6f );
     csKBSharp.SetColor( 0x00404040, 0.5f, 0.0f );
+    // As csKBSharp's shading (the top's dark band and highlight), lighter: the top shows the very dark
+    csKBHalf.SetColor( 0x00E0E0E0, 0.75f, 0.78f );
+    csKBSharp31.SetColor( 0x00909090, 0.55f, 0.6f );
 }
 
 void SceneColors::SetBackground( unsigned int iBkgColor )
@@ -99,13 +132,24 @@ FrameGlobals Scene::ComputeGlobals( const ViewInputs &in )
     g.fNotesX = in.fOffsetX;
     g.fNotesCX = in.iBufferWidth * in.fZoomX;
 
+    // 31-EDO layout: from key 0's left edge to key 255's right one, D's (no buffer)
+    g.bEdo31 = in.bEdo31 && in.eKeysShown == 4;
+    if ( g.bEdo31 )
+    {
+        g.iMiddleC = MiddleC31;
+        g.iAllWhiteKeys = Whites31;
+        g.fWhiteCX = g.fNotesCX / Whites31;
+    }
     // Keys info
-    g.iAllWhiteKeys = Notes::WhiteCount( g.iStartNote, g.iEndNote + 1 );
-    // Key 255 (D#) is the last there is: the field ends at its middle (its nudge right of the white key
-    // edge) instead of half a sharp past it, so no part of the key after it is shown
-    float fBuffer = ( Notes::IsSharp( g.iStartNote ) ? SharpRatio / 2.0f : 0.0f ) +
-                    ( g.iEndNote == 255 ? SharpRatio / 5.0f : Notes::IsSharp( g.iEndNote ) ? SharpRatio / 2.0f : 0.0f );
-    g.fWhiteCX = g.fNotesCX / ( g.iAllWhiteKeys + fBuffer );
+    else
+    {
+        g.iAllWhiteKeys = Notes::WhiteCount( g.iStartNote, g.iEndNote + 1 );
+        // Key 255 (D#) is the last there is: the field ends at its middle (its nudge right of the white key
+        // edge) instead of half a sharp past it, so no part of the key after it is shown
+        float fBuffer = ( Notes::IsSharp( g.iStartNote ) ? SharpRatio / 2.0f : 0.0f ) +
+                        ( g.iEndNote == 255 ? SharpRatio / 5.0f : Notes::IsSharp( g.iEndNote ) ? SharpRatio / 2.0f : 0.0f );
+        g.fWhiteCX = g.fNotesCX / ( g.iAllWhiteKeys + fBuffer );
+    }
 
     // Screen Y info
     g.fNotesY = in.fOffsetY;
@@ -131,8 +175,16 @@ FrameGlobals Scene::ComputeGlobals( const ViewInputs &in )
     return g;
 }
 
+int Scene::KeyLayer( const FrameGlobals &g, int iNote )
+{
+    if ( !g.bEdo31 ) return Notes::IsSharp( iNote ) ? 1 : 0;
+    int k = Key31Of( iNote ).kind;
+    return k == Natural ? 0 : k == Half ? 1 : 2;
+}
+
 float Scene::GetNoteX( const FrameGlobals &g, int iNote )
 {
+    if ( g.bEdo31 ) return g.fNotesX + g.fWhiteCX * Left31( iNote );
     int iWhiteKeys = Notes::WhiteCount( g.iStartNote, iNote );
     float fStartX = ( Notes::IsSharp( g.iStartNote ) - Notes::IsSharp( iNote ) ) * SharpRatio / 2.0f;
     if ( Notes::IsSharp( iNote ) )
@@ -162,7 +214,7 @@ Scene::NoteKey Scene::GetNoteKey( const FrameGlobals &g, int iNote )
 {
     NoteKey nk;
     nk.x = GetNoteX( g, iNote );
-    nk.cx = Notes::IsSharp( iNote ) ? g.fWhiteCX * SharpRatio : g.fWhiteCX;
+    nk.cx = g.bEdo31 ? g.fWhiteCX * ( Key31Of( iNote ).cx / 7.0f ) : Notes::IsSharp( iNote ) ? g.fWhiteCX * SharpRatio : g.fWhiteCX;
     float fDeflate = g.fWhiteCX * 0.15f / 2.0f;
     fDeflate = floor( fDeflate + 0.5f );
     nk.fDeflate = max( min( fDeflate, 3.0f ), 1.0f );
@@ -216,9 +268,16 @@ void Scene::DrawBackground( Renderer *pRenderer, const FrameGlobals &g, const Sc
     if ( pRenderer->HasBackgroundImage() ) pRenderer->DrawBackgroundImage( g.fNotesX, g.fNotesY, g.fNotesCX, g.fNotesCY );
     if ( !g.bLines ) return;
 
-    // Vertical lines
+    // Vertical lines (31-EDO: where the 12-key layout has them, left of each F and C)
     for ( int i = g.iStartNote + 1; i <= g.iEndNote; i++ )
-        if ( !Notes::IsSharp( i - 1 ) && !Notes::IsSharp( i ) )
+        if ( g.bEdo31 )
+        {
+            if ( i % 31 != 13 && i % 31 != 0 ) continue;
+            float x = floor( GetNoteX( g, i ) + 0.5f );
+            pRenderer->DrawRect( x - 1.0f, g.fNotesY, 3.0f, g.fNotesCY,
+                c.csBackground.iDarkRGB, c.csBackground.iVeryDarkRGB, c.csBackground.iVeryDarkRGB, c.csBackground.iDarkRGB );
+        }
+        else if ( !Notes::IsSharp( i - 1 ) && !Notes::IsSharp( i ) )
         {
             int iWhiteKeys = Notes::WhiteCount( g.iStartNote, i );
             float fStartX = Notes::IsSharp( g.iStartNote ) * SharpRatio / 2.0f;
@@ -266,8 +325,9 @@ void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneCol
     // Draw the white keys
     float fCurX = g.fNotesX + fStartX;
     float fCurY = fKeysY + fTransitionCY + fRedCY + fSpacerCY;
+    // (31-EDO: keys 0 to 255, the whites side by side from 0 as here)
     for ( int i = iStartRender; i <= iEndRender; i++ )
-        if ( !Notes::IsSharp( i ) )
+        if ( g.bEdo31 ? KeyLayer( g, i ) == 0 : !Notes::IsSharp( i ) )
         {
             const ChannelSettings *pLit = ( i >= 0 && i < 256 ) ? pKeyColor[i] : nullptr;
             if ( !pLit )
@@ -308,7 +368,85 @@ void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneCol
             fCurX += g.fWhiteCX;
         }
 
+    // A black key (31-EDO: also the half and full sharps and flats, fSharpCY tall from the black keys' top)
+    auto DrawSharp = [&]( float x, float cx, float fSharpTopX1, float fSharpTopX2, float fSharpCY,
+                          const ChannelSettings &csKBS, const ChannelSettings *pLit ) {
+        if ( !pLit )
+        {
+            pRenderer->DrawSkew( fSharpTopX1, fCurY + fSharpCY - fNearCY,
+                                 fSharpTopX2, fCurY + fSharpCY - fNearCY,
+                                 x + cx, fCurY + fSharpCY, x, fCurY + fSharpCY,
+                                 csKBS.iPrimaryRGB, csKBS.iPrimaryRGB, csKBS.iVeryDarkRGB, csKBS.iVeryDarkRGB );
+            pRenderer->DrawSkew( fSharpTopX1, fCurY - fNearCY,
+                                 fSharpTopX1, fCurY + fSharpCY - fNearCY,
+                                 x, fCurY + fSharpCY, x, fCurY,
+                                 csKBS.iPrimaryRGB, csKBS.iPrimaryRGB, csKBS.iVeryDarkRGB, csKBS.iVeryDarkRGB );
+            pRenderer->DrawSkew( fSharpTopX2, fCurY + fSharpCY - fNearCY,
+                                 fSharpTopX2, fCurY - fNearCY,
+                                 x + cx, fCurY, x + cx, fCurY + fSharpCY,
+                                 csKBS.iPrimaryRGB, csKBS.iPrimaryRGB, csKBS.iVeryDarkRGB, csKBS.iVeryDarkRGB );
+            pRenderer->DrawRect( fSharpTopX1, fCurY - fNearCY, fSharpTopX2 - fSharpTopX1, fSharpCY, csKBS.iVeryDarkRGB );
+            pRenderer->DrawSkew( fSharpTopX1, fCurY - fNearCY,
+                                 fSharpTopX2, fCurY - fNearCY,
+                                 fSharpTopX2, fCurY - fNearCY + fSharpCY * 0.45f,
+                                 fSharpTopX1, fCurY - fNearCY + fSharpCY * 0.35f,
+                                 csKBS.iDarkRGB, csKBS.iDarkRGB, csKBS.iPrimaryRGB, csKBS.iPrimaryRGB );
+            pRenderer->DrawSkew( fSharpTopX1, fCurY - fNearCY + fSharpCY * 0.35f,
+                                 fSharpTopX2, fCurY - fNearCY + fSharpCY * 0.45f,
+                                 fSharpTopX2, fCurY - fNearCY + fSharpCY * 0.65f,
+                                 fSharpTopX1, fCurY - fNearCY + fSharpCY * 0.55f,
+                                 csKBS.iPrimaryRGB, csKBS.iPrimaryRGB, csKBS.iVeryDarkRGB, csKBS.iVeryDarkRGB );
+        }
+        else
+        {
+            const ChannelSettings &csKBSharp = *pLit;
+            const float fNewNear = fNearCY * 0.25f;
+
+            pRenderer->DrawSkew( fSharpTopX1, fCurY + fSharpCY - fNewNear,
+                                 fSharpTopX2, fCurY + fSharpCY - fNewNear,
+                                 x + cx, fCurY + fSharpCY, x, fCurY + fSharpCY,
+                                 csKBSharp.iPrimaryRGB, csKBSharp.iPrimaryRGB, csKBSharp.iDarkRGB, csKBSharp.iDarkRGB );
+            pRenderer->DrawSkew( fSharpTopX1, fCurY - fNewNear,
+                                 fSharpTopX1, fCurY + fSharpCY - fNewNear,
+                                 x, fCurY + fSharpCY, x, fCurY,
+                                 csKBSharp.iPrimaryRGB, csKBSharp.iPrimaryRGB, csKBSharp.iDarkRGB, csKBSharp.iDarkRGB );
+            pRenderer->DrawSkew( fSharpTopX2, fCurY + fSharpCY - fNewNear,
+                                 fSharpTopX2, fCurY - fNewNear,
+                                 x + cx, fCurY, x + cx, fCurY + fSharpCY,
+                                 csKBSharp.iPrimaryRGB, csKBSharp.iPrimaryRGB, csKBSharp.iDarkRGB, csKBSharp.iDarkRGB );
+            pRenderer->DrawRect( fSharpTopX1, fCurY - fNewNear, fSharpTopX2 - fSharpTopX1, fSharpCY, csKBSharp.iDarkRGB );
+            pRenderer->DrawSkew( fSharpTopX1, fCurY - fNewNear,
+                                 fSharpTopX2, fCurY - fNewNear,
+                                 fSharpTopX2, fCurY - fNewNear + fSharpCY * 0.35f,
+                                 fSharpTopX1, fCurY - fNewNear + fSharpCY * 0.25f,
+                                 csKBSharp.iPrimaryRGB, csKBSharp.iPrimaryRGB, csKBSharp.iPrimaryRGB, csKBSharp.iPrimaryRGB );
+            pRenderer->DrawSkew( fSharpTopX1, fCurY - fNewNear + fSharpCY * 0.25f,
+                                 fSharpTopX2, fCurY - fNewNear + fSharpCY * 0.35f,
+                                 fSharpTopX2, fCurY - fNewNear + fSharpCY * 0.75f,
+                                 fSharpTopX1, fCurY - fNewNear + fSharpCY * 0.65f,
+                                 csKBSharp.iPrimaryRGB, csKBSharp.iPrimaryRGB, csKBSharp.iDarkRGB, csKBSharp.iDarkRGB );
+        }
+    };
+
     // Draw the sharps
+    // 31-EDO: the halves (as tall as black keys), then the full sharps and flats over them (half as tall,
+    // from the same top), each with the black keys' shading
+    if ( g.bEdo31 )
+    {
+        fCurY = fKeysY + fTransitionCY + fRedCY + fSpacerCY;
+        for ( int iLayer = 1; iLayer <= 2; iLayer++ )
+            for ( int i = g.iStartNote; i <= g.iEndNote; i++ )
+            {
+                if ( KeyLayer( g, i ) != iLayer ) continue;
+                const NoteKey nk = GetNoteKey( g, i );
+                const float x = nk.x, cx = nk.cx;
+                const float fSharpTopX1 = x + cx * 0.15f, fSharpTopX2 = x + cx * 0.85f;
+                const ChannelSettings &cs = iLayer == 1 ? c.csKBHalf : Key31Of( i ).kind == Sharp ? c.csKBSharp31 : csKBS;
+                DrawSharp( x, cx, fSharpTopX1, fSharpTopX2, iLayer == 1 ? fSharpCY : fSharpCY * 0.5f, cs, pKeyColor[i] );
+            }
+        return;
+    }
+
     iStartRender = ( g.iStartNote != Notes::A0 && !Notes::IsSharp( g.iStartNote ) && g.iStartNote > 0 && Notes::IsSharp( g.iStartNote - 1 ) ? g.iStartNote - 1 : g.iStartNote );
     iEndRender = ( g.iEndNote != Notes::C8 && !Notes::IsSharp( g.iEndNote ) && g.iEndNote != 127 && g.iEndNote < 255 && Notes::IsSharp( g.iEndNote + 1 ) ? g.iEndNote + 1 : g.iEndNote );
     fStartX = ( Notes::IsSharp( g.iStartNote ) ? g.fWhiteCX * SharpRatio / 2.0f : 0.0f );
@@ -331,63 +469,7 @@ void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneCol
             const float fSharpTopX1 = x + g.fWhiteCX * ( SharpRatio - fSharpTop ) / 2.0f;
             const float fSharpTopX2 = fSharpTopX1 + g.fWhiteCX * fSharpTop;
 
-            const ChannelSettings *pLit = ( i >= 0 && i < 256 ) ? pKeyColor[i] : nullptr;
-            if ( !pLit )
-            {
-                pRenderer->DrawSkew( fSharpTopX1, fCurY + fSharpCY - fNearCY,
-                                     fSharpTopX2, fCurY + fSharpCY - fNearCY,
-                                     x + cx, fCurY + fSharpCY, x, fCurY + fSharpCY,
-                                     csKBS.iPrimaryRGB, csKBS.iPrimaryRGB, csKBS.iVeryDarkRGB, csKBS.iVeryDarkRGB );
-                pRenderer->DrawSkew( fSharpTopX1, fCurY - fNearCY,
-                                     fSharpTopX1, fCurY + fSharpCY - fNearCY,
-                                     x, fCurY + fSharpCY, x, fCurY,
-                                     csKBS.iPrimaryRGB, csKBS.iPrimaryRGB, csKBS.iVeryDarkRGB, csKBS.iVeryDarkRGB );
-                pRenderer->DrawSkew( fSharpTopX2, fCurY + fSharpCY - fNearCY,
-                                     fSharpTopX2, fCurY - fNearCY,
-                                     x + cx, fCurY, x + cx, fCurY + fSharpCY,
-                                     csKBS.iPrimaryRGB, csKBS.iPrimaryRGB, csKBS.iVeryDarkRGB, csKBS.iVeryDarkRGB );
-                pRenderer->DrawRect( fSharpTopX1, fCurY - fNearCY, fSharpTopX2 - fSharpTopX1, fSharpCY, csKBS.iVeryDarkRGB );
-                pRenderer->DrawSkew( fSharpTopX1, fCurY - fNearCY,
-                                     fSharpTopX2, fCurY - fNearCY,
-                                     fSharpTopX2, fCurY - fNearCY + fSharpCY * 0.45f,
-                                     fSharpTopX1, fCurY - fNearCY + fSharpCY * 0.35f,
-                                     csKBS.iDarkRGB, csKBS.iDarkRGB, csKBS.iPrimaryRGB, csKBS.iPrimaryRGB );
-                pRenderer->DrawSkew( fSharpTopX1, fCurY - fNearCY + fSharpCY * 0.35f,
-                                     fSharpTopX2, fCurY - fNearCY + fSharpCY * 0.45f,
-                                     fSharpTopX2, fCurY - fNearCY + fSharpCY * 0.65f,
-                                     fSharpTopX1, fCurY - fNearCY + fSharpCY * 0.55f,
-                                     csKBS.iPrimaryRGB, csKBS.iPrimaryRGB, csKBS.iVeryDarkRGB, csKBS.iVeryDarkRGB );
-            }
-            else
-            {
-                const ChannelSettings &csKBSharp = *pLit;
-                const float fNewNear = fNearCY * 0.25f;
-
-                pRenderer->DrawSkew( fSharpTopX1, fCurY + fSharpCY - fNewNear,
-                                     fSharpTopX2, fCurY + fSharpCY - fNewNear,
-                                     x + cx, fCurY + fSharpCY, x, fCurY + fSharpCY,
-                                     csKBSharp.iPrimaryRGB, csKBSharp.iPrimaryRGB, csKBSharp.iDarkRGB, csKBSharp.iDarkRGB );
-                pRenderer->DrawSkew( fSharpTopX1, fCurY - fNewNear,
-                                     fSharpTopX1, fCurY + fSharpCY - fNewNear,
-                                     x, fCurY + fSharpCY, x, fCurY,
-                                     csKBSharp.iPrimaryRGB, csKBSharp.iPrimaryRGB, csKBSharp.iDarkRGB, csKBSharp.iDarkRGB );
-                pRenderer->DrawSkew( fSharpTopX2, fCurY + fSharpCY - fNewNear,
-                                     fSharpTopX2, fCurY - fNewNear,
-                                     x + cx, fCurY, x + cx, fCurY + fSharpCY,
-                                     csKBSharp.iPrimaryRGB, csKBSharp.iPrimaryRGB, csKBSharp.iDarkRGB, csKBSharp.iDarkRGB );
-                pRenderer->DrawRect( fSharpTopX1, fCurY - fNewNear, fSharpTopX2 - fSharpTopX1, fSharpCY, csKBSharp.iDarkRGB );
-                pRenderer->DrawSkew( fSharpTopX1, fCurY - fNewNear,
-                                     fSharpTopX2, fCurY - fNewNear,
-                                     fSharpTopX2, fCurY - fNewNear + fSharpCY * 0.35f,
-                                     fSharpTopX1, fCurY - fNewNear + fSharpCY * 0.25f,
-                                     csKBSharp.iPrimaryRGB, csKBSharp.iPrimaryRGB, csKBSharp.iPrimaryRGB, csKBSharp.iPrimaryRGB );
-                pRenderer->DrawSkew( fSharpTopX1, fCurY - fNewNear + fSharpCY * 0.25f,
-                                     fSharpTopX2, fCurY - fNewNear + fSharpCY * 0.35f,
-                                     fSharpTopX2, fCurY - fNewNear + fSharpCY * 0.75f,
-                                     fSharpTopX1, fCurY - fNewNear + fSharpCY * 0.65f,
-                                     csKBSharp.iPrimaryRGB, csKBSharp.iPrimaryRGB, csKBSharp.iDarkRGB, csKBSharp.iDarkRGB );
-            }
-
+            DrawSharp( x, cx, fSharpTopX1, fSharpTopX2, fSharpCY, csKBS, ( i >= 0 && i < 256 ) ? pKeyColor[i] : nullptr );
         }
 }
 

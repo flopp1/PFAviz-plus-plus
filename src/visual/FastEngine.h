@@ -179,7 +179,7 @@ private:
     bool m_bMergeRows = true;
 
     // DrawNotes' working vectors, kept between frames so a frame allocates nothing
-    std::vector< KeyCols > m_aClass[2];
+    std::vector< KeyCols > m_aClass[Scene::KeyLayers];
     std::vector< int > m_vActive;
     std::vector< size_t > m_vQueries;
     std::vector< long long > m_vSweepUs, m_vVertUs;

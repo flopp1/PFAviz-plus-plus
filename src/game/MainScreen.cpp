@@ -668,6 +668,7 @@ ViewInputs MainScreen::GetViewInputs( int iWidth, int iHeight, long long llStart
     in.llTimeSpan = m_llTimeSpan;
     in.uClean = cVisual.uClean;
     in.bLines = !cVisual.bHideLines;
+    in.bEdo31 = cVisual.bEdo31Keys;
     return in;
 }
 

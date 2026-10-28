@@ -579,15 +579,15 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
     float fDeflate = g.fWhiteCX * 0.15f / 2.0f;
     fDeflate = floor( fDeflate + 0.5f );
     fDeflate = std::max( std::min( fDeflate, 3.0f ), 1.0f );
+    // (by Scene::KeyLayer: white keys, black keys, and the 31-EDO layout's full sharps and flats)
     std::vector< KeyCols > *aClass = m_aClass;
-    aClass[0].clear();
-    aClass[1].clear();
+    for ( int c = 0; c < Scene::KeyLayers; c++ ) aClass[c].clear();
     for ( int k = 0; k < 256; k++ )
     {
         if ( !S.aKeys[k].Size() ) continue;
-        bool bSharp = Notes::IsSharp( k );
-        float x = Scene::GetNoteX( g, k );
-        float cx = bSharp ? g.fWhiteCX * Scene::SharpRatio : g.fWhiteCX;
+        const Scene::NoteKey nkCols = Scene::GetNoteKey( g, k );
+        float x = nkCols.x;
+        float cx = nkCols.cx;
         float fInner = cx - fDeflate * 2.0f;
         float fLo = x - 0.5f, fHi = fLo + cx;
         float fILo = ( x + fDeflate ) - 0.5f, fIHi = fILo + fInner;
@@ -595,13 +595,13 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
         if ( !( fMax > -1e9f && fMin < 1e9f ) ) continue;
         KeyCols kc = { k, (int)std::ceil( fMin - 1.0f / 128 ), (int)std::ceil( fMax + 1.0f / 128 ), fInner < 0.0f };
         if ( kc.iHi <= 0 || kc.iLo >= g.iBufferWidth ) continue;
-        aClass[bSharp].push_back( kc );
+        aClass[Scene::KeyLayer( g, k )].push_back( kc );
     }
 
     std::vector< int > &vActive = m_vActive;
     vActive.clear();
     bool abDegenerate[256] = {};
-    for ( int c = 0; c < 2; c++ )
+    for ( int c = 0; c < Scene::KeyLayers; c++ )
         for ( const KeyCols &kc : aClass[c] ) { vActive.push_back( kc.iKey ); abDegenerate[kc.iKey] = kc.bDegenerate; }
     std::vector< size_t > &vQueries = m_vQueries;
     std::vector< long long > &vSweepUs = m_vSweepUs, &vVertUs = m_vVertUs;
@@ -616,7 +616,7 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
     // Keys that may share a pixel column with another are drawn interleaved with it, owner by owner
     // (below), so only the others merge rects across owners
     bool abMerge[256] = {};
-    for ( int c = 0; c < 2 && m_bMergeRows; c++ )
+    for ( int c = 0; c < Scene::KeyLayers && m_bMergeRows; c++ )
     {
         std::vector< KeyCols > &v = aClass[c];
         std::sort( v.begin(), v.end(), []( const KeyCols &a, const KeyCols &b ) { return a.iLo < b.iLo; } );
@@ -832,12 +832,13 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
         else pRenderer->DrawQuads( m_aVerts[k].data() + a, ( b - a ) / 4 );
     };
 
-    // Emit the owners in the original order: white keys, then black keys, ascending index. Keys
+    // Emit the owners in the original order: white keys, then black keys (31-EDO: then the full sharps
+    // and flats), ascending index. Keys
     // whose pixel columns cannot touch are independent; keys that might share a column (sliver
     // edges, or flipped narrow-key rects) are merged by (start, OrderKey), the global index order.
     NoteView n;
     std::vector< MergeItem > &vMerge = m_vMerge;
-    for ( int c = 0; c < 2; c++ )
+    for ( int c = 0; c < Scene::KeyLayers; c++ )
     {
         std::vector< KeyCols > &v = aClass[c];
         std::sort( v.begin(), v.end(), []( const KeyCols &a, const KeyCols &b ) { return a.iLo < b.iLo; } );
