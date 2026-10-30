@@ -81,7 +81,7 @@ SceneColors::SceneColors()
     csKBWhite.SetColor( 0x00FFFFFF, 0.8f, 0.6f );
     csKBSharp.SetColor( 0x00404040, 0.5f, 0.0f );
     // As csKBSharp's shading (the top's dark band and highlight), lighter: the top shows the very dark
-    csKBHalf.SetColor( 0x00E0E0E0, 0.75f, 0.78f );
+    csKBHalf.SetColor( 0x00D0D0D0, 0.7f, 0.72f );
     csKBSharp31.SetColor( 0x00909090, 0.55f, 0.6f );
 }
 
@@ -370,31 +370,34 @@ void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneCol
 
     // A black key (31-EDO: also the half and full sharps and flats, fSharpCY tall from the black keys' top)
     auto DrawSharp = [&]( float x, float cx, float fSharpTopX1, float fSharpTopX2, float fSharpCY,
-                          const ChannelSettings &csKBS, const ChannelSettings *pLit, float fExtend ) {
+                          const ChannelSettings &csKBS, const ChannelSettings *pLit, float fExtend, float fDrop, float fRaise ) {
         if ( !pLit )
         {
+            // (fDrop: the top lowered that much, the front edge staying where it is; fRaise: the sides go
+            // straight up that far above the white keys before they slope in)
+            const float fTop = fCurY - fNearCY + fDrop, fFaceCY = fSharpCY - fDrop;
             pRenderer->DrawSkew( fSharpTopX1, fCurY + fSharpCY - fNearCY,
                                  fSharpTopX2, fCurY + fSharpCY - fNearCY,
                                  x + cx, fCurY + fSharpCY, x, fCurY + fSharpCY,
                                  csKBS.iPrimaryRGB, csKBS.iPrimaryRGB, csKBS.iVeryDarkRGB, csKBS.iVeryDarkRGB );
-            pRenderer->DrawSkew( fSharpTopX1, fCurY - fNearCY,
+            pRenderer->DrawSkew( fSharpTopX1, fTop,
                                  fSharpTopX1, fCurY + fSharpCY - fNearCY,
-                                 x, fCurY + fSharpCY, x, fCurY,
+                                 x, fCurY + fSharpCY, x, fCurY - fRaise,
                                  csKBS.iPrimaryRGB, csKBS.iPrimaryRGB, csKBS.iVeryDarkRGB, csKBS.iVeryDarkRGB );
             pRenderer->DrawSkew( fSharpTopX2, fCurY + fSharpCY - fNearCY,
-                                 fSharpTopX2, fCurY - fNearCY,
-                                 x + cx, fCurY, x + cx, fCurY + fSharpCY,
+                                 fSharpTopX2, fTop,
+                                 x + cx, fCurY - fRaise, x + cx, fCurY + fSharpCY,
                                  csKBS.iPrimaryRGB, csKBS.iPrimaryRGB, csKBS.iVeryDarkRGB, csKBS.iVeryDarkRGB );
-            pRenderer->DrawRect( fSharpTopX1, fCurY - fNearCY, fSharpTopX2 - fSharpTopX1, fSharpCY, csKBS.iVeryDarkRGB );
-            pRenderer->DrawSkew( fSharpTopX1, fCurY - fNearCY,
-                                 fSharpTopX2, fCurY - fNearCY,
-                                 fSharpTopX2, fCurY - fNearCY + fSharpCY * 0.45f,
-                                 fSharpTopX1, fCurY - fNearCY + fSharpCY * 0.35f,
+            pRenderer->DrawRect( fSharpTopX1, fTop, fSharpTopX2 - fSharpTopX1, fFaceCY, csKBS.iVeryDarkRGB );
+            pRenderer->DrawSkew( fSharpTopX1, fTop,
+                                 fSharpTopX2, fTop,
+                                 fSharpTopX2, fTop + fFaceCY * 0.45f,
+                                 fSharpTopX1, fTop + fFaceCY * 0.35f,
                                  csKBS.iDarkRGB, csKBS.iDarkRGB, csKBS.iPrimaryRGB, csKBS.iPrimaryRGB );
-            pRenderer->DrawSkew( fSharpTopX1, fCurY - fNearCY + fSharpCY * 0.35f,
-                                 fSharpTopX2, fCurY - fNearCY + fSharpCY * 0.45f,
-                                 fSharpTopX2, fCurY - fNearCY + fSharpCY * 0.65f,
-                                 fSharpTopX1, fCurY - fNearCY + fSharpCY * 0.55f,
+            pRenderer->DrawSkew( fSharpTopX1, fTop + fFaceCY * 0.35f,
+                                 fSharpTopX2, fTop + fFaceCY * 0.45f,
+                                 fSharpTopX2, fTop + fFaceCY * 0.65f,
+                                 fSharpTopX1, fTop + fFaceCY * 0.55f,
                                  csKBS.iPrimaryRGB, csKBS.iPrimaryRGB, csKBS.iVeryDarkRGB, csKBS.iVeryDarkRGB );
         }
         else
@@ -444,16 +447,22 @@ void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneCol
                 const float x = nk.x, cx = nk.cx;
                 const float fSharpTopX1 = x + cx * 0.15f, fSharpTopX2 = x + cx * 0.85f;
                 const ChannelSettings &cs = iLayer == 1 ? c.csKBHalf : Key31Of( i ).kind == Sharp ? c.csKBSharp31 : csKBS;
-                // A full key pressed over an unpressed half key (a sharp's is the key below it, a flat's the one
-                // above) sits in a dark slot in that half key, showing at its corners, and keeps its top where it
-                // was, over the slot, its front edge pressed as the others'. Over a pressed half key it is pressed
-                // as any other key
+                // Depth: an unpressed half key's top is half a black key's rise above the white keys (a
+                // pressed one's as a pressed black key's). A pressed full key's top is that same half rise
+                // above the half key under it (a sharp's is the key below it, a flat's the one above); over an
+                // unpressed half key it also sits in a dark slot in it, showing at its corners. An unpressed
+                // full key goes straight up to the top of the half key under it, pressed or not, before it
+                // slopes in, so none of the half key shows above it. Every front edge stays where it was
+                const float fHalfRise = fNearCY * 0.5f, fPressedRise = fNearCY * 0.25f;
                 int iUnder = i + ( Key31Of( i ).kind == Sharp ? -1 : 1 );
-                bool bInSlot = iLayer == 2 && pKeyColor[i] && !( iUnder >= 0 && iUnder < 256 && pKeyColor[iUnder] );
+                bool bUnderLit = iLayer == 2 && iUnder >= 0 && iUnder < 256 && pKeyColor[iUnder];
+                bool bInSlot = iLayer == 2 && pKeyColor[i] && !bUnderLit;
                 if ( bInSlot )
-                    pRenderer->DrawRect( x, fCurY - fNearCY, cx, fNearCY + fSharpCY * 0.5f, c.csKBBackground.iVeryDarkRGB );
+                    pRenderer->DrawRect( x, fCurY - fHalfRise, cx, fHalfRise + fSharpCY * 0.5f, c.csKBBackground.iVeryDarkRGB );
+                float fExtend = 0.0f;   // over the pressed top (fPressedRise above the white keys)
+                if ( iLayer == 2 && pKeyColor[i] ) fExtend = ( bUnderLit ? fPressedRise + fHalfRise : fHalfRise + fHalfRise ) - fPressedRise;
                 DrawSharp( x, cx, fSharpTopX1, fSharpTopX2, iLayer == 1 ? fSharpCY : fSharpCY * 0.5f, cs, pKeyColor[i],
-                           bInSlot ? fNearCY - fNearCY * 0.25f : 0.0f );
+                           fExtend, iLayer == 1 ? fHalfRise : 0.0f, iLayer == 2 ? ( bUnderLit ? fPressedRise : fHalfRise ) : 0.0f );
             }
         return;
     }
@@ -480,7 +489,7 @@ void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneCol
             const float fSharpTopX1 = x + g.fWhiteCX * ( SharpRatio - fSharpTop ) / 2.0f;
             const float fSharpTopX2 = fSharpTopX1 + g.fWhiteCX * fSharpTop;
 
-            DrawSharp( x, cx, fSharpTopX1, fSharpTopX2, fSharpCY, csKBS, ( i >= 0 && i < 256 ) ? pKeyColor[i] : nullptr, 0.0f );
+            DrawSharp( x, cx, fSharpTopX1, fSharpTopX2, fSharpCY, csKBS, ( i >= 0 && i < 256 ) ? pKeyColor[i] : nullptr, 0.0f, 0.0f, 0.0f );
         }
 }
 
