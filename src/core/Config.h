@@ -60,6 +60,10 @@ struct VisualSettings
     bool bHideSpeedBoxes;       // the toolbar as the original's: sliders only, without the exact speed boxes
     bool bLoopColors;           // the track colors repeat (channel n gets colors[n % iColorCount]); off: random after them
     bool bEdo31Keys;            // the 256-key view in the 31-EDO layout (31 keys an octave; Scene.cpp)
+    bool bStatsScaled;          // the stats box scales with the picture's height, as at 1080p (off: fixed pixels)
+    int iStatsSize;             // scaled: the box's size, percent (StatsSizeMin to StatsSizeMax)
+    int iStatsFont;             // scaled: the text's height in pixels at 1080p and 100% (StatsFontMin to StatsFontMax)
+    static const int StatsSizeMin = 25, StatsSizeMax = 400, StatsFontMin = 6, StatsFontMax = 60;
 };
 
 struct AudioSettings
@@ -109,7 +113,8 @@ struct ExportSettings
     int iPreset;                // index into Presets (mapped onto each encoder's own speed levels)
     int iCodec, iBackend, iContainer;   // what is encoded (Codec), by which encoder (Backend), into which file format
     bool bShowStats;            // the top-right stats area
-    std::wstring sAudioFile;    // muxed in when set (anything ffmpeg reads: WAV up to 64-bit float, FLAC up to 24-bit, ...)
+    bool bAudio;                // sAudioFile is muxed in (off: a silent video; the file is kept for next time)
+    std::wstring sAudioFile;    // anything ffmpeg reads: WAV up to 64-bit float, FLAC up to 24-bit, ...
     bool bAudioAlign;           // its first sound is moved to where the song's first note sounds
     int iAudioOffsetMs;         // and then by this much (positive: later)
     static const wchar_t *const Presets[];

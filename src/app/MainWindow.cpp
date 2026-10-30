@@ -107,7 +107,9 @@ LRESULT WINAPI WndProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
             switch ( iId )
             {
                 case ID_FILE_PLAYSONG:
+                case ID_FILE_RENDERSONG:
                 {
+                    bool bRender = LOWORD( wParam ) == ID_FILE_RENDERSONG;
                     CheckActivity( TRUE );
                     OPENFILENAMEW ofn = { 0 };
                     wchar_t sFilename[1024] = { 0 };
@@ -117,10 +119,15 @@ LRESULT WINAPI WndProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
                                       L"MIDI Files\0*.mid;*.midi\0All Files\0*.*\0";
                     ofn.lpstrFile = sFilename;
                     ofn.nMaxFile = sizeof( sFilename ) / sizeof( wchar_t );
-                    ofn.lpstrTitle = L"Please select a song to play";
+                    ofn.lpstrTitle = bRender ? L"Please select a song to render" : L"Please select a song to play";
                     ofn.Flags = OFN_EXPLORER | OFN_HIDEREADONLY | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
                     if ( GetOpenFileNameW( &ofn ) )
-                        PlayFile( sFilename );
+                    {
+                        // Rendering: the song opens for the picture only (no synth), then the render dialog
+                        if ( !bRender ) PlayFile( sFilename );
+                        else if ( IsLoading() ) MessageBoxW( g_hWnd, L"A file is already loading.", APPNAME, MB_OK | MB_ICONINFORMATION );
+                        else StartLoad( sFilename, true );
+                    }
                     return 0;
                 }
                 case ID_FILE_CLOSEFILE:
@@ -273,6 +280,9 @@ LRESULT WINAPI WndProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
             return 0;
         case WM_APP_RENDERVIDEO:
             RenderVideoUnattended( reinterpret_cast< const wchar_t * >( lParam ) );
+            return 0;
+        case WM_APP_RENDERSONG:
+            DoVideoExport( hWnd );
             return 0;
         case WM_DESTROY:
             PostQuitMessage( 0 );

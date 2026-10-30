@@ -126,7 +126,8 @@ class MainScreen : public GameState
 public:
     static const float KBPercent;
 
-    MainScreen( std::shared_ptr< const Song > pSong, HWND hWnd, Renderer *pRenderer );
+    // bPlayback false: no playback engine (File > Render Song: nothing is sent to the synth)
+    MainScreen( std::shared_ptr< const Song > pSong, HWND hWnd, Renderer *pRenderer, bool bPlayback = true );
     ~MainScreen();
 
     GameError MsgProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam ) override;
@@ -159,8 +160,17 @@ private:
     // The stats box: its line count (0: not drawn) and its text, with the lines the settings show
     // The stats box for the lines in uStats (VisualSettings::Stat bits)
     static int StatusLines( unsigned uStats );
+    // Where the box goes in an iWidth x iHeight picture: fixed pixels, or scaled with the height
+    // (Visual tab), with its line spacing, padding and font
+    struct StatsBox
+    {
+        RECT rc;
+        int iLineCY, iPadX, iPadY, iShadowX, iShadowY;
+        int iFontCY;                    // 0: the Small font (fixed pixels); else Renderer::Stats at this height
+    };
+    static StatsBox StatsLayout( int iWidth, int iHeight, int iLines );
     // llPastEnd: how long the live view has stood at the song's end, so the NPS falls to 0 there too
-    void RenderStatus( Renderer *pRenderer, LPRECT prcPos, long long llTime, double dFPS, unsigned uStats, long long llPastEnd = 0 );
+    void RenderStatus( Renderer *pRenderer, const StatsBox &box, long long llTime, double dFPS, unsigned uStats, long long llPastEnd = 0 );
     void RenderMessage( LPRECT prcMsg, const wchar_t *sMsg );
 
     // Song
@@ -216,6 +226,7 @@ private:
     // Audio: the clock drives both the visuals (sampled once per frame) and the playback threads
     PlaybackClock m_Clock;
     std::unique_ptr< PlaybackEngine > m_pPlayback;
+    bool m_bWithPlayback = true;        // false: no m_pPlayback (File > Render Song)
 
     // Visual
     bool m_bShowKB;

@@ -39,6 +39,7 @@ struct VideoJob
     std::atomic< long long > llSongTime{ 0 }, llSongEnd{ 0 };
     std::atomic< bool > bCancel{ false };   // set by the UI: stop rendering, ffmpeg finishes the file so far
     std::atomic< bool > bAbort{ false };    // set by the UI while finishing: kill ffmpeg
+    std::atomic< int > iPreviewWant{ 480 }; // set by the UI: the preview's shown width in pixels
 
     std::mutex mx;                      // guards the rest
     bool bOk = false;

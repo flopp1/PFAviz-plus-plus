@@ -20,7 +20,7 @@ struct Image;
 class Renderer
 {
 public:
-    enum FontSize { Small, SmallBold, SmallComic, Medium, Large, FontCount };
+    enum FontSize { Small, SmallBold, SmallComic, Medium, Large, Stats, FontCount };    // Stats: SetStatsFont's height
 
     struct SCREEN_VERTEX
     {
@@ -49,6 +49,7 @@ public:
     HRESULT BeginText();
     HRESULT DrawText( const WCHAR *sText, FontSize fsFont, LPRECT rcPos, DWORD dwFormat, DWORD dwColor, INT iChars = -1 );
     HRESULT EndText();
+    void SetStatsFont( int iHeight );
 
     HRESULT DrawRect( float x, float y, float cx, float cy, DWORD color );
     HRESULT DrawRect( float x, float y, float cx, float cy, DWORD c1, DWORD c2, DWORD c3, DWORD c4 );

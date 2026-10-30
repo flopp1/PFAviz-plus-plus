@@ -111,6 +111,9 @@
 #define IDC_PALETTE                     1124
 #define IDC_PERF_LONGBYTES              1126
 #define IDC_EDO31KEYS                   1127
+#define IDC_STATSSCALED                 1128
+#define IDC_STATSSIZE                   1129
+#define IDC_STATSFONT                   1130
 #define IDC_NSPEEDLABEL                 1117
 #define IDC_PERF_LOADSTATS              1071
 #define IDC_PERF_KDMAPI                 1072
@@ -159,6 +162,10 @@
 #define IDC_VID_AUDIOBROWSE             1315
 #define IDC_VID_AUDIOALIGN              1316
 #define IDC_VID_AUDIOOFFSET             1317
+#define IDC_VID_AUDIOON                 1318
+#define IDC_VID_AUDIOLABEL              1319
+#define IDC_VID_AUDIOMOVE               1324
+#define IDC_VID_AUDIOMS                 1325
 #define IDC_STATS_LIST                  1400
 #define IDC_STATS_UP                    1401
 #define IDC_STATS_DOWN                  1402
@@ -171,6 +178,7 @@
 #define IDC_VIDP_BAR                    1322
 #define IDC_VIDP_STATUS                 1323
 #define ID_VIDEO_RENDER                 40200
+#define ID_FILE_RENDERSONG              40201
 
 // Loading popup
 #define IDC_LOAD_FILE                   1200

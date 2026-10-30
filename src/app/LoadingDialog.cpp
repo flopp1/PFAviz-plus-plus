@@ -24,6 +24,7 @@ namespace
         long long allStageStart[LoadProgress::StageCount] = {};
         HANDLE hThread = nullptr;
         bool bFinished = false;
+        bool bRenderOnly = false;
     };
 
     LoadJob *g_pJob = nullptr;
@@ -194,7 +195,7 @@ namespace
 bool IsLoading() { return g_pJob && !g_pJob->bFinished; }
 HWND GetLoadingDialog() { return g_hWndDlg; }
 
-bool StartLoad( const std::wstring &sFileIn )
+bool StartLoad( const std::wstring &sFileIn, bool bRenderOnly )
 {
     if ( IsLoading() ) return false;
     if ( g_hWndDlg ) DestroyWindow( g_hWndDlg ); // a previous statistics window
@@ -204,6 +205,7 @@ bool StartLoad( const std::wstring &sFileIn )
     g_pJob = new LoadJob();
     g_pJob->sFile = ( dwLen > 0 && dwLen < MAX_PATH * 4 ) ? std::wstring( sFull ) : sFileIn;
     g_pJob->llStart = Timer::NowMicroSecs();
+    g_pJob->bRenderOnly = bRenderOnly;
 
     CreateDialogParamW( g_hInstance, MAKEINTRESOURCEW( IDD_LOADING ), g_hWnd, LoadingProc, 0 );
     if ( g_hWndDlg ) ShowWindow( g_hWndDlg, SW_SHOW );
@@ -237,18 +239,20 @@ void FinishLoad( LPARAM lParam )
         PlaybackSettings &cPlayback = Config::GetConfig().GetPlaybackSettings();
         ViewSettings &cView = Config::GetConfig().GetViewSettings();
         std::shared_ptr< const Song > pSong( pJob->song.release() );
-        MainScreen *pGameState = new MainScreen( pSong, nullptr, nullptr );
+        MainScreen *pGameState = new MainScreen( pSong, nullptr, nullptr, !pJob->bRenderOnly );
         const VisualSettings &cVisual = Config::GetConfig().GetVisualSettings();
         pGameState->SetChannelColors( cVisual.colors, cVisual.iColorCount );
         if ( !cPlayback.GetPlayable() ) cPlayback.SetPlayable( true, true );
         if ( cPlayback.GetPlayMode() != PlayMode::Play ) cPlayback.SetPlayMode( PlayMode::Play, true );
-        cPlayback.SetPaused( Config::GetConfig().GetControlsSettings().bStartPaused, true );
+        cPlayback.SetPaused( pJob->bRenderOnly || Config::GetConfig().GetControlsSettings().bStartPaused, true );
         cPlayback.SetPosition( 0 );
         cView.SetZoomMove( false, true );
-        SetWindowTextW( g_hWnd, pJob->sFile.c_str() + ( pJob->sFile.find_last_of( L'\\' ) + 1 ) );
+        std::wstring sTitle = pJob->sFile.substr( pJob->sFile.find_last_of( L'\\' ) + 1 );
+        SetWindowTextW( g_hWnd, ( pJob->bRenderOnly ? sTitle + L" (render only, no playback)" : sTitle ).c_str() );
         g_sOpenedFile = pJob->sFile;
         HandOffMsg( WM_COMMAND, ID_CHANGESTATE, ( LPARAM )pGameState );
         if ( const wchar_t *sRender = _wgetenv( L"PFAVIZ_RENDER" ) ) PostMessageW( g_hWnd, WM_APP_RENDERVIDEO, 0, ( LPARAM )sRender );
+        else if ( pJob->bRenderOnly ) PostMessageW( g_hWnd, WM_APP_RENDERSONG, 0, 0 );
     }
     pJob->song.reset();
 

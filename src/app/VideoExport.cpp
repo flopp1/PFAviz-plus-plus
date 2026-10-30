@@ -132,7 +132,9 @@ std::wstring FfmpegPipe::EncoderArgs( const VideoJob &job )
     switch ( job.iCodec )
     {
         case ES::ProRes: return L"-c:v prores_ks -profile:v 3 -vendor apl0 -pix_fmt yuv422p10le";
-        case ES::Ffv1: return L"-c:v ffv1 -level 3 -g 1 -slices 16 -slicecrc 1 -pix_fmt bgr0";
+        // RGB with an opaque alpha plane: 8-bit RGB without one decodes as padded 0RGB, which VLC shows
+        // with its channels shifted (yellow); the alpha costs a few percent
+        case ES::Ffv1: return L"-c:v ffv1 -level 3 -g 1 -slices 16 -slicecrc 1 -pix_fmt bgra";
     }
     switch ( job.iBackend )
     {
@@ -507,6 +509,14 @@ namespace
         return sDir.empty() ? sName : InFolder( sDir, sName.c_str() );
     }
 
+    // The audio area is in use only while Add audio is checked
+    void UpdateAudioControls( HWND hWnd )
+    {
+        BOOL bOn = IsDlgButtonChecked( hWnd, IDC_VID_AUDIOON ) == BST_CHECKED;
+        for ( int id : { IDC_VID_AUDIOLABEL, IDC_VID_AUDIO, IDC_VID_AUDIOBROWSE, IDC_VID_AUDIOALIGN, IDC_VID_AUDIOMOVE, IDC_VID_AUDIOOFFSET, IDC_VID_AUDIOMS } )
+            EnableWindow( GetDlgItem( hWnd, id ), bOn );
+    }
+
     // The encoder list for the codec: the hardware encoders only for H.264, HEVC and AV1
     void UpdateEncoderControls( HWND hWnd )
     {
@@ -556,6 +566,7 @@ namespace
         wchar_t sAudio[MAX_PATH * 4] = {};
         GetDlgItemTextW( hWnd, IDC_VID_AUDIO, sAudio, MAX_PATH * 4 );
         s.sAudioFile = sAudio;
+        s.bAudio = IsDlgButtonChecked( hWnd, IDC_VID_AUDIOON ) == BST_CHECKED;
         s.bAudioAlign = IsDlgButtonChecked( hWnd, IDC_VID_AUDIOALIGN ) == BST_CHECKED;
 
         auto Bad = [&]( int iId, const wchar_t *sError ) {
@@ -597,9 +608,11 @@ namespace
         if ( !bOk || u > 51 ) return Bad( IDC_VID_CRF, L"Please specify a quality between 0 and 51." );
         s.iCRF = (int)u;
         int iOffset = (int)GetDlgItemInt( hWnd, IDC_VID_AUDIOOFFSET, &bOk, TRUE );
-        if ( !bOk || iOffset < -3600000 || iOffset > 3600000 ) return Bad( IDC_VID_AUDIOOFFSET, L"Please specify the audio's move in milliseconds (negative: earlier)." );
-        s.iAudioOffsetMs = iOffset;
-        if ( !s.sAudioFile.empty() && !IsFile( s.sAudioFile ) ) return Bad( IDC_VID_AUDIO, L"The audio file was not found. Leave the box empty for a silent video." );
+        bool bOffsetOk = bOk && iOffset >= -3600000 && iOffset <= 3600000;
+        if ( !bOffsetOk && s.bAudio ) return Bad( IDC_VID_AUDIOOFFSET, L"Please specify the audio's move in milliseconds (negative: earlier)." );
+        if ( bOffsetOk ) s.iAudioOffsetMs = iOffset;     // (audio off: a bad one is left as it was)
+        if ( s.bAudio && s.sAudioFile.empty() ) return Bad( IDC_VID_AUDIO, L"Please choose an audio file, or uncheck Add audio for a silent video." );
+        if ( s.bAudio && !IsFile( s.sAudioFile ) ) return Bad( IDC_VID_AUDIO, L"The audio file was not found. Please choose an existing file, or uncheck Add audio for a silent video." );
         return true;
     }
 
@@ -627,6 +640,43 @@ namespace
     unsigned g_uShownGen = 0;
     bool g_bUnattended = false;         // PFAVIZ_RENDER: close when done
 
+    // The popup can be resized: its size and its controls' places as it opened, which the preview's
+    // growth moves (the file name, bar and status widen; the preview takes the rest; Cancel stays at
+    // the bottom right). The size it was left at is kept for the next render
+    struct ProgressLayout { SIZE szMin; SIZE szClient; RECT aCtl[5]; };
+    const int aProgressIds[5] = { IDC_VIDP_FILE, IDC_VIDP_PREVIEW, IDC_VIDP_BAR, IDC_VIDP_STATUS, IDCANCEL };
+    ProgressLayout g_Layout;
+    SIZE g_szProgress = {};             // the window size last used (0: the dialog's own)
+
+    VOID LayoutProgress( HWND hWnd, VideoJob *pJob )
+    {
+        RECT rc;
+        GetClientRect( hWnd, &rc );
+        int dx = rc.right - g_Layout.szClient.cx, dy = rc.bottom - g_Layout.szClient.cy;
+        HDWP hDwp = BeginDeferWindowPos( 5 );
+        for ( int i = 0; i < 5 && hDwp; i++ )
+        {
+            RECT r = g_Layout.aCtl[i];
+            switch ( aProgressIds[i] )
+            {
+                case IDC_VIDP_FILE: r.right += dx; break;
+                case IDC_VIDP_PREVIEW: r.right += dx; r.bottom += dy; break;
+                case IDC_VIDP_BAR: case IDC_VIDP_STATUS: r.right += dx; OffsetRect( &r, 0, dy ); break;
+                default: OffsetRect( &r, dx, dy ); break;
+            }
+            hDwp = DeferWindowPos( hDwp, GetDlgItem( hWnd, aProgressIds[i] ), nullptr, r.left, r.top, r.right - r.left, r.bottom - r.top,
+                                   SWP_NOZORDER | SWP_NOACTIVATE );
+        }
+        if ( hDwp ) EndDeferWindowPos( hDwp );
+        // The preview is made as wide as it is shown (letterboxed to the frame's shape)
+        RECT rp = g_Layout.aCtl[1];
+        int cx = rp.right - rp.left + dx, cy = rp.bottom - rp.top + dy;
+        if ( pJob && pJob->iWidth > 0 && pJob->iHeight > 0 )
+            pJob->iPreviewWant = std::max( 1, std::min( cx, (int)( (long long)cy * pJob->iWidth / pJob->iHeight ) ) );
+        InvalidateRect( hWnd, nullptr, TRUE );
+        InvalidateRect( GetDlgItem( hWnd, IDC_VIDP_PREVIEW ), nullptr, FALSE );
+    }
+
     INT_PTR CALLBACK ProgressProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
     {
         VideoJob *pJob = g_pProgress;
@@ -638,7 +688,34 @@ namespace
                 g_uShownGen = 0;
                 SetDlgItemTextW( hWnd, IDC_VIDP_FILE, pJob->sOutFile.c_str() );
                 SendDlgItemMessageW( hWnd, IDC_VIDP_BAR, PBM_SETRANGE32, 0, 1000 );
+                {
+                    RECT rc;
+                    GetWindowRect( hWnd, &rc );
+                    g_Layout.szMin = { rc.right - rc.left, rc.bottom - rc.top };
+                    GetClientRect( hWnd, &rc );
+                    g_Layout.szClient = { rc.right, rc.bottom };
+                    for ( int i = 0; i < 5; i++ )
+                    {
+                        GetWindowRect( GetDlgItem( hWnd, aProgressIds[i] ), &g_Layout.aCtl[i] );
+                        MapWindowPoints( nullptr, hWnd, reinterpret_cast< POINT * >( &g_Layout.aCtl[i] ), 2 );
+                    }
+                    if ( g_szProgress.cx >= g_Layout.szMin.cx && g_szProgress.cy >= g_Layout.szMin.cy )
+                        SetWindowPos( hWnd, nullptr, 0, 0, g_szProgress.cx, g_szProgress.cy, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE );
+                    LayoutProgress( hWnd, pJob );
+                }
                 SetTimer( hWnd, 1, 100, nullptr );
+                return TRUE;
+            case WM_GETMINMAXINFO:
+                if ( g_Layout.szMin.cx ) reinterpret_cast< MINMAXINFO * >( lParam )->ptMinTrackSize = { g_Layout.szMin.cx, g_Layout.szMin.cy };
+                return TRUE;
+            case WM_SIZE:
+                if ( pJob && g_Layout.szClient.cx )
+                {
+                    LayoutProgress( hWnd, pJob );
+                    RECT rc;
+                    GetWindowRect( hWnd, &rc );
+                    if ( wParam == SIZE_RESTORED ) g_szProgress = { rc.right - rc.left, rc.bottom - rc.top };
+                }
                 return TRUE;
             case WM_TIMER:
             {
@@ -706,13 +783,18 @@ namespace
                 LPDRAWITEMSTRUCT pdis = ( LPDRAWITEMSTRUCT )lParam;
                 if ( pdis->CtlID != IDC_VIDP_PREVIEW ) return FALSE;
                 RECT rc = pdis->rcItem;
-                FillRect( pdis->hDC, &rc, ( HBRUSH )GetStockObject( BLACK_BRUSH ) );
                 std::lock_guard< std::mutex > lk( pJob->mx );
-                if ( pJob->vPreview.empty() ) return TRUE;
-                // Letterboxed to the frame's shape
+                if ( pJob->vPreview.empty() ) { FillRect( pdis->hDC, &rc, ( HBRUSH )GetStockObject( BLACK_BRUSH ) ); return TRUE; }
+                // Letterboxed to the frame's shape; only the bars are cleared, so the picture does not
+                // flicker black between frames
                 int cx = rc.right - rc.left, cy = rc.bottom - rc.top;
                 int w = cx, h = (int)( (long long)cx * pJob->iHeight / pJob->iWidth );
                 if ( h > cy ) { h = cy; w = (int)( (long long)cy * pJob->iWidth / pJob->iHeight ); }
+                int x0 = rc.left + ( cx - w ) / 2, y0 = rc.top + ( cy - h ) / 2;
+                SaveDC( pdis->hDC );
+                ExcludeClipRect( pdis->hDC, x0, y0, x0 + w, y0 + h );
+                FillRect( pdis->hDC, &rc, ( HBRUSH )GetStockObject( BLACK_BRUSH ) );
+                RestoreDC( pdis->hDC, -1 );
                 BITMAPINFO bmi = {};
                 bmi.bmiHeader.biSize = sizeof( bmi.bmiHeader );
                 bmi.bmiHeader.biWidth = pJob->iPreviewW;
@@ -721,7 +803,7 @@ namespace
                 bmi.bmiHeader.biBitCount = 32;
                 bmi.bmiHeader.biCompression = BI_RGB;
                 SetStretchBltMode( pdis->hDC, HALFTONE );
-                StretchDIBits( pdis->hDC, rc.left + ( cx - w ) / 2, rc.top + ( cy - h ) / 2, w, h, 0, 0, pJob->iPreviewW, pJob->iPreviewH,
+                StretchDIBits( pdis->hDC, x0, y0, w, h, 0, 0, pJob->iPreviewW, pJob->iPreviewH,
                                pJob->vPreview.data(), &bmi, DIB_RGB_COLORS, SRCCOPY );
                 return TRUE;
             }
@@ -757,7 +839,7 @@ namespace
         pJob->iCodec = s.iCodec;
         pJob->iBackend = s.iBackend;
         pJob->iContainer = s.iContainer;
-        pJob->sAudioFile = s.sAudioFile;
+        pJob->sAudioFile = s.bAudio ? s.sAudioFile : std::wstring();   // empty: a silent video
         pJob->bAudioAlign = s.bAudioAlign;
         pJob->iAudioOffsetMs = s.iAudioOffsetMs;
         if ( s.bUseWindowSize ) WindowSize( pJob->iWidth, pJob->iHeight );
@@ -869,11 +951,13 @@ namespace
                     SendDlgItemMessageW( hWnd, IDC_VID_ENCODER, CB_ADDSTRING, 0, ( LPARAM )ExportSettings::Backends[i] );
                 SendDlgItemMessageW( hWnd, IDC_VID_ENCODER, CB_SETCURSEL, s.iBackend, 0 );
                 CheckDlgButton( hWnd, IDC_VID_STATS, s.bShowStats ? BST_CHECKED : BST_UNCHECKED );
+                CheckDlgButton( hWnd, IDC_VID_AUDIOON, s.bAudio ? BST_CHECKED : BST_UNCHECKED );
                 SetDlgItemTextW( hWnd, IDC_VID_AUDIO, s.sAudioFile.c_str() );
                 CheckDlgButton( hWnd, IDC_VID_AUDIOALIGN, s.bAudioAlign ? BST_CHECKED : BST_UNCHECKED );
                 SetDlgItemInt( hWnd, IDC_VID_AUDIOOFFSET, (UINT)s.iAudioOffsetMs, TRUE );
                 UpdateSizeControls( hWnd );
                 UpdateEncoderControls( hWnd );
+                UpdateAudioControls( hWnd );
                 return TRUE;
             }
             case WM_COMMAND:
@@ -881,6 +965,9 @@ namespace
                 {
                     case IDC_VID_WINDOWSIZE:
                         UpdateSizeControls( hWnd );
+                        return TRUE;
+                    case IDC_VID_AUDIOON:
+                        UpdateAudioControls( hWnd );
                         return TRUE;
                     case IDC_VID_RES:
                         if ( HIWORD( wParam ) == CBN_SELCHANGE ) UpdateSizeControls( hWnd );
@@ -959,6 +1046,7 @@ namespace
                             s.iCodec = sRead.iCodec;
                             s.iBackend = sRead.iBackend;
                             s.iContainer = sRead.iContainer;
+                            s.bAudio = sRead.bAudio;
                             s.sAudioFile = sRead.sAudioFile;
                             s.bAudioAlign = sRead.bAudioAlign;
                         }

@@ -142,6 +142,9 @@ void VisualSettings::LoadDefaultValues()
     bHideSpeedBoxes = false;
     bLoopColors = false;
     bEdo31Keys = false;
+    bStatsScaled = false;
+    iStatsSize = 100;
+    iStatsFont = 15;            // the original's (Tahoma 15)
     int R, G, B, S = 80, V = 100;
     const int iColors = 16;     // the original's 16, as it made them
     for ( int i = 10, count = 0; count < iColors; i = ( i + 7 ) % iColors, count++ )
@@ -215,6 +218,9 @@ void VisualSettings::Load( const IniFile &ini )
     bHideLines = ini.GetBool( "Visual", "HideLines", bHideLines );
     bLoopColors = ini.GetBool( "Visual", "LoopColors", bLoopColors );
     bEdo31Keys = ini.GetBool( "Visual", "Edo31Keys", bEdo31Keys );
+    bStatsScaled = ini.GetBool( "Visual", "StatsScaled", bStatsScaled );
+    iStatsSize = std::clamp( ini.GetInt( "Visual", "StatsSize", iStatsSize ), StatsSizeMin, StatsSizeMax );
+    iStatsFont = std::clamp( ini.GetInt( "Visual", "StatsFont", iStatsFont ), StatsFontMin, StatsFontMax );
     bHideSpeedBoxes = ini.GetBool( "Visual", "HideSpeedBoxes", bHideSpeedBoxes );
 }
 
@@ -240,6 +246,9 @@ void VisualSettings::Save( IniFile &ini ) const
     ini.SetInt( "Visual", "HideLines", bHideLines );
     ini.SetInt( "Visual", "LoopColors", bLoopColors );
     ini.SetInt( "Visual", "Edo31Keys", bEdo31Keys );
+    ini.SetInt( "Visual", "StatsScaled", bStatsScaled );
+    ini.SetInt( "Visual", "StatsSize", iStatsSize );
+    ini.SetInt( "Visual", "StatsFont", iStatsFont );
     ini.SetInt( "Visual", "HideSpeedBoxes", bHideSpeedBoxes );
 }
 
@@ -381,6 +390,7 @@ void ExportSettings::LoadDefaultValues()
     iBackend = Software;
     iContainer = Mp4;
     bShowStats = true;
+    bAudio = false;
     sAudioFile.clear();
     bAudioAlign = true;
     iAudioOffsetMs = 0;
@@ -413,6 +423,7 @@ void ExportSettings::Load( const IniFile &ini )
     if ( !HasBackend( iCodec, iBackend ) ) iBackend = Software;
     bShowStats = ini.GetBool( "Export", "ShowStats", bShowStats );
     sAudioFile = Util::Utf8ToWide( ini.GetString( "Export", "AudioFile" ) );
+    bAudio = ini.GetBool( "Export", "Audio", !sAudioFile.empty() );     // before the switch: on when a file was set
     bAudioAlign = ini.GetBool( "Export", "AudioAlign", bAudioAlign );
     iAudioOffsetMs = std::clamp( ini.GetInt( "Export", "AudioOffsetMs", iAudioOffsetMs ), -3600000, 3600000 );
 }
@@ -430,6 +441,7 @@ void ExportSettings::Save( IniFile &ini ) const
     ini.SetInt( "Export", "Backend", iBackend );
     ini.SetInt( "Export", "Container", iContainer );
     ini.SetInt( "Export", "ShowStats", bShowStats );
+    ini.SetInt( "Export", "Audio", bAudio );
     ini.Set( "Export", "AudioFile", Util::WideToUtf8( sAudioFile ) );
     ini.SetInt( "Export", "AudioAlign", bAudioAlign );
     ini.SetInt( "Export", "AudioOffsetMs", iAudioOffsetMs );

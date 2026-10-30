@@ -28,7 +28,7 @@ BEGIN
     DEFPUSHBUTTON   "OK",IDOK,177,151,50,14
 END
 
-IDD_PP1_VISUAL DIALOGEX 0, 0, 302, 338
+IDD_PP1_VISUAL DIALOGEX 0, 0, 302, 354
 STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_DISABLED | WS_BORDER
 FONT 8, "MS Shell Dlg", 400, 0, 0x0
 BEGIN
@@ -55,26 +55,33 @@ BEGIN
     LTEXT           "Stats box:",IDC_STATIC,7,149,42,8
     PUSHBUTTON      "S&tatistics...",IDC_STATSBOX,53,146,60,14
     LTEXT           "",IDC_STATSCOUNT,119,149,120,8
-    LTEXT           "&Window size:",IDC_STATIC,7,169,44,8
-    EDITTEXT        IDC_WINWIDTH,53,167,34,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "x",IDC_STATIC,91,169,8,8
-    EDITTEXT        IDC_WINHEIGHT,101,167,34,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "",IDC_WINSIZEMAX,141,169,155,8
-    GROUPBOX        "Background",IDC_STATIC,7,187,288,74
-    CONTROL         "Show a background &image (over the background color, in the notes area):",IDC_BKGON,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,199,276,10
-    EDITTEXT        IDC_BKGIMAGE,13,212,222,14,ES_AUTOHSCROLL
-    PUSHBUTTON      "Br&owse...",IDC_BKGBROWSE,239,212,50,14
-    LTEXT           "&Fit:",IDC_STATIC,13,232,14,8
-    COMBOBOX        IDC_BKGFIT,30,230,74,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    LTEXT           "O&pacity:",IDC_STATIC,114,232,30,8
-    EDITTEXT        IDC_BKGOPACITY,146,230,28,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "%",IDC_STATIC,178,232,10,8
-    CONTROL         "Hide the key dividers and measure &lines",IDC_HIDELINES,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,247,276,10
-    GROUPBOX        "Clean drawing (leaves out quirks of the original's note drawing)",IDC_STATIC,7,265,288,52
-    CONTROL         "Draw every note at least one pixel t&all",IDC_CLEAN_MINHEIGHT,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,277,276,10
-    CONTROL         "Keep short notes on screen until they reach the key&board",IDC_CLEAN_KEEPBOTTOM,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,289,276,10
-    CONTROL         "Round note &edges evenly, so lower layers never show past notes above",IDC_CLEAN_EDGES,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,301,276,10
-    PUSHBUTTON      "&Restore Defaults",IDC_RESTOREDEFAULTS,226,321,69,14
+    CONTROL         "Scale with resol&ution",IDC_STATSSCALED,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,53,166,86,10
+    LTEXT           "Si&ze:",IDC_STATIC,143,167,18,8
+    EDITTEXT        IDC_STATSSIZE,162,164,26,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "%",IDC_STATIC,191,167,8,8
+    LTEXT           "Fo&nt:",IDC_STATIC,203,167,18,8
+    EDITTEXT        IDC_STATSFONT,222,164,24,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "px at 1080p",IDC_STATIC,249,167,46,8
+    LTEXT           "&Window size:",IDC_STATIC,7,185,44,8
+    EDITTEXT        IDC_WINWIDTH,53,183,34,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "x",IDC_STATIC,91,185,8,8
+    EDITTEXT        IDC_WINHEIGHT,101,183,34,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "",IDC_WINSIZEMAX,141,185,155,8
+    GROUPBOX        "Background",IDC_STATIC,7,203,288,74
+    CONTROL         "Show a background &image (over the background color, in the notes area):",IDC_BKGON,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,215,276,10
+    EDITTEXT        IDC_BKGIMAGE,13,228,222,14,ES_AUTOHSCROLL
+    PUSHBUTTON      "Br&owse...",IDC_BKGBROWSE,239,228,50,14
+    LTEXT           "&Fit:",IDC_STATIC,13,248,14,8
+    COMBOBOX        IDC_BKGFIT,30,246,74,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "O&pacity:",IDC_STATIC,114,248,30,8
+    EDITTEXT        IDC_BKGOPACITY,146,246,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "%",IDC_STATIC,178,248,10,8
+    CONTROL         "Hide the key dividers and measure &lines",IDC_HIDELINES,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,263,276,10
+    GROUPBOX        "Clean drawing (leaves out quirks of the original's note drawing)",IDC_STATIC,7,281,288,52
+    CONTROL         "Draw every note at least one pixel t&all",IDC_CLEAN_MINHEIGHT,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,293,276,10
+    CONTROL         "Keep short notes on screen until they reach the key&board",IDC_CLEAN_KEEPBOTTOM,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,305,276,10
+    CONTROL         "Round note &edges evenly, so lower layers never show past notes above",IDC_CLEAN_EDGES,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,317,276,10
+    PUSHBUTTON      "&Restore Defaults",IDC_RESTOREDEFAULTS,226,337,69,14
 END
 
 IDD_PP2_AUDIO DIALOGEX 0, 0, 300, 212
@@ -149,7 +156,7 @@ BEGIN
     LTEXT           "messages/s (quietest notes skipped first)",IDC_STATIC,134,256,154,8
     CONTROL         "Apply 31-EDO tuning",IDC_PERF_TUNING31,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,274,275,10
     CONTROL         "Use pitch-bends tuning instead of MTS for compatibility. Broken.",IDC_PERF_TUNING31BEND,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,25,289,263,10
-    LTEXT           "Applies at once. Off: keys past 127 are shown, not played.",IDC_STATIC,25,305,263,8
+    LTEXT           "Applies at once. Off: keys past 127 are not played (Show 256 keys shows them).",IDC_STATIC,25,305,263,8
     GROUPBOX        "Display",IDC_STATIC,7,327,286,28
     CONTROL         "&Limit frame rate",IDC_LIMITFPS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,340,100,10
     PUSHBUTTON      "Render &video...",IDC_PERF_VIDEO,120,337,80,14
@@ -210,20 +217,21 @@ BEGIN
     COMBOBOX        IDC_VID_PRESET,80,149,72,120,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     CONTROL         "Show the &stats area (top right)",IDC_VID_STATS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,160,151,126,10
     LTEXT           "The whole song is rendered off-screen at this size (with the current view and note speed) and encoded by ffmpeg, from the PATH or the current folder. The encoder is tried at this size first, so its own limits apply.",IDC_STATIC,13,167,274,26
-    GROUPBOX        "Audio (optional)",IDC_STATIC,7,201,286,64
-    LTEXT           "A&udio file (WAV, FLAC, ...; empty: a silent video):",IDC_STATIC,13,213,220,8
+    GROUPBOX        "",IDC_STATIC,7,201,286,64
+    CONTROL         "Add a&udio",IDC_VID_AUDIOON,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,200,46,10
+    LTEXT           "Audio file (WAV, FLAC, ...):",IDC_VID_AUDIOLABEL,13,213,220,8
     EDITTEXT        IDC_VID_AUDIO,13,224,218,14,ES_AUTOHSCROLL
     PUSHBUTTON      "Bro&wse...",IDC_VID_AUDIOBROWSE,236,224,50,14
     CONTROL         "&Align its first sound with the first note",IDC_VID_AUDIOALIGN,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,246,150,10
-    LTEXT           "Then &move by:",IDC_STATIC,168,247,50,8
+    LTEXT           "Then &move by:",IDC_VID_AUDIOMOVE,168,247,50,8
     EDITTEXT        IDC_VID_AUDIOOFFSET,220,244,40,14,ES_AUTOHSCROLL
-    LTEXT           "ms",IDC_STATIC,264,247,20,8
+    LTEXT           "ms",IDC_VID_AUDIOMS,264,247,20,8
     DEFPUSHBUTTON   "&Start rendering",IDOK,7,271,80,14
     PUSHBUTTON      "Close",IDCANCEL,243,271,50,14
 END
 
 IDD_VIDEOPROGRESS DIALOGEX 0, 0, 300, 236
-STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_THICKFRAME
 CAPTION "Rendering Video - PFAviz++"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
@@ -274,6 +282,7 @@ BEGIN
     POPUP "&File"
     BEGIN
         MENUITEM "&Play Song...\tCtrl+O",       ID_FILE_PLAYSONG
+        MENUITEM "&Render Song...",              ID_FILE_RENDERSONG
         MENUITEM "&Close File\tCtrl+W",         ID_FILE_CLOSEFILE
     END
     POPUP "&Play"
@@ -322,6 +331,7 @@ BEGIN
         POPUP "&File"
         BEGIN
             MENUITEM "&Play Song...\tCtrl+O",       ID_FILE_PLAYSONG
+            MENUITEM "&Render Song...",              ID_FILE_RENDERSONG
             MENUITEM "&Close File\tCtrl+W",         ID_FILE_CLOSEFILE
         END
         POPUP "&View"

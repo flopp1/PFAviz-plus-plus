@@ -72,9 +72,8 @@ void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
     // The stats area as the window shows it (its frame rate line shows the video's)
     unsigned uStats = Config::GetConfig().GetVisualSettings().uStats & ~( VisualSettings::SynthStats | VisualSettings::FrameStats );
     int iLines = StatusLines( uStats );
-    RECT rcStatusBox = { iW - 156, 0, iW, 6 + 16 * iLines };
+    const StatsBox box = StatsLayout( iW, iH, iLines );
 
-    const int iPreviewW = std::min( iW, 480 ), iPreviewH = std::max( 1, (int)( (long long)iH * iPreviewW / iW ) );
     long long llLastPreview = 0, llSent = 0;
 
     // The oldest frame read back goes to ffmpeg (and, a few times a second, to the progress popup)
@@ -91,6 +90,8 @@ void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
         if ( llNow - llLastPreview >= 200000 || llSent + 1 == llFrames )
         {
             llLastPreview = llNow;
+            // As wide as the popup shows it (it can be resized), at most the frame's own size
+            const int iPreviewW = std::clamp( job.iPreviewWant.load(), 1, iW ), iPreviewH = std::max( 1, (int)( (long long)iH * iPreviewW / iW ) );
             std::lock_guard< std::mutex > lk( job.mx );
             job.vPreview.resize( (size_t)iPreviewW * iPreviewH );
             const uint8_t *p = pFrame->data();
@@ -153,11 +154,11 @@ void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
         Scene::DrawBorder( &r, g, m_Colors );
         if ( job.bShowStats && iLines )
         {
-            RECT rcStatus = rcStatusBox;
+            const RECT &rcStatus = box.rc;
             r.DrawRect( static_cast< float >( rcStatus.left ), static_cast< float >( rcStatus.top ),
                         static_cast< float >( rcStatus.right - rcStatus.left ), static_cast< float >( rcStatus.bottom - rcStatus.top ), 0x80000000 );
             r.BeginText();
-            RenderStatus( &r, &rcStatus, llTime, job.iFPS, uStats );
+            RenderStatus( &r, box, llTime, job.iFPS, uStats );
             r.EndText();
         }
         r.EndScene();

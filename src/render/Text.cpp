@@ -31,6 +31,7 @@ namespace
         ~D3DXText()
         {
             for ( auto f : m_pFonts ) if ( f ) f->Release();
+            if ( m_pStats ) m_pStats->Release();
             if ( m_pSprite ) m_pSprite->Release();
         }
 
@@ -42,6 +43,8 @@ namespace
             auto pCreateSprite = ( PFN_D3DXCreateSprite )GetProcAddress( hMod, "D3DXCreateSprite" );
             if ( !pCreateFont || !pCreateSprite ) return false;
             if ( FAILED( pCreateSprite( pDevice, &m_pSprite ) ) ) return false;
+            m_pDevice = pDevice;
+            m_pCreateFont = pCreateFont;
             for ( int i = 0; i < 5; i++ )
                 if ( FAILED( pCreateFont( pDevice, Fonts[i].iHeight, 0, Fonts[i].iWeight, 1, FALSE, DEFAULT_CHARSET,
                                           OUT_DEFAULT_PRECIS, PROOF_QUALITY, DEFAULT_PITCH | FF_DONTCARE,
@@ -54,23 +57,39 @@ namespace
         {
             m_pSprite->OnLostDevice();
             for ( auto f : m_pFonts ) f->OnLostDevice();
+            if ( m_pStats ) m_pStats->OnLostDevice();
         }
         void OnResetDevice() override
         {
             m_pSprite->OnResetDevice();
             for ( auto f : m_pFonts ) f->OnResetDevice();
+            if ( m_pStats ) m_pStats->OnResetDevice();
         }
         HRESULT Begin() override { return m_pSprite->Begin( D3DXSPRITE_ALPHABLEND | D3DXSPRITE_SORT_TEXTURE ); }
         HRESULT DrawText( int iFont, const WCHAR *sText, INT iChars, LPRECT rcPos, DWORD dwFormat, DWORD dwColor ) override
         {
-            return m_pFonts[iFont]->DrawTextW( m_pSprite, sText, iChars, rcPos, dwFormat, dwColor ) ? S_OK : E_FAIL;
+            LPD3DXFONT pFont = iFont == 5 ? m_pStats : m_pFonts[iFont];
+            if ( !pFont ) return E_FAIL;
+            return pFont->DrawTextW( m_pSprite, sText, iChars, rcPos, dwFormat, dwColor ) ? S_OK : E_FAIL;
         }
         HRESULT End() override { return m_pSprite->End(); }
         bool IsD3DX() const override { return true; }
+        void SetStatsHeight( int iHeight ) override
+        {
+            if ( m_pStats && iHeight == m_iStatsHeight ) return;
+            if ( m_pStats ) { m_pStats->Release(); m_pStats = nullptr; }
+            m_iStatsHeight = iHeight;
+            m_pCreateFont( m_pDevice, iHeight, 0, FW_NORMAL, 1, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, PROOF_QUALITY,
+                           DEFAULT_PITCH | FF_DONTCARE, L"Tahoma", &m_pStats );
+        }
 
     private:
         LPD3DXSPRITE m_pSprite = nullptr;
         LPD3DXFONT m_pFonts[5] = {};
+        LPD3DXFONT m_pStats = nullptr;
+        int m_iStatsHeight = 0;
+        IDirect3DDevice9 *m_pDevice = nullptr;
+        PFN_D3DXCreateFontW m_pCreateFont = nullptr;
     };
 
     //-------------------------------------------------------------------------
@@ -87,6 +106,7 @@ namespace
         {
             ClearCache();
             for ( auto f : m_hFonts ) if ( f ) DeleteObject( f );
+            if ( m_hStats ) DeleteObject( m_hStats );
             if ( m_hDC ) DeleteDC( m_hDC );
             if ( m_hDIB ) DeleteObject( m_hDIB );
         }
@@ -107,11 +127,21 @@ namespace
         HRESULT Begin() override { return S_OK; }
         HRESULT End() override { return S_OK; }
         bool IsD3DX() const override { return false; }
+        void SetStatsHeight( int iHeight ) override
+        {
+            if ( m_hStats && iHeight == m_iStatsHeight ) return;
+            if ( m_hStats ) { ClearCache(); DeleteObject( m_hStats ); }     // its strings were cached by index
+            m_iStatsHeight = iHeight;
+            m_hStats = CreateFontW( iHeight, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                                    CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Tahoma" );
+        }
 
         HRESULT DrawText( int iFont, const WCHAR *sText, INT iChars, LPRECT rcPos, DWORD dwFormat, DWORD dwColor ) override
         {
             std::wstring sStr = iChars < 0 ? std::wstring( sText ) : std::wstring( sText, iChars );
-            SelectObject( m_hDC, m_hFonts[iFont] );
+            HFONT hFont = iFont == 5 ? m_hStats : m_hFonts[iFont];
+            if ( !hFont ) return E_FAIL;
+            SelectObject( m_hDC, hFont );
             if ( dwFormat & DT_CALCRECT )
             {
                 ::DrawTextW( m_hDC, sStr.c_str(), (int)sStr.size(), rcPos, dwFormat );
@@ -283,6 +313,8 @@ namespace
         DWORD *m_pBits = nullptr;
         int m_iDibW = 0, m_iDibH = 0;
         HFONT m_hFonts[5] = {};
+        HFONT m_hStats = nullptr;
+        int m_iStatsHeight = 0;
         std::unordered_map< std::wstring, Entry > m_mCache;
         std::list< std::wstring > m_lLru;
         std::vector< FreeTex > m_vFree;     // textures of strings that left the cache

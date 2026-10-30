@@ -315,6 +315,11 @@ HRESULT Renderer::DrawText( const WCHAR *sText, FontSize fsFont, LPRECT rcPos, D
     return m_pText->DrawText( fsFont, sText, iChars, rcPos, dwFormat, dwColor );
 }
 
+void Renderer::SetStatsFont( int iHeight )
+{
+    if ( m_pText ) m_pText->SetStatsHeight( iHeight );
+}
+
 HRESULT Renderer::EndText()
 {
     HRESULT hr = m_pText->End();

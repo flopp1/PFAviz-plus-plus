@@ -18,9 +18,10 @@ using std::pow;
 
 const float MainScreen::KBPercent = 0.25f;
 
-MainScreen::MainScreen( std::shared_ptr< const Song > pSong, HWND hWnd, Renderer *pRenderer )
+MainScreen::MainScreen( std::shared_ptr< const Song > pSong, HWND hWnd, Renderer *pRenderer, bool bPlayback )
     : GameState( hWnd, pRenderer ), m_pSong( std::move( pSong ) )
 {
+    m_bWithPlayback = bPlayback;
     InitSong();
 }
 
@@ -35,7 +36,7 @@ void MainScreen::InitSong()
     m_pEngine->SetLod( Config::GetConfig().GetPerformanceSettings().bLodCache );
     m_pMeter = new MeterTracker( m_pSong->vMeta, m_pSong->info );
     m_vTrackSettings.resize( m_pSong->info.iNumTracks );
-    if ( m_pSong ) m_pPlayback = std::make_unique< PlaybackEngine >( m_pSong, m_Clock, Config::GetConfig().GetPerformanceSettings().iPlaybackThreads );
+    if ( m_pSong && m_bWithPlayback ) m_pPlayback = std::make_unique< PlaybackEngine >( m_pSong, m_Clock, Config::GetConfig().GetPerformanceSettings().iPlaybackThreads );
 
     std::vector< TextPath::TextPathVertex > vPath;
     vPath.push_back( { 0.0f, 0.0f, 0.0f, 0xFF } );
@@ -653,9 +654,7 @@ ViewInputs MainScreen::GetViewInputs( int iWidth, int iHeight, long long llStart
     ViewInputs in;
     in.iBufferWidth = iWidth;
     in.iBufferHeight = iHeight;
-    in.eKeysShown = cVisual.eKeysShown;
-    // A 256-key file (notes past key 127) is always shown on all 256 keys, whatever the setting (kept)
-    if ( m_pSong->info.iMaxNote > 127 ) in.eKeysShown = VisualSettings::All256;
+    in.eKeysShown = cVisual.eKeysShown;     // as set, also for a file with notes past key 127
     in.iFirstKey = cVisual.iFirstKey;
     in.iLastKey = cVisual.iLastKey;
     in.iSongMinNote = m_pSong->info.iMinNote;
@@ -676,7 +675,8 @@ void MainScreen::RenderText()
 {
     int iLines = StatusLines( m_uStats );
 
-    RECT rcStatus = { m_pRenderer->GetBufferWidth() - 156, 0, m_pRenderer->GetBufferWidth(), 6 + 16 * iLines };
+    const StatsBox box = StatsLayout( m_pRenderer->GetBufferWidth(), m_pRenderer->GetBufferHeight(), iLines );
+    const RECT &rcStatus = box.rc;
 
     int iMsgCY = 200;
     RECT rcMsg = { 0, static_cast< int >( m_pRenderer->GetBufferHeight() * ( 1.0f - KBPercent ) - iMsgCY ) / 2, 0, 0 };
@@ -692,7 +692,7 @@ void MainScreen::RenderText()
             static_cast< float >( rcMsg.right - rcMsg.left ), static_cast< float >( rcMsg.bottom - rcMsg.top ), iBkgColor );
 
     m_pRenderer->BeginText();
-    RenderStatus( m_pRenderer, &rcStatus, m_llStartTime, m_dFPS, m_uStats, m_llPastEndUs );
+    RenderStatus( m_pRenderer, box, m_llStartTime, m_dFPS, m_uStats, m_llPastEndUs );
     if ( m_pEngine->DrawsPreviousMask() )
     {
         // Hidden channels change once their draw view is built (FastEngine::SetHidden)
@@ -713,6 +713,31 @@ int MainScreen::StatusLines( unsigned uStats )
     return __builtin_popcount( uStats & VisualSettings::AllStats );
 }
 
+MainScreen::StatsBox MainScreen::StatsLayout( int iWidth, int iHeight, int iLines )
+{
+    const VisualSettings &cVisual = Config::GetConfig().GetVisualSettings();
+    StatsBox b;
+    if ( !cVisual.bStatsScaled )
+    {
+        // The original's: 156 pixels wide, 16 a line, Tahoma 15
+        b.rc = { iWidth - 156, 0, iWidth, 6 + 16 * iLines };
+        b.iLineCY = 16; b.iPadX = 6; b.iPadY = 3; b.iShadowX = 2; b.iShadowY = 1;
+        b.iFontCY = 0;
+        return b;
+    }
+    // Scaled: as the fixed box at 1080p, times the size; a font taller than 15 widens the box and its
+    // lines to match (a smaller one leaves them, for more room)
+    double u = iHeight / 1080.0 * cVisual.iStatsSize / 100.0;
+    auto Px = [&]( double v ) { return std::max( 1, (int)std::lround( v * u ) ); };
+    int iFont = cVisual.iStatsFont;
+    b.iFontCY = Px( iFont );
+    b.iLineCY = Px( std::max( 16, iFont + 1 ) );
+    b.iPadX = Px( 6 ); b.iPadY = Px( 3 ); b.iShadowX = Px( 2 ); b.iShadowY = Px( 1 );
+    int iBoxCX = std::min( iWidth, Px( 156.0 * std::max( 1.0, iFont / 15.0 ) ) );
+    b.rc = { iWidth - iBoxCX, 0, iWidth, b.iPadY * 2 + b.iLineCY * iLines };
+    return b;
+}
+
 // The tempo in effect at llTime: the last tempo event at or before it. Before any, MIDI's default of
 // 500000 (120 BPM), but for the lead-in before the song starts, which shows a tempo set at its start.
 static long long TempoAt( const std::vector< RefMetaEvent > &vMeta, long long llTime )
@@ -727,7 +752,7 @@ static long long TempoAt( const std::vector< RefMetaEvent > &vMeta, long long ll
 
 // The top-right stats area's text (the video renderer passes its own renderer, time and frame rate):
 // every line's value, then the shown ones in the configured order
-void MainScreen::RenderStatus( Renderer *pRenderer, LPRECT prcStatus, long long llTime, double dFPS, unsigned uStats, long long llPastEnd )
+void MainScreen::RenderStatus( Renderer *pRenderer, const StatsBox &box, long long llTime, double dFPS, unsigned uStats, long long llPastEnd )
 {
     typedef VisualSettings VS;
     static const VisualSettings &cVisual = Config::GetConfig().GetVisualSettings();
@@ -808,21 +833,25 @@ void MainScreen::RenderStatus( Renderer *pRenderer, LPRECT prcStatus, long long 
         else wcscpy( aValue[VS::StatSynthCpu], L"N/A" );
     }
 
-    InflateRect( prcStatus, -6, -3 );
+    RECT rcLine = box.rc;
+    RECT *prcStatus = &rcLine;
+    InflateRect( prcStatus, -box.iPadX, -box.iPadY );
+    Renderer::FontSize eFont = Renderer::Small;
+    if ( box.iFontCY ) { pRenderer->SetStatsFont( box.iFontCY ); eFont = Renderer::Stats; }
 
-    // A line: shadow, then text (the original's offsets: the first line at +1, each next 16 lower)
+    // A line: shadow, then text (the original's offsets: the first line at +1, each next a line lower)
     bool bFirst = true;
     for ( int i = 0; i < VS::StatCount; i++ )
     {
         int iStat = cVisual.aStatOrder[i];
         if ( !Shown( iStat ) ) continue;
-        OffsetRect( prcStatus, 2, bFirst ? 1 : 16 + 1 );
+        OffsetRect( prcStatus, box.iShadowX, bFirst ? box.iShadowY : box.iLineCY + box.iShadowY );
         bFirst = false;
-        pRenderer->DrawText( VS::StatLabels[iStat], Renderer::Small, prcStatus, 0, 0xFF404040 );
-        pRenderer->DrawText( aValue[iStat], Renderer::Small, prcStatus, DT_RIGHT, 0xFF404040 );
-        OffsetRect( prcStatus, -2, -1 );
-        pRenderer->DrawText( VS::StatLabels[iStat], Renderer::Small, prcStatus, 0, 0xFFFFFFFF );
-        pRenderer->DrawText( aValue[iStat], Renderer::Small, prcStatus, DT_RIGHT, 0xFFFFFFFF );
+        pRenderer->DrawText( VS::StatLabels[iStat], eFont, prcStatus, 0, 0xFF404040 );
+        pRenderer->DrawText( aValue[iStat], eFont, prcStatus, DT_RIGHT, 0xFF404040 );
+        OffsetRect( prcStatus, -box.iShadowX, -box.iShadowY );
+        pRenderer->DrawText( VS::StatLabels[iStat], eFont, prcStatus, 0, 0xFFFFFFFF );
+        pRenderer->DrawText( aValue[iStat], eFont, prcStatus, DT_RIGHT, 0xFFFFFFFF );
     }
 }
 
