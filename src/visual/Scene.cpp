@@ -447,22 +447,26 @@ void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneCol
                 const float x = nk.x, cx = nk.cx;
                 const float fSharpTopX1 = x + cx * 0.15f, fSharpTopX2 = x + cx * 0.85f;
                 const ChannelSettings &cs = iLayer == 1 ? c.csKBHalf : Key31Of( i ).kind == Sharp ? c.csKBSharp31 : csKBS;
-                // Depth: an unpressed half key's top is half a black key's rise above the white keys (a
-                // pressed one's as a pressed black key's). A pressed full key's top is that same half rise
-                // above the half key under it (a sharp's is the key below it, a flat's the one above); over an
-                // unpressed half key it also sits in a dark slot in it, showing at its corners. An unpressed
-                // full key goes straight up to the top of the half key under it, pressed or not, before it
-                // slopes in, so none of the half key shows above it. Every front edge stays where it was
-                const float fHalfRise = fNearCY * 0.5f, fPressedRise = fNearCY * 0.25f;
+                // Depth: three heights of the tops above the white keys, evenly apart (the front edges stay
+                // where a black key's are). The white keys, with pressed half keys just above them (a pressed
+                // black key's rise); unpressed half keys at half a black key's rise, with pressed full keys
+                // just as far above them, whatever the half key under them (a sharp's is the key below it, a
+                // flat's the one above) does; unpressed full keys at a black key's rise. A pressed full key sits in a dark slot in that half key, showing
+                // at its corners; an unpressed one goes straight up to the half key's top before it slopes
+                // in, so none of the half key shows above it
+                const float fPressedRise = fNearCY * 0.25f;     // DrawSharp's pressed top, before fExtend
+                const float fHalfRise = fNearCY * 0.5f, fPressedHalfRise = fPressedRise;
+                const float fFullRise = fNearCY, fPressedFullRise = fHalfRise + fPressedRise;
                 int iUnder = i + ( Key31Of( i ).kind == Sharp ? -1 : 1 );
                 bool bUnderLit = iLayer == 2 && iUnder >= 0 && iUnder < 256 && pKeyColor[iUnder];
-                bool bInSlot = iLayer == 2 && pKeyColor[i] && !bUnderLit;
-                if ( bInSlot )
+                bool bLit = pKeyColor[i] != nullptr;
+                if ( iLayer == 2 && bLit )
                     pRenderer->DrawRect( x, fCurY - fHalfRise, cx, fHalfRise + fSharpCY * 0.5f, c.csKBBackground.iVeryDarkRGB );
-                float fExtend = 0.0f;   // over the pressed top (fPressedRise above the white keys)
-                if ( iLayer == 2 && pKeyColor[i] ) fExtend = ( bUnderLit ? fPressedRise + fHalfRise : fHalfRise + fHalfRise ) - fPressedRise;
+                float fExtend = ( iLayer == 1 ? fPressedHalfRise : fPressedFullRise ) - fPressedRise;
+                float fDrop = fNearCY - ( iLayer == 1 ? fHalfRise : fFullRise );
+                float fRaise = iLayer == 2 ? ( bUnderLit ? fPressedHalfRise : fHalfRise ) : 0.0f;
                 DrawSharp( x, cx, fSharpTopX1, fSharpTopX2, iLayer == 1 ? fSharpCY : fSharpCY * 0.5f, cs, pKeyColor[i],
-                           fExtend, iLayer == 1 ? fHalfRise : 0.0f, iLayer == 2 ? ( bUnderLit ? fPressedRise : fHalfRise ) : 0.0f );
+                           fExtend, fDrop, fRaise );
             }
         return;
     }
