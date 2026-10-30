@@ -113,7 +113,7 @@
 #define IDC_EDO31KEYS                   1127
 #define IDC_STATSSCALED                 1128
 #define IDC_STATSSIZE                   1129
-#define IDC_STATSFONT                   1130
+#define IDC_STATSCORNER                 1130
 #define IDC_NSPEEDLABEL                 1117
 #define IDC_PERF_LOADSTATS              1071
 #define IDC_PERF_KDMAPI                 1072

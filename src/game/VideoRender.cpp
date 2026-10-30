@@ -72,7 +72,6 @@ void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
     // The stats area as the window shows it (its frame rate line shows the video's)
     unsigned uStats = Config::GetConfig().GetVisualSettings().uStats & ~( VisualSettings::SynthStats | VisualSettings::FrameStats );
     int iLines = StatusLines( uStats );
-    const StatsBox box = StatsLayout( iW, iH, iLines );
 
     long long llLastPreview = 0, llSent = 0;
 
@@ -154,6 +153,7 @@ void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
         Scene::DrawBorder( &r, g, m_Colors );
         if ( job.bShowStats && iLines )
         {
+            const StatsBox box = StatsLayout( iW, iH, iLines, StatsBottom( g, iH ) );
             const RECT &rcStatus = box.rc;
             r.DrawRect( static_cast< float >( rcStatus.left ), static_cast< float >( rcStatus.top ),
                         static_cast< float >( rcStatus.right - rcStatus.left ), static_cast< float >( rcStatus.bottom - rcStatus.top ), 0x80000000 );

@@ -101,6 +101,8 @@ namespace Scene
     void DrawBackground( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c ); // field + vertical lines
     // pKeyColor[i] is the colour of the note lighting key i, or nullptr when the key is not lit
     void DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c, const ChannelSettings *const pKeyColor[256] );
+    // The top of the keyboard's red bar (DrawKeys)
+    float RedBarY( const FrameGlobals &g );
     void DrawBorder( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c );
 }
 

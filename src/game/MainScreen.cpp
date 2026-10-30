@@ -675,7 +675,8 @@ void MainScreen::RenderText()
 {
     int iLines = StatusLines( m_uStats );
 
-    const StatsBox box = StatsLayout( m_pRenderer->GetBufferWidth(), m_pRenderer->GetBufferHeight(), iLines );
+    const int iBufferCY = m_pRenderer->GetBufferHeight();
+    const StatsBox box = StatsLayout( m_pRenderer->GetBufferWidth(), iBufferCY, iLines, StatsBottom( m_G, iBufferCY ) );
     const RECT &rcStatus = box.rc;
 
     int iMsgCY = 200;
@@ -713,29 +714,38 @@ int MainScreen::StatusLines( unsigned uStats )
     return __builtin_popcount( uStats & VisualSettings::AllStats );
 }
 
-MainScreen::StatsBox MainScreen::StatsLayout( int iWidth, int iHeight, int iLines )
+MainScreen::StatsBox MainScreen::StatsLayout( int iWidth, int iHeight, int iLines, int iBottomY )
 {
     const VisualSettings &cVisual = Config::GetConfig().GetVisualSettings();
     StatsBox b;
+    int iBoxCX;
     if ( !cVisual.bStatsScaled )
     {
         // The original's: 156 pixels wide, 16 a line, Tahoma 15
-        b.rc = { iWidth - 156, 0, iWidth, 6 + 16 * iLines };
+        iBoxCX = 156;
         b.iLineCY = 16; b.iPadX = 6; b.iPadY = 3; b.iShadowX = 2; b.iShadowY = 1;
         b.iFontCY = 0;
-        return b;
     }
-    // Scaled: as the fixed box at 1080p, times the size; a font taller than 15 widens the box and its
-    // lines to match (a smaller one leaves them, for more room)
-    double u = iHeight / 1080.0 * cVisual.iStatsSize / 100.0;
-    auto Px = [&]( double v ) { return std::max( 1, (int)std::lround( v * u ) ); };
-    int iFont = cVisual.iStatsFont;
-    b.iFontCY = Px( iFont );
-    b.iLineCY = Px( std::max( 16, iFont + 1 ) );
-    b.iPadX = Px( 6 ); b.iPadY = Px( 3 ); b.iShadowX = Px( 2 ); b.iShadowY = Px( 1 );
-    int iBoxCX = std::min( iWidth, Px( 156.0 * std::max( 1.0, iFont / 15.0 ) ) );
-    b.rc = { iWidth - iBoxCX, 0, iWidth, b.iPadY * 2 + b.iLineCY * iLines };
+    else
+    {
+        // Scaled: as the fixed box at 1080p, times the size
+        double u = iHeight / 1080.0 * cVisual.iStatsSize / 100.0;
+        auto Px = [&]( double v ) { return std::max( 1, (int)std::lround( v * u ) ); };
+        b.iFontCY = Px( 15 );
+        b.iLineCY = Px( 16 );
+        b.iPadX = Px( 6 ); b.iPadY = Px( 3 ); b.iShadowX = Px( 2 ); b.iShadowY = Px( 1 );
+        iBoxCX = std::min( iWidth, Px( 156 ) );
+    }
+    int iBoxCY = b.iPadY * 2 + b.iLineCY * iLines;
+    int x = ( cVisual.iStatsCorner & VisualSettings::StatsLeft ) ? 0 : iWidth - iBoxCX;
+    int y = ( cVisual.iStatsCorner & VisualSettings::StatsBottom ) ? std::clamp( iBottomY, iBoxCY, std::max( iBoxCY, iHeight ) ) - iBoxCY : 0;
+    b.rc = { x, y, x + iBoxCX, y + iBoxCY };
     return b;
+}
+
+int MainScreen::StatsBottom( const FrameGlobals &g, int iHeight ) const
+{
+    return m_bShowKB ? (int)std::lround( Scene::RedBarY( g ) ) : iHeight;
 }
 
 // The tempo in effect at llTime: the last tempo event at or before it. Before any, MIDI's default of

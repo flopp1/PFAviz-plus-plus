@@ -144,7 +144,7 @@ void VisualSettings::LoadDefaultValues()
     bEdo31Keys = false;
     bStatsScaled = false;
     iStatsSize = 100;
-    iStatsFont = 15;            // the original's (Tahoma 15)
+    iStatsCorner = 0;
     int R, G, B, S = 80, V = 100;
     const int iColors = 16;     // the original's 16, as it made them
     for ( int i = 10, count = 0; count < iColors; i = ( i + 7 ) % iColors, count++ )
@@ -220,7 +220,7 @@ void VisualSettings::Load( const IniFile &ini )
     bEdo31Keys = ini.GetBool( "Visual", "Edo31Keys", bEdo31Keys );
     bStatsScaled = ini.GetBool( "Visual", "StatsScaled", bStatsScaled );
     iStatsSize = std::clamp( ini.GetInt( "Visual", "StatsSize", iStatsSize ), StatsSizeMin, StatsSizeMax );
-    iStatsFont = std::clamp( ini.GetInt( "Visual", "StatsFont", iStatsFont ), StatsFontMin, StatsFontMax );
+    iStatsCorner = ini.GetInt( "Visual", "StatsCorner", iStatsCorner ) & 3;
     bHideSpeedBoxes = ini.GetBool( "Visual", "HideSpeedBoxes", bHideSpeedBoxes );
 }
 
@@ -248,7 +248,7 @@ void VisualSettings::Save( IniFile &ini ) const
     ini.SetInt( "Visual", "Edo31Keys", bEdo31Keys );
     ini.SetInt( "Visual", "StatsScaled", bStatsScaled );
     ini.SetInt( "Visual", "StatsSize", iStatsSize );
-    ini.SetInt( "Visual", "StatsFont", iStatsFont );
+    ini.SetInt( "Visual", "StatsCorner", iStatsCorner );
     ini.SetInt( "Visual", "HideSpeedBoxes", bHideSpeedBoxes );
 }
 

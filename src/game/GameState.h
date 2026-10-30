@@ -161,14 +161,17 @@ private:
     // The stats box for the lines in uStats (VisualSettings::Stat bits)
     static int StatusLines( unsigned uStats );
     // Where the box goes in an iWidth x iHeight picture: fixed pixels, or scaled with the height
-    // (Visual tab), with its line spacing, padding and font
+    // (Visual tab), with its line spacing, padding and font, in the configured corner (iBottomY: where
+    // a bottom one ends)
     struct StatsBox
     {
         RECT rc;
         int iLineCY, iPadX, iPadY, iShadowX, iShadowY;
         int iFontCY;                    // 0: the Small font (fixed pixels); else Renderer::Stats at this height
     };
-    static StatsBox StatsLayout( int iWidth, int iHeight, int iLines );
+    static StatsBox StatsLayout( int iWidth, int iHeight, int iLines, int iBottomY );
+    // The bottom corners' iBottomY: the top of the keyboard's red bar, or the picture's bottom without it
+    int StatsBottom( const FrameGlobals &g, int iHeight ) const;
     // llPastEnd: how long the live view has stood at the song's end, so the NPS falls to 0 there too
     void RenderStatus( Renderer *pRenderer, const StatsBox &box, long long llTime, double dFPS, unsigned uStats, long long llPastEnd = 0 );
     void RenderMessage( LPRECT prcMsg, const wchar_t *sMsg );

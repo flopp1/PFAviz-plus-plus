@@ -288,14 +288,24 @@ void Scene::DrawBackground( Renderer *pRenderer, const FrameGlobals &g, const Sc
         }
 }
 
+static float TransitionCY( float fKeysCY )
+{
+    float fTransitionPct = .02f;
+    return max( 3.0f, floor( fKeysCY * fTransitionPct + 0.5f ) );
+}
+
+float Scene::RedBarY( const FrameGlobals &g )
+{
+    return g.fNotesY + g.fNotesCY + TransitionCY( g.iBufferHeight - g.fNotesCY );
+}
+
 void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c, const ChannelSettings *const pKeyColor[256] )
 {
     // Screen info
     float fKeysY = g.fNotesY + g.fNotesCY;
     float fKeysCY = g.iBufferHeight - g.fNotesCY;
 
-    float fTransitionPct = .02f;
-    float fTransitionCY = max( 3.0f, floor( fKeysCY * fTransitionPct + 0.5f ) );
+    float fTransitionCY = TransitionCY( fKeysCY );
     float fRedPct = .05f;
     float fRedCY = floor( fKeysCY * fRedPct + 0.5f );
     float fSpacerCY = 2.0f;

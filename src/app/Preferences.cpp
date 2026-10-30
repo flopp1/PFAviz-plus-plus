@@ -247,9 +247,8 @@ namespace
         CheckDlgButton( hWnd, IDC_EDO31KEYS, cVisual.bEdo31Keys ? BST_CHECKED : BST_UNCHECKED );
         CheckDlgButton( hWnd, IDC_STATSSCALED, cVisual.bStatsScaled ? BST_CHECKED : BST_UNCHECKED );
         SetDlgItemInt( hWnd, IDC_STATSSIZE, (UINT)cVisual.iStatsSize, FALSE );
-        SetDlgItemInt( hWnd, IDC_STATSFONT, (UINT)cVisual.iStatsFont, FALSE );
         EnableWindow( GetDlgItem( hWnd, IDC_STATSSIZE ), cVisual.bStatsScaled );
-        EnableWindow( GetDlgItem( hWnd, IDC_STATSFONT ), cVisual.bStatsScaled );
+        SendDlgItemMessageW( hWnd, IDC_STATSCORNER, CB_SETCURSEL, cVisual.iStatsCorner, 0 );
         CheckDlgButton( hWnd, IDC_HIDESPEEDBOXES, cVisual.bHideSpeedBoxes ? BST_CHECKED : BST_UNCHECKED );
         SetDlgItemTextW( hWnd, IDC_BKGIMAGE, cVisual.sBkgImage.c_str() );
         SendDlgItemMessageW( hWnd, IDC_BKGFIT, CB_SETCURSEL, cVisual.iBkgFit, 0 );
@@ -305,6 +304,9 @@ namespace
                 // By Renderer::ImageFit
                 for ( const wchar_t *s : { L"Fill (cropped)", L"Fit (whole image)", L"Stretch", L"Center", L"Tile" } )
                     SendDlgItemMessageW( hWnd, IDC_BKGFIT, CB_ADDSTRING, 0, ( LPARAM )s );
+                // By VisualSettings::StatsCorner bits
+                for ( const wchar_t *s : { L"Top right", L"Top left", L"Bottom right", L"Bottom left" } )
+                    SendDlgItemMessageW( hWnd, IDC_STATSCORNER, CB_ADDSTRING, 0, ( LPARAM )s );
                 SetVisualProc( hWnd, Config::GetConfig().GetVisualSettings() );
                 SetWindowSizeEdits( hWnd );
                 return TRUE;
@@ -353,7 +355,6 @@ namespace
                     {
                         BOOL bScaled = IsDlgButtonChecked( hWnd, IDC_STATSSCALED ) == BST_CHECKED;
                         EnableWindow( GetDlgItem( hWnd, IDC_STATSSIZE ), bScaled );
-                        EnableWindow( GetDlgItem( hWnd, IDC_STATSFONT ), bScaled );
                         return TRUE;
                     }
                     case IDC_STATSBOX:
@@ -460,9 +461,9 @@ namespace
                         SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_INVALID );
                         return TRUE;
                     }
-                    // The scaled stats box's size and font (not checked while it is off)
+                    // The scaled stats box's size (not checked while it is off)
                     bool bStatsScaled = IsDlgButtonChecked( hWnd, IDC_STATSSCALED ) == BST_CHECKED;
-                    int iStatsSize = cVisual.iStatsSize, iStatsFont = cVisual.iStatsFont;
+                    int iStatsSize = cVisual.iStatsSize;
                     if ( bStatsScaled )
                     {
                         UINT u = GetDlgItemInt( hWnd, IDC_STATSSIZE, &bOk, FALSE );
@@ -474,15 +475,6 @@ namespace
                             return TRUE;
                         }
                         iStatsSize = (int)u;
-                        u = GetDlgItemInt( hWnd, IDC_STATSFONT, &bOk, FALSE );
-                        if ( !bOk || u < (UINT)VisualSettings::StatsFontMin || u > (UINT)VisualSettings::StatsFontMax )
-                        {
-                            MessageBoxW( hWnd, L"Please specify a stats font size between 6 and 60 pixels (15 is the usual)", L"Error", MB_OK | MB_ICONEXCLAMATION );
-                            PostMessageW( hWnd, WM_NEXTDLGCTL, ( WPARAM )GetDlgItem( hWnd, IDC_STATSFONT ), TRUE );
-                            SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_INVALID );
-                            return TRUE;
-                        }
-                        iStatsFont = (int)u;
                     }
                     wchar_t sImage[1024] = {};
                     GetDlgItemTextW( hWnd, IDC_BKGIMAGE, sImage, 1024 );
@@ -527,7 +519,7 @@ namespace
                     cVisual.bEdo31Keys = IsDlgButtonChecked( hWnd, IDC_EDO31KEYS ) == BST_CHECKED;
                     cVisual.bStatsScaled = bStatsScaled;
                     cVisual.iStatsSize = iStatsSize;
-                    cVisual.iStatsFont = iStatsFont;
+                    cVisual.iStatsCorner = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_STATSCORNER, CB_GETCURSEL, 0, 0 ) );
                     bool bOldHideBoxes = cVisual.bHideSpeedBoxes;
                     cVisual.bHideSpeedBoxes = IsDlgButtonChecked( hWnd, IDC_HIDESPEEDBOXES ) == BST_CHECKED;
                     cVisual.iBkgFit = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_BKGFIT, CB_GETCURSEL, 0, 0 ) );

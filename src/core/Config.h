@@ -62,8 +62,9 @@ struct VisualSettings
     bool bEdo31Keys;            // the 256-key view in the 31-EDO layout (31 keys an octave; Scene.cpp)
     bool bStatsScaled;          // the stats box scales with the picture's height, as at 1080p (off: fixed pixels)
     int iStatsSize;             // scaled: the box's size, percent (StatsSizeMin to StatsSizeMax)
-    int iStatsFont;             // scaled: the text's height in pixels at 1080p and 100% (StatsFontMin to StatsFontMax)
-    static const int StatsSizeMin = 25, StatsSizeMax = 400, StatsFontMin = 6, StatsFontMax = 60;
+    int iStatsCorner;           // StatsCorner bits: where the box sits (0: top right)
+    enum StatsCorner { StatsLeft = 1, StatsBottom = 2 };    // bottom: on the keyboard's red bar
+    static const int StatsSizeMin = 25, StatsSizeMax = 400;
 };
 
 struct AudioSettings

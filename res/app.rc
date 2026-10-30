@@ -59,9 +59,8 @@ BEGIN
     LTEXT           "Si&ze:",IDC_STATIC,143,167,18,8
     EDITTEXT        IDC_STATSSIZE,162,164,26,14,ES_AUTOHSCROLL | ES_NUMBER
     LTEXT           "%",IDC_STATIC,191,167,8,8
-    LTEXT           "Fo&nt:",IDC_STATIC,203,167,18,8
-    EDITTEXT        IDC_STATSFONT,222,164,24,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "px at 1080p",IDC_STATIC,249,167,46,8
+    LTEXT           "Cor&ner:",IDC_STATIC,207,167,26,8
+    COMBOBOX        IDC_STATSCORNER,235,164,60,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     LTEXT           "&Window size:",IDC_STATIC,7,185,44,8
     EDITTEXT        IDC_WINWIDTH,53,183,34,14,ES_AUTOHSCROLL | ES_NUMBER
     LTEXT           "x",IDC_STATIC,91,185,8,8
@@ -215,7 +214,7 @@ BEGIN
     LTEXT           "0-51, lower is better (0: lossless in software)",IDC_STATIC,117,132,170,8
     LTEXT           "Encoder &preset:",IDC_STATIC,13,151,64,8
     COMBOBOX        IDC_VID_PRESET,80,149,72,120,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    CONTROL         "Show the &stats area (top right)",IDC_VID_STATS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,160,151,126,10
+    CONTROL         "Show the &stats area",IDC_VID_STATS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,160,151,126,10
     LTEXT           "The whole song is rendered off-screen at this size (with the current view and note speed) and encoded by ffmpeg, from the PATH or the current folder. The encoder is tried at this size first, so its own limits apply.",IDC_STATIC,13,167,274,26
     GROUPBOX        "",IDC_STATIC,7,201,286,64
     CONTROL         "Add a&udio",IDC_VID_AUDIOON,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,200,46,10
