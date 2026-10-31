@@ -74,6 +74,9 @@ void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
     int iLines = StatusLines( uStats );
 
     long long llLastPreview = 0, llSent = 0;
+    // The effects' state of its own (the live view's stays as it was)
+    Effects::Look look;
+    Effects::KeyLights lights;
 
     // The oldest frame read back goes to ffmpeg (and, a few times a second, to the progress popup)
     auto Emit = [&]() {
@@ -138,29 +141,16 @@ void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
         cap.Begin();
         r.Clear( 0x00000000 );
         r.BeginScene();
-        Scene::DrawBackground( &r, g, m_Colors );
-        meter.DrawMeasureLines( &r, g, m_Colors, meter.GetCurrentTick( llTime ) );
-        engine.DrawNotes( &r, g, m_vTrackSettings );
-        if ( m_bShowKB )
-        {
-            int aSlot[256];
-            engine.GetKeySlots( aSlot );
-            const ChannelSettings *pKeyColor[256];
-            for ( int i = 0; i < 256; i++ )
-                pKeyColor[i] = aSlot[i] < 0 ? nullptr : &m_vTrackSettings[aSlot[i] >> 4].aChannels[aSlot[i] & 15];
-            Scene::DrawKeys( &r, g, m_Colors, pKeyColor );
-        }
-        Scene::DrawBorder( &r, g, m_Colors );
-        if ( job.bShowStats && iLines )
-        {
+        DrawFrame( &r, g, engine, meter, meter.GetCurrentTick( llTime ), look, lights, [&]( float fDark ) {
+            if ( !job.bShowStats || !iLines ) return;
             const StatsBox box = StatsLayout( iW, iH, iLines, StatsBottom( g, iH ) );
             const RECT &rcStatus = box.rc;
             r.DrawRect( static_cast< float >( rcStatus.left ), static_cast< float >( rcStatus.top ),
                         static_cast< float >( rcStatus.right - rcStatus.left ), static_cast< float >( rcStatus.bottom - rcStatus.top ), 0x80000000 );
             r.BeginText();
-            RenderStatus( &r, box, llTime, job.iFPS, uStats );
+            RenderStatus( &r, box, llTime, job.iFPS, uStats, 0, fDark );
             r.EndText();
-        }
+        } );
         r.EndScene();
         cap.End();
     }

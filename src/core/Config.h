@@ -18,6 +18,34 @@ class IniFile;
 
 namespace PlayMode { enum State { Intro = 0, Splash = 1, Play = 160 }; }
 
+// Eye candy (Preferences > Effects; visual/Effects.h). All off by default, which draws the original's look
+struct EffectSettings
+{
+    void LoadDefaultValues();
+    void LoadConfigValues( const IniFile &ini );
+    void Save( IniFile &ini ) const;
+    bool Any() const { return bFlat || iDarkRoom || iVignette || iLightUp || ( iBloom && uBloom ) || eDecay; }
+
+    bool bFlat;                 // flat look: plain keys without the red bar, notes one flat colour without outlines
+    bool bFlatBorders;          // the flat keys have gaps between them (off: the white keys meet)
+    bool bOutlines;             // lit notes are lit only in their outlines (light-up, dark room, bloom); the rest stays as unlit
+    int iDarkRoom;              // percent: what is not lit is darkened that much
+    int iVignette;              // percent: the corners darkened that much more
+    int iLightUp;               // percent: playing notes and pressed keys lightened towards white
+    unsigned uLightUp;          // Target bits: what lights up
+    int iBloom;                 // percent: the glow's strength
+    unsigned uBloom;            // Target bits: what glows
+    int iBloomRadius;           // the glow's reach, pixels at 1080p
+    int iBloomThreshold;        // percent: TargetScene glows where it is brighter than this
+    int eDecay;                 // Decay: how the light fades while a note is held
+    int iDecayMs;               // the time it takes
+    int iDecayFloor;            // percent: the light left after it
+    int iReleaseMs;             // a key's light fading out after it is let go (not with DecayNone)
+    bool bStats;                // the stats box is drawn before the effects, so they change it too
+    enum Target { TargetNotes = 1, TargetKeys = 2, TargetScene = 4 };
+    enum Decay { DecayNone, DecayLinear, DecayExponential, DecaySmooth, DecayCount };
+};
+
 struct VisualSettings
 {
     void LoadDefaultValues();
@@ -65,6 +93,7 @@ struct VisualSettings
     int iStatsCorner;           // StatsCorner bits: where the box sits (0: top right)
     enum StatsCorner { StatsLeft = 1, StatsBottom = 2 };    // bottom: on the keyboard's red bar
     static const int StatsSizeMin = 25, StatsSizeMax = 400;
+    EffectSettings fx;
 };
 
 struct AudioSettings

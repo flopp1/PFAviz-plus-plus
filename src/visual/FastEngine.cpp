@@ -513,6 +513,7 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
 {
     long long llStart = Timer::NowMicroSecs();
     m_Stats = FrameStats();
+    m_vGlow.clear();
     for ( auto &v : m_aOwners ) v.clear();
     for ( size_t &c : m_aVertCount ) c = 0;
     if ( m_llEndHW == LLONG_MIN && !m_bResumed && m_llJump == LLONG_MIN ) return;
@@ -672,11 +673,38 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
         Renderer::RectVertices( nk.x, 0.0f, nk.cx, 1.0f, 0, 0, 0, 0, aCol );
         const float fX0 = aCol[0].x, fX1 = aCol[1].x;
         const bool bShortPath = !m_bPixelStats && fX1 > fX0;
+        const Effects::NoteLight *pLight = m_pLight;
+        std::vector< Renderer::GlowRect > &vGlow = m_aGlow[k];
+        vGlow.clear();
         for ( size_t o = 0; o < m_aOwners[k].size(); o++ )
         {
             vStart[o] = (uint32_t)iOut;
             const Owner &ow = m_aOwners[k][o];
-            const ChannelSettings &cs = vTracks[ow.uSlot >> 4].aChannels[ow.uSlot & 15];
+            // Effects: a note playing at the hit line is drawn lit, and glows over the rows it owns
+            const ChannelSettings *pcs = &vTracks[ow.uSlot >> 4].aChannels[ow.uSlot & 15];
+            ChannelSettings csLit;
+            if ( pLight && ow.llStart <= pLight->llNow && ow.llEnd > pLight->llNow )
+            {
+                const ChannelSettings &base = ( *pLight->pBase )[ow.uSlot >> 4].aChannels[ow.uSlot & 15];
+                const float fLight = Effects::Held( *pLight->pFx, pLight->llNow - ow.llStart );
+                csLit = pLight->bOutlines ? pLight->pLook->LitOutline( base, *pcs, fLight, pLight->bLightUp )
+                                          : pLight->pLook->Lit( base, *pcs, fLight, pLight->bLightUp );
+                pcs = &csLit;
+                if ( pLight->bGlow )
+                {
+                    // Over the owned rows: the note, or its outline (the note, then its inside in black)
+                    Renderer::SCREEN_VERTEX aOuter[12];
+                    Scene::NoteVertices( g, nk, ow.llStart, ow.llEnd, base, aOuter );
+                    auto Push = [&]( float x, float cx, float y0, float y1, D3DCOLOR c ) {
+                        if ( ow.iRowA != INT_MIN ) { y0 = std::max( y0, (float)ow.iRowA ); y1 = std::min( y1, (float)ow.iRowB ); }
+                        if ( y1 > y0 && cx > 0.0f ) vGlow.push_back( { x, y0, cx, y1 - y0, c } );
+                    };
+                    const float y0 = aOuter[0].y + 0.5f, y1 = aOuter[2].y + 0.5f;
+                    Push( nk.x, nk.cx, y0, y1, pLight->pLook->Glow( base, fLight ) );
+                    if ( pLight->bOutlines ) Push( nk.x + nk.fDeflate, nk.cx - nk.fDeflate * 2.0f, y0 + nk.fDeflate, y1 - nk.fDeflate, 0 );
+                }
+            }
+            const ChannelSettings &cs = *pcs;
             if ( bShortPath && ow.bShort && ow.iRowA != INT_MIN )
             {
                 if ( ow.iRowA >= ow.iRowB ) continue;       // owns nothing
@@ -811,6 +839,8 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
     for ( size_t q : vQueries ) { m_Stats.iQueries += q & ( ( size_t( 1 ) << 40 ) - 1 ); m_Stats.iLodBuckets += q >> 40; }
     m_Stats.dQueryMs = ( Timer::NowMicroSecs() - llStart ) / 1000.0;
     m_Stats.iKeys = vActive.size();
+    if ( m_pLight && m_pLight->bGlow )
+        for ( int k : vActive ) m_vGlow.insert( m_vGlow.end(), m_aGlow[k].begin(), m_aGlow[k].end() );
 
     // Instancing: the keys' columns, as RectVertices makes them (the -0.5, then + cx)
     if ( bInst )
@@ -878,12 +908,13 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
     m_Stats.dSweepMs = ( Timer::NowMicroSecs() - llStart ) / 1000.0;
 }
 
-void FastEngine::GetKeySlots( int aSlot[256] ) const
+void FastEngine::GetKeySlots( int aSlot[256], long long *pStart ) const
 {
     NoteView n;
     for ( int k = 0; k < 256; k++ )
     {
         aSlot[k] = -1;
+        if ( pStart ) pStart[k] = 0;
         const KeyStore &ks = m_Store.aKeys[k];
         if ( !ks.Size() ) continue;
         Bounds bd;
@@ -893,7 +924,12 @@ void FastEngine::GetKeySlots( int aSlot[256] ) const
         while ( ( j = ks.RightmostEnd( 0, hi, bd.llUEth1 ) ) >= 0 )
         {
             ks.Get( (size_t)j, n );
-            if ( Visible( m_Store, m_aCpos, k, (size_t)j, n, bd ) ) { aSlot[k] = (int)n.uSlot; break; }
+            if ( Visible( m_Store, m_aCpos, k, (size_t)j, n, bd ) )
+            {
+                aSlot[k] = (int)n.uSlot;
+                if ( pStart ) pStart[k] = Time( n.llStartU );
+                break;
+            }
             hi = (size_t)j;
         }
     }

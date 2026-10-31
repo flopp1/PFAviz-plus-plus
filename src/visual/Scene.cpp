@@ -103,6 +103,7 @@ FrameGlobals Scene::ComputeGlobals( const ViewInputs &in )
     g.llTimeSpan = in.llTimeSpan;
     g.uClean = in.uClean;
     g.bLines = in.bLines;
+    g.bFlat = in.bFlat;
 
     g.iStartNote = min( in.iFirstKey, in.iLastKey );
     g.iEndNote = max( in.iFirstKey, in.iLastKey );
@@ -296,11 +297,98 @@ static float TransitionCY( float fKeysCY )
 
 float Scene::RedBarY( const FrameGlobals &g )
 {
-    return g.fNotesY + g.fNotesCY + TransitionCY( g.iBufferHeight - g.fNotesCY );
+    return g.fNotesY + g.fNotesCY + ( g.bFlat ? 0.0f : TransitionCY( g.iBufferHeight - g.fNotesCY ) );
 }
 
-void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c, const ChannelSettings *const pKeyColor[256] )
+// a to b by t (0 to 1), each channel; a's alpha
+static D3DCOLOR MixRGB( D3DCOLOR a, D3DCOLOR b, float t )
 {
+    D3DCOLOR r = a & 0xFF000000;
+    for ( int s = 0; s < 24; s += 8 )
+    {
+        float ca = ( a >> s ) & 0xFF, cb = ( b >> s ) & 0xFF;
+        r |= (D3DCOLOR)std::clamp( (int)( ca + ( cb - ca ) * t + 0.5f ), 0, 255 ) << s;
+    }
+    return r;
+}
+
+// The flat look: plain keys from the notes' bottom down, without the red bar or any depth. Unpressed
+// keys are one colour each (white; black; 31-EDO: the half keys light grey, the full sharps grey);
+// a pressed key is its note's colour, lighter towards its top.
+static void DrawKeysFlat( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c, const ChannelSettings *const pKeyColor[256],
+                          const KeyLook *pLook )
+{
+    using namespace Scene;
+    const float fKeysY = g.fNotesY + g.fNotesCY;
+    const float fKeysCY = g.iBufferHeight - g.fNotesCY;
+    const D3DCOLOR cBlack = c.csKBBackground.iVeryDarkRGB;
+    pRenderer->DrawRect( g.fNotesX, fKeysY, g.fNotesCX, fKeysCY, cBlack );
+
+    const bool bBorders = !pLook || pLook->bBorders;
+    const float fKeyGap = bBorders ? max( 1.0f, floor( g.fWhiteCX * 0.05f + 0.5f ) ) : 0.0f;
+    const float fKeyGap1 = fKeyGap - floor( fKeyGap / 2.0f + 0.5f );
+    const float fSharpCY = floor( fKeysCY * 0.62f + 0.5f );
+    auto Lit = [&]( int i ) { return ( i >= 0 && i < 256 ) ? pKeyColor[i] : nullptr; };
+    // One key's face: pressed, or unpressed (in its own colours when the look gives them); and its glow
+    auto Face = [&]( int i, float x, float y, float cx, float cy, D3DCOLOR cUnlit ) {
+        if ( const ChannelSettings *pLit = Lit( i ) )
+        {
+            const D3DCOLOR cBottom = pLit->iPrimaryRGB, cTop = MixRGB( cBottom, 0x00FFFFFF, 0.3f );
+            pRenderer->DrawRect( x, y, cx, cy, cTop, cTop, cBottom, cBottom );
+        }
+        else
+        {
+            const ChannelSettings *pOwn = pLook && i >= 0 && i < 256 ? pLook->apUnlit[i] : nullptr;
+            pRenderer->DrawRect( x, y, cx, cy, pOwn ? pOwn->iPrimaryRGB : cUnlit );
+        }
+        if ( pLook && pLook->pGlow ) pLook->pGlow->push_back( { x, y, cx, cy, i >= 0 && i < 256 ? pLook->aGlow[i] : 0 } );
+    };
+
+    // The white keys
+    int iStartRender = ( Notes::IsSharp( g.iStartNote ) ? g.iStartNote - 1 : g.iStartNote );
+    int iEndRender = ( Notes::IsSharp( g.iEndNote ) && g.iEndNote < 255 ? g.iEndNote + 1 : g.iEndNote );
+    float fCurX = g.fNotesX + ( Notes::IsSharp( g.iStartNote ) ? g.fWhiteCX * ( SharpRatio / 2.0f - 1.0f ) : 0.0f );
+    for ( int i = iStartRender; i <= iEndRender; i++ )
+        if ( g.bEdo31 ? KeyLayer( g, i ) == 0 : !Notes::IsSharp( i ) )
+        {
+            Face( i, fCurX + fKeyGap1, fKeysY, g.fWhiteCX - fKeyGap, fKeysCY, c.csKBWhite.iPrimaryRGB );
+            if ( i == g.iMiddleC )
+            {
+                const ChannelSettings *pLit = Lit( i );
+                float fMXGap = floor( g.fWhiteCX * 0.25f + 0.5f );
+                float fMCX = g.fWhiteCX - fMXGap * 2.0f - fKeyGap;
+                float fMY = max( fKeysY + fKeysCY - fMCX - 5.0f, fKeysY + fSharpCY + 5.0f );
+                pRenderer->DrawRect( fCurX + fKeyGap1 + fMXGap, fMY, fMCX, fKeysY + fKeysCY - 5.0f - fMY,
+                                     pLit ? pLit->iDarkRGB : c.csKBWhite.iDarkRGB );
+            }
+            fCurX += g.fWhiteCX;
+        }
+
+    // The black keys (31-EDO: the half keys as tall, then the full ones half as tall over them)
+    if ( g.bEdo31 )
+    {
+        for ( int iLayer = 1; iLayer <= 2; iLayer++ )
+            for ( int i = g.iStartNote; i <= g.iEndNote; i++ )
+            {
+                if ( KeyLayer( g, i ) != iLayer ) continue;
+                const NoteKey nk = GetNoteKey( g, i );
+                const D3DCOLOR cKey = iLayer == 1 ? c.csKBHalf.iPrimaryRGB : Key31Of( i ).kind == Sharp ? c.csKBSharp31.iPrimaryRGB : cBlack;
+                Face( i, nk.x, fKeysY, nk.cx, iLayer == 1 ? fSharpCY : floor( fSharpCY * 0.5f + 0.5f ), cKey );
+            }
+        return;
+    }
+    for ( int i = g.iStartNote; i <= g.iEndNote; i++ )
+        if ( Notes::IsSharp( i ) )
+        {
+            const NoteKey nk = GetNoteKey( g, i );
+            Face( i, nk.x, fKeysY, nk.cx, fSharpCY, cBlack );
+        }
+}
+
+void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c, const ChannelSettings *const pKeyColor[256],
+                      const KeyLook *pLook )
+{
+    if ( g.bFlat ) return DrawKeysFlat( pRenderer, g, c, pKeyColor, pLook );
     // Screen info
     float fKeysY = g.fNotesY + g.fNotesCY;
     float fKeysCY = g.iBufferHeight - g.fNotesCY;
@@ -330,7 +418,7 @@ void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneCol
     float fStartX = ( Notes::IsSharp( g.iStartNote ) ? g.fWhiteCX * ( SharpRatio / 2.0f - 1.0f ) : 0.0f );
     float fSharpCY = fTopCY * 0.67f;
 
-    const ChannelSettings &csKBW = c.csKBWhite, &csKBB = c.csKBBackground, &csKBS = c.csKBSharp;
+    const ChannelSettings &csKBB = c.csKBBackground, &csKBS = c.csKBSharp;
 
     // Draw the white keys
     float fCurX = g.fNotesX + fStartX;
@@ -340,8 +428,11 @@ void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneCol
         if ( g.bEdo31 ? KeyLayer( g, i ) == 0 : !Notes::IsSharp( i ) )
         {
             const ChannelSettings *pLit = ( i >= 0 && i < 256 ) ? pKeyColor[i] : nullptr;
+            if ( pLook && pLook->pGlow )
+                pLook->pGlow->push_back( { fCurX + fKeyGap1, fCurY, g.fWhiteCX - fKeyGap, fTopCY + fNearCY, i >= 0 && i < 256 ? pLook->aGlow[i] : 0 } );
             if ( !pLit )
             {
+                const ChannelSettings &csKBW = pLook && i >= 0 && i < 256 && pLook->apUnlit[i] ? *pLook->apUnlit[i] : c.csKBWhite;
                 pRenderer->DrawRect( fCurX + fKeyGap1 , fCurY, g.fWhiteCX - fKeyGap, fTopCY + fNearCY,
                     csKBW.iDarkRGB, csKBW.iDarkRGB, csKBW.iPrimaryRGB, csKBW.iPrimaryRGB );
                 pRenderer->DrawRect( fCurX + fKeyGap1 , fCurY + fTopCY, g.fWhiteCX - fKeyGap, fNearCY,
@@ -475,8 +566,10 @@ void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneCol
                 float fExtend = ( iLayer == 1 ? fPressedHalfRise : fPressedFullRise ) - fPressedRise;
                 float fDrop = fNearCY - ( iLayer == 1 ? fHalfRise : fFullRise );
                 float fRaise = iLayer == 2 ? ( bUnderLit ? fPressedHalfRise : fHalfRise ) : 0.0f;
-                DrawSharp( x, cx, fSharpTopX1, fSharpTopX2, iLayer == 1 ? fSharpCY : fSharpCY * 0.5f, cs, pKeyColor[i],
-                           fExtend, fDrop, fRaise );
+                if ( pLook && pLook->pGlow )
+                    pLook->pGlow->push_back( { x, fCurY - fNearCY, cx, fNearCY + ( iLayer == 1 ? fSharpCY : fSharpCY * 0.5f ), pLook->aGlow[i] } );
+                DrawSharp( x, cx, fSharpTopX1, fSharpTopX2, iLayer == 1 ? fSharpCY : fSharpCY * 0.5f,
+                           pLook && pLook->apUnlit[i] ? *pLook->apUnlit[i] : cs, pKeyColor[i], fExtend, fDrop, fRaise );
             }
         return;
     }
@@ -503,7 +596,10 @@ void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneCol
             const float fSharpTopX1 = x + g.fWhiteCX * ( SharpRatio - fSharpTop ) / 2.0f;
             const float fSharpTopX2 = fSharpTopX1 + g.fWhiteCX * fSharpTop;
 
-            DrawSharp( x, cx, fSharpTopX1, fSharpTopX2, fSharpCY, csKBS, ( i >= 0 && i < 256 ) ? pKeyColor[i] : nullptr, 0.0f, 0.0f, 0.0f );
+            const bool bKey = i >= 0 && i < 256;
+            if ( pLook && pLook->pGlow ) pLook->pGlow->push_back( { x, fCurY - fNearCY, cx, fNearCY + fSharpCY, bKey ? pLook->aGlow[i] : 0 } );
+            DrawSharp( x, cx, fSharpTopX1, fSharpTopX2, fSharpCY, pLook && bKey && pLook->apUnlit[i] ? *pLook->apUnlit[i] : csKBS,
+                       bKey ? pKeyColor[i] : nullptr, 0.0f, 0.0f, 0.0f );
         }
 }
 

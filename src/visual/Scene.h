@@ -57,6 +57,7 @@ struct ViewInputs
     unsigned uClean = 0;              // Clean flags (0: the original's drawing)
     bool bLines = true;               // the key dividers and measure lines
     bool bEdo31 = false;              // the 256-key view in the 31-EDO layout (Visual tab)
+    bool bFlat = false;               // the effects' flat look (DrawKeys)
 };
 
 struct FrameGlobals
@@ -71,6 +72,16 @@ struct FrameGlobals
     unsigned uClean;
     bool bLines;
     bool bEdo31 = false;              // 31-EDO layout: 8 octaves of 31 keys and C to D#, by Scene's key table
+    bool bFlat = false;               // flat keys, from the notes' bottom down, without the red bar
+};
+
+// The effects' changes to the keyboard (visual/Effects.h)
+struct KeyLook
+{
+    const ChannelSettings *apUnlit[256] = {};   // an unpressed key's colours instead of the scene's (its light fading out), or null
+    D3DCOLOR aGlow[256] = {};                   // each key's glow (0: none, drawn black, so it hides the glow of the keys under it)
+    std::vector< Renderer::GlowRect > *pGlow = nullptr;     // the keys' glow rects go here (null: none)
+    bool bBorders = true;                                   // the flat look: gaps between the white keys (off: they meet)
 };
 
 namespace Scene
@@ -100,8 +111,9 @@ namespace Scene
 
     void DrawBackground( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c ); // field + vertical lines
     // pKeyColor[i] is the colour of the note lighting key i, or nullptr when the key is not lit
-    void DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c, const ChannelSettings *const pKeyColor[256] );
-    // The top of the keyboard's red bar (DrawKeys)
+    void DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c, const ChannelSettings *const pKeyColor[256],
+                   const KeyLook *pLook = nullptr );
+    // The top of the keyboard's red bar (DrawKeys; the flat look: of the keys)
     float RedBarY( const FrameGlobals &g );
     void DrawBorder( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c );
 }

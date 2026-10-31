@@ -94,6 +94,56 @@ BEGIN
     LTEXT           "",IDC_KDMAPISTATUS,7,76,286,44
 END
 
+IDD_PP6_EFFECTS DIALOGEX 0, 0, 300, 276
+STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_DISABLED | WS_CAPTION
+CAPTION "Property Page"
+FONT 8, "MS Shell Dlg", 400, 0, 0x0
+BEGIN
+    LTEXT           "Eye candy for the window and for rendered videos. All of it is off at 0.",IDC_STATIC,7,7,286,8
+    CONTROL         "&Flat look: plain black and white keys without the red bar, notes in one flat colour without outlines",IDC_FX_FLAT,"Button",BS_AUTOCHECKBOX | BS_MULTILINE | WS_TABSTOP,7,20,286,18
+    CONTROL         "&Gaps between the white keys",IDC_FX_FLATBORDERS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,19,40,120,10
+    CONTROL         "Light only the playing notes' o&utlines",IDC_FX_OUTLINES,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,150,40,143,10
+    GROUPBOX        "Dark room",IDC_STATIC,7,56,288,30
+    LTEXT           "&Darken what is not lit by:",IDC_STATIC,13,69,84,8
+    EDITTEXT        IDC_FX_DARK,99,67,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "%",IDC_STATIC,130,69,8,8
+    LTEXT           "&Vignette:",IDC_STATIC,160,69,32,8
+    EDITTEXT        IDC_FX_VIGNETTE,194,67,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "%",IDC_STATIC,225,69,8,8
+    GROUPBOX        "Light-up",IDC_STATIC,7,90,288,30
+    LTEXT           "&Lighten towards white by:",IDC_STATIC,13,103,84,8
+    EDITTEXT        IDC_FX_LIGHTUP,99,101,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "%",IDC_STATIC,130,103,8,8
+    CONTROL         "Playing &notes",IDC_FX_LIGHTNOTES,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,160,103,60,10
+    CONTROL         "Pressed &keys",IDC_FX_LIGHTKEYS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,224,103,62,10
+    GROUPBOX        "Bloom",IDC_STATIC,7,124,288,48
+    LTEXT           "&Strength:",IDC_STATIC,13,137,32,8
+    EDITTEXT        IDC_FX_BLOOM,47,135,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "%",IDC_STATIC,78,137,8,8
+    LTEXT           "&Radius:",IDC_STATIC,94,137,26,8
+    EDITTEXT        IDC_FX_RADIUS,122,135,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "px at 1080p",IDC_STATIC,153,137,40,8
+    LTEXT           "&Threshold:",IDC_STATIC,200,137,36,8
+    EDITTEXT        IDC_FX_THRESHOLD,238,135,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "%",IDC_STATIC,269,137,8,8
+    LTEXT           "Glow from:",IDC_STATIC,13,155,36,8
+    CONTROL         "Playing n&otes",IDC_FX_GLOWNOTES,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,53,155,60,10
+    CONTROL         "Pressed ke&ys",IDC_FX_GLOWKEYS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,117,155,58,10
+    CONTROL         "The &whole scene",IDC_FX_GLOWSCENE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,179,155,112,10
+    GROUPBOX        "Light over time (light-up, dark room and bloom of what is lit)",IDC_STATIC,7,176,288,62
+    LTEXT           "&Curve:",IDC_STATIC,13,190,24,8
+    COMBOBOX        IDC_FX_DECAY,39,188,70,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "A held note's light &fades over",IDC_STATIC,13,208,100,8
+    EDITTEXT        IDC_FX_DECAYMS,115,206,32,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "ms to",IDC_STATIC,150,208,20,8
+    EDITTEXT        IDC_FX_FLOOR,172,206,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "% of it",IDC_STATIC,203,208,24,8
+    LTEXT           "A key let go fades out &over",IDC_STATIC,13,224,100,8
+    EDITTEXT        IDC_FX_RELEASEMS,115,222,32,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "ms",IDC_STATIC,150,224,12,8
+    CONTROL         "The effects also change the stats &box",IDC_FX_STATS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,7,246,286,10
+END
+
 IDD_PP4_CONTROLS DIALOGEX 0, 0, 300, 212
 STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_DISABLED | WS_CAPTION
 CAPTION "Property Page"

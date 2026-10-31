@@ -5,6 +5,7 @@
 #pragma once
 
 #include <windows.h>
+#include <functional>
 #include <memory>
 #include <string>
 #include <utility>
@@ -17,6 +18,7 @@
 #include "midi/RefMidi.h"
 #include "render/Image.h"
 #include "render/Renderer.h"
+#include "visual/Effects.h"
 #include "visual/FastEngine.h"
 #include "visual/Scene.h"
 
@@ -156,7 +158,14 @@ private:
 
     ViewInputs GetViewInputs( int iWidth, int iHeight, long long llStartTime ) const;
     void RenderGlobals();
-    void RenderText();
+    // The scene (background, measure lines, notes, keyboard, border) under the effects (visual/Effects.h),
+    // then fnStats( fDark ) for the stats box: inside the effects (fDark: their darkening) when they apply
+    // to it, else over them (1). With the effects off, exactly the original's drawing. pNotesUs: the
+    // times DrawNotes started and ended.
+    void DrawFrame( Renderer *pRenderer, const FrameGlobals &g, FastEngine &engine, const MeterTracker &meter, long long iTick,
+                    Effects::Look &look, Effects::KeyLights &lights, const std::function< void( float ) > &fnStats, long long *pNotesUs = nullptr );
+    void RenderStats( float fDark );        // the live stats box
+    void RenderText();                      // the live messages
     // The stats box: its line count (0: not drawn) and its text, with the lines the settings show
     // The stats box for the lines in uStats (VisualSettings::Stat bits)
     static int StatusLines( unsigned uStats );
@@ -173,7 +182,8 @@ private:
     // The bottom corners' iBottomY: the top of the keyboard's red bar, or the picture's bottom without it
     int StatsBottom( const FrameGlobals &g, int iHeight ) const;
     // llPastEnd: how long the live view has stood at the song's end, so the NPS falls to 0 there too
-    void RenderStatus( Renderer *pRenderer, const StatsBox &box, long long llTime, double dFPS, unsigned uStats, long long llPastEnd = 0 );
+    // fDark: the text's colours times this (the effects' dark room)
+    void RenderStatus( Renderer *pRenderer, const StatsBox &box, long long llTime, double dFPS, unsigned uStats, long long llPastEnd = 0, float fDark = 1.0f );
     void RenderMessage( LPRECT prcMsg, const wchar_t *sMsg );
 
     // Song
@@ -235,6 +245,9 @@ private:
     bool m_bShowKB;
     SceneColors m_Colors;
     std::vector< TrackSettings > m_vTrackSettings;
+    unsigned m_uTracksGen = 0;      // counts changes to m_vTrackSettings (the effects copy its colours)
+    Effects::Look m_Look;
+    Effects::KeyLights m_KeyLights;
     bool m_bHiddenChanged = false;  // the draw view needs the new hidden channels
     // The background image, loaded when its file setting changes (shared with the video renderer)
     std::shared_ptr< const Image > m_pBkgImage;

@@ -54,6 +54,7 @@ Renderer::~Renderer()
     if ( m_pInstVS ) m_pInstVS->Release();
     if ( m_pInstPS ) m_pInstPS->Release();
     if ( m_pInstDecl ) m_pInstDecl->Release();
+    for ( IDirect3DPixelShader9 *p : { m_pDownPS, m_pBlurPS, m_pCompositePS } ) if ( p ) p->Release();
     delete m_pText;
     if ( m_pDevice ) m_pDevice->Release();
     if ( m_pD3D ) m_pD3D->Release();
@@ -237,6 +238,7 @@ void Renderer::DestroyDeviceObjects()
     if ( m_pTmplIB ) { m_pTmplIB->Release(); m_pTmplIB = nullptr; }
     if ( m_pInstVB ) { m_pInstVB->Release(); m_pInstVB = nullptr; }
     if ( m_pBkgTex ) { m_pBkgTex->Release(); m_pBkgTex = nullptr; }
+    ReleasePostTargets();
     m_bIsDeviceValid = false;
 }
 
@@ -772,25 +774,30 @@ void Renderer::DrawBackgroundImage( float x, float y, float cx, float cy )
     struct TexVertex { float x, y, z, h; D3DCOLOR c; float u, v; };
     // The diffuse alpha is 1 - opacity: with the image's inverted alpha, D3DTOP_ADDSMOOTH makes
     // 1 - opacity * image alpha, which the inverted blend (Renderer.h) takes as the image's share
-    D3DCOLOR c = ( (DWORD)std::clamp( (int)( ( 1.0f - m_fBkgOpacity ) * 255.0f + 0.5f ), 0, 255 ) << 24 ) | 0x00FFFFFF;
+    // (the RGB: the tint, which darkens it for the effects' dark room)
+    const DWORD dwTint = (DWORD)std::clamp( (int)( m_fBkgTint * 255.0f + 0.5f ), 0, 255 );
+    D3DCOLOR c = ( (DWORD)std::clamp( (int)( ( 1.0f - m_fBkgOpacity ) * 255.0f + 0.5f ), 0, 255 ) << 24 ) | dwTint * 0x010101;
     const TexVertex v[4] = {
         { x0 - 0.5f, y0 - 0.5f, 0.5f, 1.0f, c, u0, v0 },
         { x1 - 0.5f, y0 - 0.5f, 0.5f, 1.0f, c, u1, v0 },
         { x0 - 0.5f, y1 - 0.5f, 0.5f, 1.0f, c, u0, v1 },
         { x1 - 0.5f, y1 - 0.5f, 0.5f, 1.0f, c, u1, v1 },
     };
-    static const D3DTEXTURESTAGESTATETYPE aStage[] = { D3DTSS_COLOROP, D3DTSS_COLORARG1, D3DTSS_ALPHAOP, D3DTSS_ALPHAARG1, D3DTSS_ALPHAARG2 };
+    static const D3DTEXTURESTAGESTATETYPE aStage[] = { D3DTSS_COLOROP, D3DTSS_COLORARG1, D3DTSS_ALPHAOP, D3DTSS_ALPHAARG1, D3DTSS_ALPHAARG2, D3DTSS_COLORARG2 };
     static const D3DSAMPLERSTATETYPE aSamp[] = { D3DSAMP_ADDRESSU, D3DSAMP_ADDRESSV, D3DSAMP_MINFILTER, D3DSAMP_MAGFILTER, D3DSAMP_MIPFILTER };
-    DWORD aOldStage[5], aOldSamp[5];
-    for ( int i = 0; i < 5; i++ ) { m_pDevice->GetTextureStageState( 0, aStage[i], &aOldStage[i] ); m_pDevice->GetSamplerState( 0, aSamp[i], &aOldSamp[i] ); }
+    DWORD aOldStage[6], aOldSamp[5];
+    for ( int i = 0; i < 6; i++ ) m_pDevice->GetTextureStageState( 0, aStage[i], &aOldStage[i] );
+    for ( int i = 0; i < 5; i++ ) m_pDevice->GetSamplerState( 0, aSamp[i], &aOldSamp[i] );
     const DWORD dwAddress = m_eBkgFit == FitTile ? D3DTADDRESS_WRAP : D3DTADDRESS_CLAMP;
-    const DWORD aNewStage[5] = { D3DTOP_SELECTARG1, D3DTA_TEXTURE, D3DTOP_ADDSMOOTH, D3DTA_TEXTURE, D3DTA_DIFFUSE };
+    const DWORD aNewStage[6] = { dwTint < 255 ? D3DTOP_MODULATE : D3DTOP_SELECTARG1, D3DTA_TEXTURE, D3DTOP_ADDSMOOTH, D3DTA_TEXTURE, D3DTA_DIFFUSE, D3DTA_DIFFUSE };
     const DWORD aNewSamp[5] = { dwAddress, dwAddress, D3DTEXF_LINEAR, D3DTEXF_LINEAR, D3DTEXF_LINEAR };
-    for ( int i = 0; i < 5; i++ ) { m_pDevice->SetTextureStageState( 0, aStage[i], aNewStage[i] ); m_pDevice->SetSamplerState( 0, aSamp[i], aNewSamp[i] ); }
+    for ( int i = 0; i < 6; i++ ) m_pDevice->SetTextureStageState( 0, aStage[i], aNewStage[i] );
+    for ( int i = 0; i < 5; i++ ) m_pDevice->SetSamplerState( 0, aSamp[i], aNewSamp[i] );
     m_pDevice->SetTexture( 0, m_pBkgTex );
     m_pDevice->SetFVF( D3DFVF_XYZRHW | D3DFVF_DIFFUSE | D3DFVF_TEX1 );
     m_pDevice->DrawPrimitiveUP( D3DPT_TRIANGLESTRIP, 2, v, sizeof( TexVertex ) );
     m_pDevice->SetTexture( 0, nullptr );
-    for ( int i = 0; i < 5; i++ ) { m_pDevice->SetTextureStageState( 0, aStage[i], aOldStage[i] ); m_pDevice->SetSamplerState( 0, aSamp[i], aOldSamp[i] ); }
+    for ( int i = 0; i < 6; i++ ) m_pDevice->SetTextureStageState( 0, aStage[i], aOldStage[i] );
+    for ( int i = 0; i < 5; i++ ) m_pDevice->SetSamplerState( 0, aSamp[i], aOldSamp[i] );
     m_pDevice->SetFVF( SCREEN_VERTEX::FVF );
 }

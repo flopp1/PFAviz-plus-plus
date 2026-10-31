@@ -594,6 +594,106 @@ namespace
     }
 
     //-------------------------------------------------------------------------
+    // Effects (EffectSettings; visual/Effects.h)
+    //-------------------------------------------------------------------------
+
+    struct FxNumber { int iId; int EffectSettings::*pValue; int iMin, iMax; const wchar_t *sName; };
+    const FxNumber aFxNumbers[] = {
+        { IDC_FX_DARK, &EffectSettings::iDarkRoom, 0, 100, L"the dark room's darkening (0 to 100%)" },
+        { IDC_FX_VIGNETTE, &EffectSettings::iVignette, 0, 100, L"the vignette (0 to 100%)" },
+        { IDC_FX_LIGHTUP, &EffectSettings::iLightUp, 0, 100, L"the light-up (0 to 100%)" },
+        { IDC_FX_BLOOM, &EffectSettings::iBloom, 0, 400, L"the bloom's strength (0 to 400%)" },
+        { IDC_FX_RADIUS, &EffectSettings::iBloomRadius, 1, 200, L"the bloom's radius (1 to 200 pixels)" },
+        { IDC_FX_THRESHOLD, &EffectSettings::iBloomThreshold, 0, 99, L"the bloom's threshold (0 to 99%)" },
+        { IDC_FX_DECAYMS, &EffectSettings::iDecayMs, 1, 60000, L"the fade's time (1 to 60000 ms)" },
+        { IDC_FX_FLOOR, &EffectSettings::iDecayFloor, 0, 100, L"the light left after the fade (0 to 100%)" },
+        { IDC_FX_RELEASEMS, &EffectSettings::iReleaseMs, 0, 60000, L"the let-go keys' fade (0 to 60000 ms)" },
+    };
+    struct FxCheck { int iId; unsigned EffectSettings::*pBits; unsigned uBit; };
+    const FxCheck aFxChecks[] = {
+        { IDC_FX_LIGHTNOTES, &EffectSettings::uLightUp, EffectSettings::TargetNotes },
+        { IDC_FX_LIGHTKEYS, &EffectSettings::uLightUp, EffectSettings::TargetKeys },
+        { IDC_FX_GLOWNOTES, &EffectSettings::uBloom, EffectSettings::TargetNotes },
+        { IDC_FX_GLOWKEYS, &EffectSettings::uBloom, EffectSettings::TargetKeys },
+        { IDC_FX_GLOWSCENE, &EffectSettings::uBloom, EffectSettings::TargetScene },
+    };
+
+    // The fade's times and floor mean nothing without a curve
+    VOID EnableFxDecay( HWND hWnd )
+    {
+        BOOL bOn = SendDlgItemMessageW( hWnd, IDC_FX_DECAY, CB_GETCURSEL, 0, 0 ) > 0;
+        for ( int iId : { IDC_FX_DECAYMS, IDC_FX_FLOOR, IDC_FX_RELEASEMS } ) EnableWindow( GetDlgItem( hWnd, iId ), bOn );
+    }
+
+    INT_PTR CALLBACK EffectsProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
+    {
+        switch ( msg )
+        {
+            case WM_INITDIALOG:
+            {
+                const EffectSettings &fx = Config::GetConfig().GetVisualSettings().fx;
+                CheckDlgButton( hWnd, IDC_FX_FLAT, fx.bFlat ? BST_CHECKED : BST_UNCHECKED );
+                CheckDlgButton( hWnd, IDC_FX_FLATBORDERS, fx.bFlatBorders ? BST_CHECKED : BST_UNCHECKED );
+                EnableWindow( GetDlgItem( hWnd, IDC_FX_FLATBORDERS ), fx.bFlat );
+                CheckDlgButton( hWnd, IDC_FX_OUTLINES, fx.bOutlines ? BST_CHECKED : BST_UNCHECKED );
+                CheckDlgButton( hWnd, IDC_FX_STATS, fx.bStats ? BST_CHECKED : BST_UNCHECKED );
+                for ( const FxNumber &n : aFxNumbers ) SetDlgItemInt( hWnd, n.iId, (UINT)( fx.*n.pValue ), FALSE );
+                for ( const FxCheck &c : aFxChecks ) CheckDlgButton( hWnd, c.iId, ( fx.*c.pBits & c.uBit ) ? BST_CHECKED : BST_UNCHECKED );
+                // By EffectSettings::Decay
+                for ( const wchar_t *s : { L"None (steady)", L"Linear", L"Exponential", L"Smooth" } )
+                    SendDlgItemMessageW( hWnd, IDC_FX_DECAY, CB_ADDSTRING, 0, ( LPARAM )s );
+                SendDlgItemMessageW( hWnd, IDC_FX_DECAY, CB_SETCURSEL, fx.eDecay, 0 );
+                EnableFxDecay( hWnd );
+                return TRUE;
+            }
+            case WM_COMMAND:
+                if ( LOWORD( wParam ) == IDC_FX_DECAY && HIWORD( wParam ) == CBN_SELCHANGE ) EnableFxDecay( hWnd );
+                if ( LOWORD( wParam ) == IDC_FX_FLAT )
+                    EnableWindow( GetDlgItem( hWnd, IDC_FX_FLATBORDERS ), IsDlgButtonChecked( hWnd, IDC_FX_FLAT ) == BST_CHECKED );
+                if ( HIWORD( wParam ) == BN_CLICKED || HIWORD( wParam ) == EN_CHANGE || HIWORD( wParam ) == CBN_SELCHANGE ) Changed( hWnd );
+                break;
+            case WM_NOTIFY:
+                if ( ( ( LPNMHDR )lParam )->code == PSN_APPLY )
+                {
+                    Config &config = Config::GetConfig();
+                    VisualSettings cVisual = config.GetVisualSettings();
+                    EffectSettings &fx = cVisual.fx;
+                    for ( const FxNumber &n : aFxNumbers )
+                    {
+                        BOOL bOk;
+                        UINT u = GetDlgItemInt( hWnd, n.iId, &bOk, FALSE );
+                        if ( !IsWindowEnabled( GetDlgItem( hWnd, n.iId ) ) ) continue;
+                        if ( !bOk || u < (UINT)n.iMin || u > (UINT)n.iMax )
+                        {
+                            wchar_t buf[160];
+                            swprintf( buf, 160, L"Please specify %ls", n.sName );
+                            MessageBoxW( hWnd, buf, L"Error", MB_OK | MB_ICONEXCLAMATION );
+                            PostMessageW( hWnd, WM_NEXTDLGCTL, ( WPARAM )GetDlgItem( hWnd, n.iId ), TRUE );
+                            SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_INVALID );
+                            return TRUE;
+                        }
+                        fx.*n.pValue = (int)u;
+                    }
+                    for ( const FxCheck &c : aFxChecks )
+                    {
+                        if ( IsDlgButtonChecked( hWnd, c.iId ) == BST_CHECKED ) fx.*c.pBits |= c.uBit;
+                        else fx.*c.pBits &= ~c.uBit;
+                    }
+                    fx.bFlat = IsDlgButtonChecked( hWnd, IDC_FX_FLAT ) == BST_CHECKED;
+                    fx.bFlatBorders = IsDlgButtonChecked( hWnd, IDC_FX_FLATBORDERS ) == BST_CHECKED;
+                    fx.bOutlines = IsDlgButtonChecked( hWnd, IDC_FX_OUTLINES ) == BST_CHECKED;
+                    fx.bStats = IsDlgButtonChecked( hWnd, IDC_FX_STATS ) == BST_CHECKED;
+                    fx.eDecay = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_FX_DECAY, CB_GETCURSEL, 0, 0 ) );
+                    config.SetVisualSettings( cVisual );
+                    SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_NOERROR );
+                    return TRUE;
+                }
+                break;
+        }
+        return FALSE;
+    }
+
+    //-------------------------------------------------------------------------
     // Controls (the General group of the original)
     //-------------------------------------------------------------------------
 
@@ -835,11 +935,12 @@ namespace
 
 VOID DoPreferences( HWND hWndOwner )
 {
-    const int aDialogs[] = { IDD_PP1_VISUAL, IDD_PP2_AUDIO, IDD_PP4_CONTROLS, IDD_PP5_PERFORMANCE };
-    const DLGPROC aProcs[] = { VisualProc, AudioProc, ControlsProc, PerformanceProc };
-    const wchar_t *const aTitles[] = { L"Visual", L"Audio", L"Controls", L"Performance" };
-    PROPSHEETPAGEW psp[4] = {};
-    for ( int i = 0; i < 4; i++ )
+    const int aDialogs[] = { IDD_PP1_VISUAL, IDD_PP6_EFFECTS, IDD_PP2_AUDIO, IDD_PP4_CONTROLS, IDD_PP5_PERFORMANCE };
+    const DLGPROC aProcs[] = { VisualProc, EffectsProc, AudioProc, ControlsProc, PerformanceProc };
+    const wchar_t *const aTitles[] = { L"Visual", L"Effects", L"Audio", L"Controls", L"Performance" };
+    const int iPages = 5;
+    PROPSHEETPAGEW psp[iPages] = {};
+    for ( int i = 0; i < iPages; i++ )
     {
         psp[i].dwSize = sizeof( PROPSHEETPAGEW );
         psp[i].dwFlags = PSP_USETITLE;
@@ -854,7 +955,7 @@ VOID DoPreferences( HWND hWndOwner )
     psh.hwndParent = hWndOwner;
     psh.hInstance = g_hInstance;
     psh.pszCaption = L"Preferences";
-    psh.nPages = 4;
+    psh.nPages = iPages;
     psh.ppsp = psp;
     PropertySheetW( &psh );
 }

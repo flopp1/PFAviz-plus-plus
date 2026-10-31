@@ -115,6 +115,7 @@ void MainScreen::HideChannel( int iTrack, int iChannel, bool bHidden )
 {
     bool &b = m_vTrackSettings[iTrack].aChannels[iChannel].bHidden;
     if ( b != bHidden ) m_bHiddenChanged = true;
+    m_uTracksGen++;
     b = bHidden;
 }
 
@@ -128,10 +129,12 @@ void MainScreen::ColorChannel( int iTrack, int iChannel, unsigned int iColor, bo
 {
     if ( bRandom ) m_vTrackSettings[iTrack].aChannels[iChannel].SetColor();
     else m_vTrackSettings[iTrack].aChannels[iChannel].SetColor( iColor );
+    m_uTracksGen++;
 }
 
 ChannelSettings *MainScreen::GetChannelSettings( int iTrack, int *piTrack, int *piChannel )
 {
+    m_uTracksGen++;     // (the caller may change it)
     const std::vector< RefTrackInfo > &vTracks = m_pSong->vTracks;
     int iPos = 0;
     for ( size_t i = 0; i < vTracks.size(); i++ )
@@ -153,6 +156,7 @@ void MainScreen::SetChannelColors( const unsigned *aColor, int iColors )
 {
     const std::vector< RefTrackInfo > &vTracks = m_pSong->vTracks;
     bool bLoop = Config::GetConfig().GetVisualSettings().bLoopColors;
+    m_uTracksGen++;
     size_t iPos = 0, n = (size_t)std::max( 1, iColors );
     for ( size_t i = 0; i < vTracks.size(); i++ )
         for ( int j = 0; j < 16; j++ )
@@ -615,21 +619,9 @@ GameState::GameError MainScreen::Render()
     long long tA = Timer::NowMicroSecs();
     m_pRenderer->Clear( 0x00000000 );
     m_pRenderer->BeginScene();
-    Scene::DrawBackground( m_pRenderer, m_G, m_Colors );
-    m_pMeter->DrawMeasureLines( m_pRenderer, m_G, m_Colors, m_iStartTick );
-    long long tB = Timer::NowMicroSecs();
-    m_pEngine->DrawNotes( m_pRenderer, m_G, m_vTrackSettings );
-    long long tC = Timer::NowMicroSecs();
-    if ( m_bShowKB )
-    {
-        int aSlot[256];
-        m_pEngine->GetKeySlots( aSlot );
-        const ChannelSettings *pKeyColor[256];
-        for ( int i = 0; i < 256; i++ )
-            pKeyColor[i] = aSlot[i] < 0 ? nullptr : &m_vTrackSettings[aSlot[i] >> 4].aChannels[aSlot[i] & 15];
-        Scene::DrawKeys( m_pRenderer, m_G, m_Colors, pKeyColor );
-    }
-    Scene::DrawBorder( m_pRenderer, m_G, m_Colors );
+    long long aNotesUs[2];
+    DrawFrame( m_pRenderer, m_G, *m_pEngine, *m_pMeter, m_iStartTick, m_Look, m_KeyLights, [&]( float fDark ) { RenderStats( fDark ); }, aNotesUs );
+    long long tB = aNotesUs[0], tC = aNotesUs[1];
     RenderText();
     m_pRenderer->EndScene();
     long long tD = Timer::NowMicroSecs();
@@ -668,32 +660,155 @@ ViewInputs MainScreen::GetViewInputs( int iWidth, int iHeight, long long llStart
     in.uClean = cVisual.uClean;
     in.bLines = !cVisual.bHideLines;
     in.bEdo31 = cVisual.bEdo31Keys;
+    in.bFlat = cVisual.fx.bFlat;
     return in;
+}
+
+// The scene's drawing, shared by the window and the video renderer
+void MainScreen::DrawFrame( Renderer *pRenderer, const FrameGlobals &g, FastEngine &engine, const MeterTracker &meter, long long iTick,
+                            Effects::Look &look, Effects::KeyLights &lights, const std::function< void( float ) > &fnStats, long long *pNotesUs )
+{
+    const EffectSettings &fx = Config::GetConfig().GetVisualSettings().fx;
+    if ( !fx.Any() )
+    {
+        Scene::DrawBackground( pRenderer, g, m_Colors );
+        meter.DrawMeasureLines( pRenderer, g, m_Colors, iTick );
+        if ( pNotesUs ) pNotesUs[0] = Timer::NowMicroSecs();
+        engine.DrawNotes( pRenderer, g, m_vTrackSettings );
+        if ( pNotesUs ) pNotesUs[1] = Timer::NowMicroSecs();
+        if ( m_bShowKB )
+        {
+            int aSlot[256];
+            engine.GetKeySlots( aSlot );
+            const ChannelSettings *pKeyColor[256];
+            for ( int i = 0; i < 256; i++ )
+                pKeyColor[i] = aSlot[i] < 0 ? nullptr : &m_vTrackSettings[aSlot[i] >> 4].aChannels[aSlot[i] & 15];
+            Scene::DrawKeys( pRenderer, g, m_Colors, pKeyColor );
+        }
+        Scene::DrawBorder( pRenderer, g, m_Colors );
+        fnStats( 1.0f );
+        return;
+    }
+
+    // The colours, and the post pass for the bloom and the vignette (sizes as at 1080p)
+    look.Prepare( fx, m_vTrackSettings, m_uTracksGen, m_Colors );
+    const SceneColors &c = look.Colors();
+    Renderer::PostParams post;
+    if ( fx.iBloom > 0 && fx.uBloom )
+    {
+        post.fBloom = fx.iBloom / 100.0f;
+        post.fRadius = fx.iBloomRadius * g.iBufferHeight / 1080.0f;
+        post.fThreshold = fx.iBloomThreshold / 100.0f;
+        post.bSceneGlow = ( fx.uBloom & EffectSettings::TargetScene ) != 0;
+    }
+    post.fVignette = fx.iVignette / 100.0f;
+    const bool bPost = ( post.fBloom > 0.0f || post.fVignette > 0.0f ) && pRenderer->BeginPost( post );
+    const bool bBloom = bPost && post.fBloom > 0.0f;
+
+    pRenderer->SetBackgroundTint( look.Dark() );
+    Scene::DrawBackground( pRenderer, g, c );
+    pRenderer->SetBackgroundTint( 1.0f );
+    meter.DrawMeasureLines( pRenderer, g, c, iTick );
+
+    // The notes: those playing at the hit line lit
+    Effects::NoteLight light;
+    light.pFx = &fx;
+    light.pLook = &look;
+    light.pBase = &m_vTrackSettings;
+    light.llNow = g.llStartTime;
+    light.bLightUp = ( fx.uLightUp & EffectSettings::TargetNotes ) != 0;
+    light.bGlow = bBloom && ( fx.uBloom & EffectSettings::TargetNotes );
+    light.bOutlines = fx.bOutlines;
+    engine.SetLight( &light );
+    if ( pNotesUs ) pNotesUs[0] = Timer::NowMicroSecs();
+    engine.DrawNotes( pRenderer, g, look.Rest( m_vTrackSettings ) );
+    if ( pNotesUs ) pNotesUs[1] = Timer::NowMicroSecs();
+    engine.SetLight( nullptr );
+
+    // The keys: pressed ones lit by their light; let go, fading from their note's colours
+    std::vector< Renderer::GlowRect > vKeyGlow;
+    if ( m_bShowKB )
+    {
+        int aSlot[256];
+        long long aStart[256];
+        engine.GetKeySlots( aSlot, aStart );
+        lights.Update( fx, g.llStartTime, aSlot, aStart );
+        const bool bLightUp = ( fx.uLightUp & EffectSettings::TargetKeys ) != 0;
+        const bool bGlowKeys = bBloom && ( fx.uBloom & EffectSettings::TargetKeys );
+        const std::vector< TrackSettings > &vRest = look.Rest( m_vTrackSettings );
+        static thread_local ChannelSettings aLit[256], aFade[256];
+        const ChannelSettings *pKeyColor[256];
+        KeyLook kl;
+        if ( bGlowKeys ) kl.pGlow = &vKeyGlow;
+        kl.bBorders = fx.bFlatBorders;
+        for ( int k = 0; k < 256; k++ )
+        {
+            pKeyColor[k] = nullptr;
+            const int iSlot = lights.Slot( k );
+            if ( iSlot < 0 || (size_t)( iSlot >> 4 ) >= m_vTrackSettings.size() ) continue;
+            const ChannelSettings &base = m_vTrackSettings[iSlot >> 4].aChannels[iSlot & 15];
+            const float fLight = lights.Light( k );
+            if ( lights.Pressed( k ) )
+            {
+                aLit[k] = look.Lit( base, vRest[iSlot >> 4].aChannels[iSlot & 15], fLight, bLightUp );
+                pKeyColor[k] = &aLit[k];
+            }
+            else
+            {
+                // Fading out: the unpressed key's own colours towards the note's
+                const ChannelSettings &own = Scene::KeyLayer( g, k ) == 0 ? c.csKBWhite
+                                           : g.bEdo31 && Scene::KeyLayer( g, k ) == 1 ? c.csKBHalf : c.csKBSharp;
+                aFade[k] = look.Lit( base, own, fLight, bLightUp );
+                kl.apUnlit[k] = &aFade[k];
+            }
+            kl.aGlow[k] = look.Glow( base, fLight );
+        }
+        Scene::DrawKeys( pRenderer, g, c, pKeyColor, &kl );
+    }
+    else lights.Reset();
+    Scene::DrawBorder( pRenderer, g, c );
+
+    if ( fx.bStats ) fnStats( look.Dark() );
+    if ( bPost )
+    {
+        if ( bBloom )
+        {
+            const std::vector< Renderer::GlowRect > &vNoteGlow = engine.Glow();
+            pRenderer->DrawGlow( vNoteGlow.data(), vNoteGlow.size() );
+            pRenderer->DrawGlow( vKeyGlow.data(), vKeyGlow.size() );
+        }
+        pRenderer->EndPost();
+    }
+    if ( !fx.bStats ) fnStats( 1.0f );
+}
+
+void MainScreen::RenderStats( float fDark )
+{
+    int iLines = StatusLines( m_uStats );
+    if ( !iLines ) return;
+    const int iBufferCY = m_pRenderer->GetBufferHeight();
+    const StatsBox box = StatsLayout( m_pRenderer->GetBufferWidth(), iBufferCY, iLines, StatsBottom( m_G, iBufferCY ) );
+    const RECT &rcStatus = box.rc;
+    m_pRenderer->DrawRect( static_cast< float >( rcStatus.left ), static_cast< float >( rcStatus.top ),
+        static_cast< float >( rcStatus.right - rcStatus.left ), static_cast< float >( rcStatus.bottom - rcStatus.top ), 0x80000000 );
+    m_pRenderer->BeginText();
+    RenderStatus( m_pRenderer, box, m_llStartTime, m_dFPS, m_uStats, m_llPastEndUs, fDark );
+    m_pRenderer->EndText();
 }
 
 void MainScreen::RenderText()
 {
-    int iLines = StatusLines( m_uStats );
-
-    const int iBufferCY = m_pRenderer->GetBufferHeight();
-    const StatsBox box = StatsLayout( m_pRenderer->GetBufferWidth(), iBufferCY, iLines, StatsBottom( m_G, iBufferCY ) );
-    const RECT &rcStatus = box.rc;
-
     int iMsgCY = 200;
     RECT rcMsg = { 0, static_cast< int >( m_pRenderer->GetBufferHeight() * ( 1.0f - KBPercent ) - iMsgCY ) / 2, 0, 0 };
     rcMsg.right = m_pRenderer->GetBufferWidth();
     rcMsg.bottom = rcMsg.top + iMsgCY;
 
     unsigned iBkgColor = 0x40000000;
-    if ( iLines )
-        m_pRenderer->DrawRect( static_cast< float >( rcStatus.left ), static_cast< float >( rcStatus.top ),
-            static_cast< float >( rcStatus.right - rcStatus.left ), static_cast< float >( rcStatus.bottom - rcStatus.top ), 0x80000000 );
     if ( m_bZoomMove )
         m_pRenderer->DrawRect( static_cast< float >( rcMsg.left ), static_cast< float >( rcMsg.top ),
             static_cast< float >( rcMsg.right - rcMsg.left ), static_cast< float >( rcMsg.bottom - rcMsg.top ), iBkgColor );
 
     m_pRenderer->BeginText();
-    RenderStatus( m_pRenderer, box, m_llStartTime, m_dFPS, m_uStats, m_llPastEndUs );
     if ( m_pEngine->DrawsPreviousMask() )
     {
         // Hidden channels change once their draw view is built (FastEngine::SetHidden)
@@ -762,7 +877,7 @@ static long long TempoAt( const std::vector< RefMetaEvent > &vMeta, long long ll
 
 // The top-right stats area's text (the video renderer passes its own renderer, time and frame rate):
 // every line's value, then the shown ones in the configured order
-void MainScreen::RenderStatus( Renderer *pRenderer, const StatsBox &box, long long llTime, double dFPS, unsigned uStats, long long llPastEnd )
+void MainScreen::RenderStatus( Renderer *pRenderer, const StatsBox &box, long long llTime, double dFPS, unsigned uStats, long long llPastEnd, float fDark )
 {
     typedef VisualSettings VS;
     static const VisualSettings &cVisual = Config::GetConfig().GetVisualSettings();
@@ -850,6 +965,8 @@ void MainScreen::RenderStatus( Renderer *pRenderer, const StatsBox &box, long lo
     if ( box.iFontCY ) { pRenderer->SetStatsFont( box.iFontCY ); eFont = Renderer::Stats; }
 
     // A line: shadow, then text (the original's offsets: the first line at +1, each next a line lower)
+    const D3DCOLOR cShadow = fDark < 1.0f ? Effects::Scale( 0xFF404040, fDark ) : 0xFF404040;
+    const D3DCOLOR cText = fDark < 1.0f ? Effects::Scale( 0xFFFFFFFF, fDark ) : 0xFFFFFFFF;
     bool bFirst = true;
     for ( int i = 0; i < VS::StatCount; i++ )
     {
@@ -857,11 +974,11 @@ void MainScreen::RenderStatus( Renderer *pRenderer, const StatsBox &box, long lo
         if ( !Shown( iStat ) ) continue;
         OffsetRect( prcStatus, box.iShadowX, bFirst ? box.iShadowY : box.iLineCY + box.iShadowY );
         bFirst = false;
-        pRenderer->DrawText( VS::StatLabels[iStat], eFont, prcStatus, 0, 0xFF404040 );
-        pRenderer->DrawText( aValue[iStat], eFont, prcStatus, DT_RIGHT, 0xFF404040 );
+        pRenderer->DrawText( VS::StatLabels[iStat], eFont, prcStatus, 0, cShadow );
+        pRenderer->DrawText( aValue[iStat], eFont, prcStatus, DT_RIGHT, cShadow );
         OffsetRect( prcStatus, -box.iShadowX, -box.iShadowY );
-        pRenderer->DrawText( VS::StatLabels[iStat], eFont, prcStatus, 0, 0xFFFFFFFF );
-        pRenderer->DrawText( aValue[iStat], eFont, prcStatus, DT_RIGHT, 0xFFFFFFFF );
+        pRenderer->DrawText( VS::StatLabels[iStat], eFont, prcStatus, 0, cText );
+        pRenderer->DrawText( aValue[iStat], eFont, prcStatus, DT_RIGHT, cText );
     }
 }
 

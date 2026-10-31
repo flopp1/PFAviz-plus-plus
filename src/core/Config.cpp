@@ -145,6 +145,7 @@ void VisualSettings::LoadDefaultValues()
     bStatsScaled = false;
     iStatsSize = 100;
     iStatsCorner = 0;
+    fx.LoadDefaultValues();
     int R, G, B, S = 80, V = 100;
     const int iColors = 16;     // the original's 16, as it made them
     for ( int i = 10, count = 0; count < iColors; i = ( i + 7 ) % iColors, count++ )
@@ -222,6 +223,7 @@ void VisualSettings::Load( const IniFile &ini )
     iStatsSize = std::clamp( ini.GetInt( "Visual", "StatsSize", iStatsSize ), StatsSizeMin, StatsSizeMax );
     iStatsCorner = ini.GetInt( "Visual", "StatsCorner", iStatsCorner ) & 3;
     bHideSpeedBoxes = ini.GetBool( "Visual", "HideSpeedBoxes", bHideSpeedBoxes );
+    fx.LoadConfigValues( ini );
 }
 
 void VisualSettings::Save( IniFile &ini ) const
@@ -250,6 +252,67 @@ void VisualSettings::Save( IniFile &ini ) const
     ini.SetInt( "Visual", "StatsSize", iStatsSize );
     ini.SetInt( "Visual", "StatsCorner", iStatsCorner );
     ini.SetInt( "Visual", "HideSpeedBoxes", bHideSpeedBoxes );
+    fx.Save( ini );
+}
+
+void EffectSettings::LoadDefaultValues()
+{
+    bFlat = false;
+    bFlatBorders = true;
+    bOutlines = false;
+    iDarkRoom = 0;
+    iVignette = 0;
+    iLightUp = 0;
+    uLightUp = TargetNotes | TargetKeys;
+    iBloom = 0;
+    uBloom = TargetNotes | TargetKeys;
+    iBloomRadius = 24;
+    iBloomThreshold = 60;
+    eDecay = DecayNone;
+    iDecayMs = 600;
+    iDecayFloor = 40;
+    iReleaseMs = 300;
+    bStats = false;
+}
+
+void EffectSettings::LoadConfigValues( const IniFile &ini )
+{
+    bFlat = ini.GetBool( "Effects", "Flat", bFlat );
+    bFlatBorders = ini.GetBool( "Effects", "FlatBorders", bFlatBorders );
+    bOutlines = ini.GetBool( "Effects", "Outlines", bOutlines );
+    iDarkRoom = std::clamp( ini.GetInt( "Effects", "DarkRoom", iDarkRoom ), 0, 100 );
+    iVignette = std::clamp( ini.GetInt( "Effects", "Vignette", iVignette ), 0, 100 );
+    iLightUp = std::clamp( ini.GetInt( "Effects", "LightUp", iLightUp ), 0, 100 );
+    uLightUp = (unsigned)ini.GetInt( "Effects", "LightUpTargets", (int)uLightUp ) & ( TargetNotes | TargetKeys );
+    iBloom = std::clamp( ini.GetInt( "Effects", "Bloom", iBloom ), 0, 400 );
+    uBloom = (unsigned)ini.GetInt( "Effects", "BloomTargets", (int)uBloom ) & 7;
+    iBloomRadius = std::clamp( ini.GetInt( "Effects", "BloomRadius", iBloomRadius ), 1, 200 );
+    iBloomThreshold = std::clamp( ini.GetInt( "Effects", "BloomThreshold", iBloomThreshold ), 0, 99 );
+    eDecay = std::clamp( ini.GetInt( "Effects", "Decay", eDecay ), 0, DecayCount - 1 );
+    iDecayMs = std::clamp( ini.GetInt( "Effects", "DecayMs", iDecayMs ), 1, 60000 );
+    iDecayFloor = std::clamp( ini.GetInt( "Effects", "DecayFloor", iDecayFloor ), 0, 100 );
+    iReleaseMs = std::clamp( ini.GetInt( "Effects", "ReleaseMs", iReleaseMs ), 0, 60000 );
+    bStats = ini.GetBool( "Effects", "Stats", bStats );
+}
+
+void EffectSettings::Save( IniFile &ini ) const
+{
+    ini.SetInt( "Effects", "Flat", bFlat );
+    ini.SetInt( "Effects", "FlatBorders", bFlatBorders );
+    ini.SetInt( "Effects", "Outlines", bOutlines );
+    ini.SetInt( "Effects", "DarkRoom", iDarkRoom );
+    ini.SetInt( "Effects", "Vignette", iVignette );
+    ini.SetInt( "Effects", "LightUp", iLightUp );
+    ini.SetInt( "Effects", "LightUpTargets", (int)uLightUp );
+    ini.SetInt( "Effects", "Bloom", iBloom );
+    ini.SetInt( "Effects", "BloomTargets", (int)uBloom );
+    ini.SetInt( "Effects", "BloomRadius", iBloomRadius );
+    ini.SetInt( "Effects", "BloomThreshold", iBloomThreshold );
+    ini.SetInt( "Effects", "Decay", eDecay );
+    ini.SetInt( "Effects", "DecayMs", iDecayMs );
+    ini.SetInt( "Effects", "DecayFloor", iDecayFloor );
+    ini.SetInt( "Effects", "ReleaseMs", iReleaseMs );
+    ini.SetInt( "Effects", "Stats", bStats );
 }
 
 //-----------------------------------------------------------------------------

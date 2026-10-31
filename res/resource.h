@@ -8,6 +8,7 @@
 #define IDD_PP2_AUDIO                   108
 #define IDD_PP3_VIDEO                   109
 #define IDD_PP5_PERFORMANCE             110
+#define IDD_PP6_EFFECTS                 111
 #define IDB_MEDIAICONSSMALL             125
 #define IDD_PP4_CONTROLS                128
 #define IDI_PFAICON                     134
@@ -179,6 +180,27 @@
 #define IDC_VIDP_STATUS                 1323
 #define ID_VIDEO_RENDER                 40200
 #define ID_FILE_RENDERSONG              40201
+
+// Effects tab
+#define IDC_FX_FLAT                     1500
+#define IDC_FX_DARK                     1501
+#define IDC_FX_VIGNETTE                 1502
+#define IDC_FX_LIGHTUP                  1503
+#define IDC_FX_LIGHTNOTES               1504
+#define IDC_FX_LIGHTKEYS                1505
+#define IDC_FX_BLOOM                    1506
+#define IDC_FX_RADIUS                   1507
+#define IDC_FX_THRESHOLD                1508
+#define IDC_FX_GLOWNOTES                1509
+#define IDC_FX_GLOWKEYS                 1510
+#define IDC_FX_GLOWSCENE                1511
+#define IDC_FX_DECAY                    1512
+#define IDC_FX_DECAYMS                  1513
+#define IDC_FX_FLOOR                    1514
+#define IDC_FX_RELEASEMS                1515
+#define IDC_FX_STATS                    1516
+#define IDC_FX_FLATBORDERS              1517
+#define IDC_FX_OUTLINES                 1518
 
 // Loading popup
 #define IDC_LOAD_FILE                   1200

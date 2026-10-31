@@ -21,6 +21,7 @@
 #include "core/ThreadPool.h"
 #include "render/Renderer.h"
 #include "song/Song.h"
+#include "visual/Effects.h"
 #include "visual/LodCache.h"
 #include "visual/Scene.h"
 
@@ -75,8 +76,13 @@ public:
     void Process( long long llStartTime );
     void Jump( long long llTarget, long long llClampedStart, long long llEndTime );
     void DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const std::vector< TrackSettings > &vTracks );
-    // Track * 16 + channel of the note lighting each key, or -1 (hidden channels included, R8)
-    void GetKeySlots( int aSlot[256] ) const;
+    // Track * 16 + channel of the note lighting each key, or -1 (hidden channels included, R8); with
+    // pStart, also when that note started
+    void GetKeySlots( int aSlot[256], long long *pStart = nullptr ) const;
+    // Effects (visual/Effects.h): DrawNotes draws the notes playing at the hit line lit, and collects
+    // their glow rects (Glow, until the next DrawNotes). Null: off.
+    void SetLight( const Effects::NoteLight *pLight ) { m_pLight = pLight; }
+    const std::vector< Renderer::GlowRect > &Glow() const { return m_vGlow; }
 
     const FrameStats &LastStats() const { return m_Stats; }
 
@@ -177,6 +183,8 @@ private:
     FrameStats m_Stats;
     bool m_bPixelStats = false;
     bool m_bMergeRows = true;
+    const Effects::NoteLight *m_pLight = nullptr;
+    std::vector< Renderer::GlowRect > m_aGlow[256], m_vGlow;   // the playing notes' glow rects, by key, then all
 
     // DrawNotes' working vectors, kept between frames so a frame allocates nothing
     std::vector< KeyCols > m_aClass[Scene::KeyLayers];

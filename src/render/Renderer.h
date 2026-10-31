@@ -85,9 +85,27 @@ public:
     enum ImageFit { FitFill, FitFit, FitStretch, FitCenter, FitTile, FitCount };
     void SetBackgroundImage( std::shared_ptr< const Image > pImage );   // null: none
     void SetBackgroundStyle( int eFit, float fOpacity ) { m_eBkgFit = eFit; m_fBkgOpacity = fOpacity; }
+    void SetBackgroundTint( float fTint ) { m_fBkgTint = fTint; }      // its colours times this (the effects' dark room)
     bool HasBackgroundImage() const { return m_pBkgImage != nullptr; }
     void DrawBackgroundImage( float x, float y, float cx, float cy );
     int MaxTextureSide() const;
+
+    // Effects (visual/Effects.h): between BeginPost and EndPost the frame is drawn into a texture, which
+    // EndPost draws into the render target with a bloom and a vignette over it. The bloom glows from
+    // the rects given to DrawGlow (in the frame's pixels, each over the ones before), and with
+    // bSceneGlow also from the frame itself where it is brighter than fThreshold.
+    struct GlowRect { float x, y, cx, cy; D3DCOLOR color; };
+    struct PostParams
+    {
+        float fBloom = 0.0f;            // the glow's strength (0: none)
+        float fRadius = 24.0f;          // its reach in the frame's pixels
+        float fThreshold = 1.0f;
+        bool bSceneGlow = false;
+        float fVignette = 0.0f;         // the corners darkened that much (0 to 1)
+    };
+    bool BeginPost( const PostParams &p );     // false: not possible here (no shaders); drawing goes on into the target
+    void DrawGlow( const GlowRect *pRects, size_t iCount );
+    void EndPost();
 
     bool GetLimitFPS() const { return m_bLimitFPS; }
     HRESULT SetLimitFPS( bool bLimitFPS );
@@ -112,6 +130,10 @@ private:
     void SubmitInstances( const NoteInstance *pInst, size_t iCount );
     void CreateInstancing();                    // the shaders and declaration, once per device (if supported)
     bool CreateBackgroundTexture();
+    bool CreatePostShaders();
+    bool PostTarget( IDirect3DTexture9 *&pTex, IDirect3DSurface9 *&pSurf, int &iW, int &iH, int iWantW, int iWantH );
+    void ReleasePostTargets();
+    void PostQuad( IDirect3DSurface9 *pTarget, int iW, int iH );
 
     static const UINT VBVertices = 6 * 16384;
     static const UINT IBQuads = 16384;              // 16-bit indices: 65536 vertices per draw
@@ -158,4 +180,16 @@ private:
     bool m_bBkgFailed = false;                      // the texture could not be made: not tried again for this image
     int m_eBkgFit = FitFill;
     float m_fBkgOpacity = 1.0f;
+    float m_fBkgTint = 1.0f;
+
+    // Effects' post pass (render/PostFx.cpp)
+    struct PostTex { IDirect3DTexture9 *pTex = nullptr; IDirect3DSurface9 *pSurf = nullptr; int iW = 0, iH = 0; };
+    IDirect3DPixelShader9 *m_pDownPS = nullptr, *m_pBlurPS = nullptr, *m_pCompositePS = nullptr;
+    bool m_bPostFailed = false;                     // the shaders could not be made: no effects pass on this device
+    PostTex m_PostScene, m_PostSource, m_PostQuarter;   // the frame; the glow rects at full size; a wide glow's first step down
+    PostTex m_aPostGlow[2];                             // the glow, small
+    IDirect3DSurface9 *m_pPostTarget = nullptr;     // where EndPost draws (the target BeginPost found)
+    PostParams m_Post;
+    int m_iPostDiv = 4;                             // the glow's size: the frame's / this
+    bool m_bInPost = false, m_bSourceUsed = false;
 };
