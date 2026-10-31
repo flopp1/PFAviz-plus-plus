@@ -91,7 +91,9 @@ void MainScreen::InitState()
 GameState::GameError MainScreen::Init()
 {
     static Config &config = Config::GetConfig();
-    const PlaybackSettings &cPlayback = config.GetPlaybackSettings();
+    PlaybackSettings &cPlayback = config.GetPlaybackSettings();
+    cPlayback.SetPaused( m_bStartPaused, true );
+    m_bPaused = m_bStartPaused;
     if ( m_pPlayback )
     {
         const PerformanceSettings &cPerf = config.GetPerformanceSettings();
@@ -99,7 +101,7 @@ GameState::GameError MainScreen::Init()
         m_pPlayback->SetSendLimits( cPerf.bCollapseStacks, cPerf.bSendLimit ? cPerf.iMaxSendsPerSec : 0 );
         m_pPlayback->SetMinVelocity( cPerf.bVelocityFloor ? cPerf.iMinVelocity : 0 );
         m_pPlayback->SetTuning( cPerf.bTuning31, cPerf.bTuning31PitchBend );
-        MidiOutputs::SetKdmapiLongSends( cPerf.bKdmapiLongSends, cPerf.iKdmapiLongBytes );
+        MidiOutputs::SetKdmapiLongSends( cPerf.bKdmapiLongSends );
         m_pPlayback->SetMute( m_bMute );
         m_pPlayback->SetMetronome( cPlayback.GetMetronome() );
         m_Clock.SetSpeed( cPlayback.GetSpeed() );
@@ -398,6 +400,13 @@ GameState::GameError MainScreen::Logic()
     m_uStats = cVisual.uStats & ( m_pPlayback ? VisualSettings::AllStats : ~VisualSettings::SynthStats );
     m_pRenderer->SetLimitFPS( cVideo.bLimitFPS );
     m_Colors.SetBackground( cVisual.iBkgColor );
+    // The track colours changed (Preferences > Visual): the song coloured again from them (as it was when
+    // loaded; channels coloured by hand too)
+    std::vector< unsigned > vPalette( cVisual.colors, cVisual.colors + cVisual.iColorCount );
+    vPalette.push_back( cVisual.bLoopColors );
+    if ( !m_vPalette.empty() && vPalette != m_vPalette ) SetChannelColors( cVisual.colors, cVisual.iColorCount );
+    m_vPalette.swap( vPalette );
+    m_Colors.SetBar( cVisual.iBarColor );
     // The background image: read here when its file changes (a failure is said once, as a message)
     bool bBkgChanged = !m_bBkgApplied;
     if ( !m_bBkgApplied || config.VisualGen() != m_uVisualGen )
@@ -426,9 +435,12 @@ GameState::GameError MainScreen::Logic()
     }
     m_pRenderer->SetBackgroundStyle( cVisual.iBkgFit, cVisual.iBkgOpacity / 100.0f );
 
+    // The velocities are evened out (the average towards 127, no note above it), then the volume slider
+    // scales that. (The slider used to go into the average's target before the cap, so above some
+    // point, often half way, it changed nothing.)
     double dMaxCorrect = ( mInfo.iMaxVolume > 0 ? 127.0 / mInfo.iMaxVolume : 1.0 );
-    double dVolumeCorrect = ( mInfo.llVolumeSum > 0 ? ( m_dVolume * 127.0 * mInfo.llNoteCount ) / mInfo.llVolumeSum : 1.0 );
-    m_dVolumeCorrect = min( dVolumeCorrect, dMaxCorrect );
+    double dVolumeCorrect = ( mInfo.llVolumeSum > 0 ? ( 127.0 * mInfo.llNoteCount ) / mInfo.llVolumeSum : 1.0 );
+    m_dVolumeCorrect = m_dVolume * min( dVolumeCorrect, dMaxCorrect );
     if ( m_pPlayback )
     {
         static const PerformanceSettings &cPerf = config.GetPerformanceSettings();
@@ -441,7 +453,7 @@ GameState::GameError MainScreen::Logic()
         m_pPlayback->SetMaxThreads( cPerf.iPlaybackThreads );
         // 31-EDO changed: the output reopens in the new mode, and playback seeks to where it is so the
         // new output gets the controllers there
-        MidiOutputs::SetKdmapiLongSends( cPerf.bKdmapiLongSends, cPerf.iKdmapiLongBytes );
+        MidiOutputs::SetKdmapiLongSends( cPerf.bKdmapiLongSends );
         if ( m_pPlayback->SetTuning( cPerf.bTuning31, cPerf.bTuning31PitchBend ) )
             m_pPlayback->Seek( m_llStartTime, m_llStartTime, m_llStartTime );
     }
@@ -520,9 +532,24 @@ GameState::GameError MainScreen::Logic()
             if ( FILE *f = fopen( sEnvFrameLog, "a" ) )
             {
                 const FastEngine::FrameStats &fs = m_pEngine->LastStats();
-                fprintf( f, "t=%.2f fps=%.1f other %.2f/%.2f notes %.2f/%.2f scene %.2f/%.2f present %.2f/%.2f owners %zu\n", m_llStartTime / 1e6, m_dFPS,
+                fprintf( f, "t=%.2f fps=%.1f other %.2f/%.2f notes %.2f/%.2f scene %.2f/%.2f present %.2f/%.2f owners %zu", m_llStartTime / 1e6, m_dFPS,
                          m_adPartAvgShown[0], m_adPartMaxShown[0], m_adPartAvgShown[1], m_adPartMaxShown[1], m_adPartAvgShown[2], m_adPartMaxShown[2],
                          m_adPartAvgShown[3], m_adPartMaxShown[3], fs.iOwners );
+                // The synth sender (and long sends: messages and their average and largest size over the half second)
+                if ( m_pPlayback )
+                {
+                    static uint64_t llLastMsgs = 0, llLastBytes = 0;
+                    uint64_t llMsgs, llBytes;
+                    size_t iLargest;
+                    MidiOutputs::KdmapiLongCounts( llMsgs, llBytes, iLargest );
+                    uint64_t dM = llMsgs - llLastMsgs, dB = llBytes - llLastBytes;
+                    llLastMsgs = llMsgs;
+                    llLastBytes = llBytes;
+                    fprintf( f, " sent/s %.0f sender %.0f%% lag %.1f ns/msg %.1f skipped/s %.0f long %llu avg %.0f max %zu",
+                             m_dSentPerSec, m_dSenderBusy * 100.0, m_Stats.llLagUs / 1000.0, m_Stats.dNsPerMsg, m_dSkippedPerSec,
+                             (unsigned long long)dM, dM ? (double)dB / dM : 0.0, iLargest );
+                }
+                fputc( '\n', f );
                 fclose( f );
             }
         m_llEnvRunUs += 500000;
@@ -660,7 +687,10 @@ ViewInputs MainScreen::GetViewInputs( int iWidth, int iHeight, long long llStart
     in.uClean = cVisual.uClean;
     in.bLines = !cVisual.bHideLines;
     in.bEdo31 = cVisual.bEdo31Keys;
-    in.bFlat = cVisual.fx.bFlat;
+    const bool bFx = cVisual.fx.bOn;
+    in.bFlat = bFx && cVisual.fx.bFlat;
+    in.bNoBar = bFx && cVisual.fx.bNoBar;
+    in.iHitLine = bFx && cVisual.fx.bHitLine ? cVisual.fx.iHitLineSize : -1;
     return in;
 }
 
@@ -694,53 +724,59 @@ void MainScreen::DrawFrame( Renderer *pRenderer, const FrameGlobals &g, FastEngi
     look.Prepare( fx, m_vTrackSettings, m_uTracksGen, m_Colors );
     const SceneColors &c = look.Colors();
     Renderer::PostParams post;
-    if ( fx.iBloom > 0 && fx.uBloom )
+    bool bAnyGlow = false;
+    for ( int p = 0; p < EffectSettings::PartCount; p++ ) bAnyGlow |= look.Glows( p );
+    bAnyGlow |= fx.bHitLine && fx.iHitLineGlow > 0;
+    if ( bAnyGlow )
     {
         post.fBloom = fx.iBloom / 100.0f;
         post.fRadius = fx.iBloomRadius * g.iBufferHeight / 1080.0f;
         post.fThreshold = fx.iBloomThreshold / 100.0f;
-        post.bSceneGlow = ( fx.uBloom & EffectSettings::TargetScene ) != 0;
+        post.fSceneGlow = fx.aGlow[EffectSettings::PartBackground] / 100.0f;
     }
     post.fVignette = fx.iVignette / 100.0f;
     const bool bPost = ( post.fBloom > 0.0f || post.fVignette > 0.0f ) && pRenderer->BeginPost( post );
     const bool bBloom = bPost && post.fBloom > 0.0f;
 
-    pRenderer->SetBackgroundTint( look.Dark() );
+    pRenderer->SetBackgroundTint( look.BackgroundDark() );
     Scene::DrawBackground( pRenderer, g, c );
     pRenderer->SetBackgroundTint( 1.0f );
     meter.DrawMeasureLines( pRenderer, g, c, iTick );
 
-    // The notes: those playing at the hit line lit
+    // The notes, by their light
     Effects::NoteLight light;
     light.pFx = &fx;
     light.pLook = &look;
     light.pBase = &m_vTrackSettings;
+    light.pShortRest = &look.Rest( EffectSettings::PartShort, m_vTrackSettings );
     light.llNow = g.llStartTime;
-    light.bLightUp = ( fx.uLightUp & EffectSettings::TargetNotes ) != 0;
-    light.bGlow = bBloom && ( fx.uBloom & EffectSettings::TargetNotes );
-    light.bOutlines = fx.bOutlines;
+    light.bGlow = bBloom && ( look.Glows( EffectSettings::PartNotes ) || look.Glows( EffectSettings::PartShort ) );
     engine.SetLight( &light );
     if ( pNotesUs ) pNotesUs[0] = Timer::NowMicroSecs();
-    engine.DrawNotes( pRenderer, g, look.Rest( m_vTrackSettings ) );
+    engine.DrawNotes( pRenderer, g, look.Rest( EffectSettings::PartNotes, m_vTrackSettings ) );
     if ( pNotesUs ) pNotesUs[1] = Timer::NowMicroSecs();
     engine.SetLight( nullptr );
 
-    // The keys: pressed ones lit by their light; let go, fading from their note's colours
+    // The keys, by their light: pressed ones from unlit in their note's colours; let go, from their own
     std::vector< Renderer::GlowRect > vKeyGlow;
-    if ( m_bShowKB )
+    if ( m_bShowKB || fx.bHitLine )
     {
         int aSlot[256];
         long long aStart[256];
         engine.GetKeySlots( aSlot, aStart );
         lights.Update( fx, g.llStartTime, aSlot, aStart );
-        const bool bLightUp = ( fx.uLightUp & EffectSettings::TargetKeys ) != 0;
-        const bool bGlowKeys = bBloom && ( fx.uBloom & EffectSettings::TargetKeys );
-        const std::vector< TrackSettings > &vRest = look.Rest( m_vTrackSettings );
+    }
+    else lights.Reset();
+    if ( m_bShowKB )
+    {
+        const int eKeys = EffectSettings::PartKeys;
+        const bool bGlowKeys = bBloom && ( look.Glows( eKeys ) || look.Glows( EffectSettings::PartBar ) );
         static thread_local ChannelSettings aLit[256], aFade[256];
         const ChannelSettings *pKeyColor[256];
         KeyLook kl;
         if ( bGlowKeys ) kl.pGlow = &vKeyGlow;
         kl.bBorders = fx.bFlatBorders;
+        kl.cBarGlow = look.BarGlow();
         for ( int k = 0; k < 256; k++ )
         {
             pKeyColor[k] = nullptr;
@@ -750,25 +786,50 @@ void MainScreen::DrawFrame( Renderer *pRenderer, const FrameGlobals &g, FastEngi
             const float fLight = lights.Light( k );
             if ( lights.Pressed( k ) )
             {
-                aLit[k] = look.Lit( base, vRest[iSlot >> 4].aChannels[iSlot & 15], fLight, bLightUp );
+                aLit[k] = look.Lit( eKeys, base, fLight );
                 pKeyColor[k] = &aLit[k];
             }
             else
             {
-                // Fading out: the unpressed key's own colours towards the note's
                 const ChannelSettings &own = Scene::KeyLayer( g, k ) == 0 ? c.csKBWhite
                                            : g.bEdo31 && Scene::KeyLayer( g, k ) == 1 ? c.csKBHalf : c.csKBSharp;
-                aFade[k] = look.Lit( base, own, fLight, bLightUp );
+                aFade[k] = look.Lit( eKeys, base, own, fLight );
                 kl.apUnlit[k] = &aFade[k];
             }
-            kl.aGlow[k] = look.Glow( base, fLight );
+            kl.aGlow[k] = look.Glow( eKeys, base, fLight );
         }
         Scene::DrawKeys( pRenderer, g, c, pKeyColor, &kl );
     }
-    else lights.Reset();
     Scene::DrawBorder( pRenderer, g, c );
 
-    if ( fx.bStats ) fnStats( look.Dark() );
+    // The hit line, over everything: across in its own colour, and over the keys being played (and let go, fading)
+    if ( fx.bHitLine )
+    {
+        static thread_local HitLineLook h;
+        const float fScale = g.iBufferHeight / 1080.0f, fStrength = fx.iHitLineStrength / 100.0f;
+        const unsigned cr = fx.iHitLineColor;
+        const D3DCOLOR cLine = ( cr & 0xFF ) << 16 | ( cr & 0xFF00 ) | ( cr >> 16 & 0xFF );
+        h.fCore = m_bShowKB ? g.fHitLineCY : fx.iHitLineSize > 0 ? std::max( 1.0f, std::floor( fx.iHitLineSize * fScale + 0.5f ) ) : 0.0f;
+        h.fSoft = fx.iHitLineSoft * fScale;
+        h.fSmear = fx.iHitLineSmear * fScale;
+        h.fStrength = fStrength;
+        h.cLine = cLine;
+        h.bAcross = !fx.bHitLinePlaying;
+        h.pGlow = bBloom && fx.iHitLineGlow > 0 ? &vKeyGlow : nullptr;
+        h.fGlow = fx.iHitLineGlow / 100.0f;
+        const bool bKeys = fx.bHitLinePlaying || fx.bHitLineNoteColor;
+        for ( int k = 0; k < 256; k++ )
+        {
+            const int iSlot = lights.HitSlot( k );
+            h.afKey[k] = 0.0f;
+            if ( !bKeys || iSlot < 0 || (size_t)( iSlot >> 4 ) >= m_vTrackSettings.size() ) continue;
+            h.afKey[k] = lights.HitLight( k );
+            h.aKey[k] = fx.bHitLineNoteColor ? m_vTrackSettings[iSlot >> 4].aChannels[iSlot & 15].iPrimaryRGB : cLine;
+        }
+        Scene::DrawHitLine( pRenderer, g, h );
+    }
+
+    if ( fx.bStats ) fnStats( look.BackgroundDark() );
     if ( bPost )
     {
         if ( bBloom )

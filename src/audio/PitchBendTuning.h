@@ -21,7 +21,7 @@ public:
                 CC( channel, 120, 0 );
                 CC( channel, 66, 0 );
                 SetRange( channel, m_Parts[m_Slots[channel].group].bend.Range() );
-                m_Output->Send( 0xE0 | channel | ( 64 << 16 ) );
+                m_Batch.Emit( 0xE0 | channel | ( 64 << 16 ) );
             }
     }
     void Send( uint32_t message ) override
@@ -29,7 +29,7 @@ public:
         unsigned type = message & 0xF0, channel = message & 15;
         if ( channel == 9 || type >= 0xF0 )
         {
-            if ( channel != 9 || type < 0x80 || type > 0xA0 || !( message & 0x8000 ) ) m_Output->Send( message );
+            if ( channel != 9 || type < 0x80 || type > 0xA0 || !( message & 0x8000 ) ) m_Batch.Emit( message );
             return;
         }
         unsigned group = Tuning31::GroupBase( channel );
@@ -51,7 +51,7 @@ public:
             if ( !routes->empty() && routes->back().channel == output && routes->back().generation == slot.generation && routes->back().key == pitch.second )
                 routes->back().count++;
             else routes->push_back( { output, slot.generation, pitch.second, 1 } );
-            m_Output->Send( 0x90 | output | ( unsigned( pitch.second ) << 8 ) | ( value << 16 ) );
+            m_Batch.Emit( 0x90 | output | ( unsigned( pitch.second ) << 8 ) | ( value << 16 ) );
             return;
         }
         if ( type == 0x80 || type == 0x90 || type == 0xA0 )
@@ -62,14 +62,14 @@ public:
             {
                 for ( const auto &route : *routes )
                     if ( route.generation == m_Slots[route.channel].generation )
-                        m_Output->Send( 0xA0 | route.channel | ( route.key << 8 ) | ( value << 16 ) );
+                        m_Batch.Emit( 0xA0 | route.channel | ( route.key << 8 ) | ( value << 16 ) );
                 return;
             }
             Route route = routes->front();
             if ( !--routes->front().count ) routes->pop_front();
             auto &slot = m_Slots[route.channel];
             if ( route.generation != slot.generation ) return;
-            m_Output->Send( type | route.channel | ( route.key << 8 ) | ( value << 16 ) );
+            m_Batch.Emit( type | route.channel | ( route.key << 8 ) | ( value << 16 ) );
             if ( slot.held ) slot.held--;
             slot.sustained |= Pedal( group );
             return;
@@ -98,7 +98,7 @@ public:
         }
         ForGroup( group, [&]( unsigned output ) {
             auto &slot = m_Slots[output];
-            if ( !rangeChanged || key == 121 ) m_Output->Send( ( message & ~15u ) | output );
+            if ( !rangeChanged || key == 121 ) m_Batch.Emit( ( message & ~15u ) | output );
             if ( rangeChanged ) { SetRange( output, part.bend.OutputRange() ); Bend( output ); }
             if ( type == 0xB0 && ( key == 120 || key == 123 ) )
             {
@@ -121,13 +121,15 @@ public:
                 CC( channel, 120, 0 );
                 CC( channel, 66, 0 );
                 SetRange( channel, 2.0 );
-                m_Output->Send( 0xE0 | channel | ( 64 << 16 ) );
+                m_Batch.Emit( 0xE0 | channel | ( 64 << 16 ) );
                 m_Slots[channel] = Slot();
             }
         for ( auto &part : m_Parts ) part = Part();
         for ( auto &routes : m_Routes ) routes.reset();
         m_Age = 0;
     }
+    void SendBatch( const uint32_t *pMsgs, size_t n ) override { m_Batch.Run( pMsgs, n, [&]( uint32_t m ) { Send( m ); } ); }
+    void Flush() override { m_Output->Flush(); }
     void SetVolume( double volume ) override { m_Output->SetVolume( volume ); }
     const std::wstring &Name() const override { return m_Output->Name(); }
     bool IsKdmapi() const override { return m_Output->IsKdmapi(); }
@@ -165,7 +167,7 @@ private:
     }
     void CC( unsigned channel, unsigned controller, unsigned value )
     {
-        m_Output->Send( 0xB0 | channel | ( controller << 8 ) | ( value << 16 ) );
+        m_Batch.Emit( 0xB0 | channel | ( controller << 8 ) | ( value << 16 ) );
     }
     void Select( unsigned channel, unsigned parameter )
     {
@@ -189,7 +191,7 @@ private:
     {
         const auto &slot = m_Slots[channel];
         int wheel = m_Parts[slot.group].bend.Bend( slot.offset * 100.0 / 8192.0 );
-        m_Output->Send( 0xE0 | channel | ( ( wheel & 127 ) << 8 ) | ( ( wheel >> 7 ) << 16 ) );
+        m_Batch.Emit( 0xE0 | channel | ( ( wheel & 127 ) << 8 ) | ( ( wheel >> 7 ) << 16 ) );
     }
     void RememberParameter( Part &part, unsigned controller, unsigned value )
     {
@@ -229,8 +231,8 @@ private:
         auto &part = m_Parts[group];
         for ( unsigned controller = 0; controller < part.cc.size(); controller++ )
             if ( part.cc[controller] >= 0 ) CC( output, controller, part.cc[controller] );
-        m_Output->Send( 0xC0 | output | ( part.program << 8 ) );
-        m_Output->Send( 0xD0 | output | ( part.pressure << 8 ) );
+        m_Batch.Emit( 0xC0 | output | ( part.program << 8 ) );
+        m_Batch.Emit( 0xD0 | output | ( part.pressure << 8 ) );
         for ( const auto &[parameter, data] : part.parameters )
         {
             Select( output, parameter );
@@ -243,6 +245,7 @@ private:
     }
 
     std::unique_ptr< MidiOutput > m_Output;
+    BatchOut m_Batch{ m_Output };
     Part m_Parts[16];
     Slot m_Slots[16];
     std::unique_ptr< std::deque< Route > > m_Routes[4096];

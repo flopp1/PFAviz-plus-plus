@@ -133,6 +133,7 @@ void VisualSettings::LoadDefaultValues()
     iLastKey = Notes::C8;
 
     iBkgColor = 0x00303030;
+    iBarColor = 0x000D0A98;
     bBkgImage = false;
     sBkgImage.clear();
     iBkgFit = 2;    // Renderer::FitStretch: the whole image in the notes area
@@ -163,10 +164,20 @@ void VisualSettings::LoadDefaultValues()
     iColorCount = iColors;
 }
 
+// "R,G,B", or hex: "#RRGGBB" or "#RGB"
 static unsigned ParseRGB( const std::string &s, unsigned uDefault )
 {
     int r, g, b;
-    if ( sscanf( s.c_str(), "%d,%d,%d", &r, &g, &b ) != 3 ) return uDefault;
+    unsigned v;
+    int n = 0;
+    if ( sscanf( s.c_str(), " #%x%n", &v, &n ) == 1 && ( n == (int)s.size() || s.find_first_not_of( ' ', n ) == std::string::npos ) )
+    {
+        const size_t iDigits = s.find_last_not_of( ' ' ) - s.find( '#' );
+        if ( iDigits == 3 ) v = ( v >> 8 & 0xF ) * 0x110000 + ( v >> 4 & 0xF ) * 0x1100 + ( v & 0xF ) * 0x11;
+        else if ( iDigits != 6 ) return uDefault;
+        r = v >> 16 & 0xFF; g = v >> 8 & 0xFF; b = v & 0xFF;
+    }
+    else if ( sscanf( s.c_str(), "%d,%d,%d", &r, &g, &b ) != 3 ) return uDefault;
     return ( ( r & 0xFF ) << 0 ) | ( ( g & 0xFF ) << 8 ) | ( ( b & 0xFF ) << 16 );
 }
 
@@ -211,6 +222,7 @@ void VisualSettings::Load( const IniFile &ini )
     for ( int i = 0; i < MaxColors; i++ )
         colors[i] = ParseRGB( ini.GetString( "Visual", "Color" + std::to_string( i ) ), colors[i] );
     iBkgColor = ParseRGB( ini.GetString( "Visual", "BkgColor" ), iBkgColor );
+    iBarColor = ParseRGB( ini.GetString( "Visual", "BarColor" ), iBarColor );
     sBkgImage = Util::Utf8ToWide( ini.GetString( "Visual", "BkgImage" ) );
     bBkgImage = ini.GetBool( "Visual", "BkgImageOn", !sBkgImage.empty() );   // a file chosen before the switch: on
     iBkgFit = std::clamp( ini.GetInt( "Visual", "BkgImageFit", iBkgFit ), 0, 4 );
@@ -240,6 +252,7 @@ void VisualSettings::Save( IniFile &ini ) const
     for ( int i = 0; i < std::max( iColorCount, 16 ); i++ )     // (at least the 16 of old, so a lower count keeps them)
         ini.Set( "Visual", "Color" + std::to_string( i ), FormatRGB( colors[i] ) );
     ini.Set( "Visual", "BkgColor", FormatRGB( iBkgColor ) );
+    ini.Set( "Visual", "BarColor", FormatRGB( iBarColor ) );
     ini.SetInt( "Visual", "BkgImageOn", bBkgImage );
     ini.Set( "Visual", "BkgImage", Util::WideToUtf8( sBkgImage ) );
     ini.SetInt( "Visual", "BkgImageFit", iBkgFit );
@@ -257,62 +270,136 @@ void VisualSettings::Save( IniFile &ini ) const
 
 void EffectSettings::LoadDefaultValues()
 {
+    bOn = true;
     bFlat = false;
     bFlatBorders = true;
-    bOutlines = false;
-    iDarkRoom = 0;
-    iVignette = 0;
-    iLightUp = 0;
-    uLightUp = TargetNotes | TargetKeys;
+    bNoBar = false;
+    bHollow = false;
+    bShortColor = false;
+    iLightOutlines = iLightInsides = 100;
+    iRestLight = 0;
+    for ( int p = 0; p < PartCount; p++ ) { aDark[p] = 0; aLightUp[p] = 0; aGlow[p] = p == PartBackground || p == PartBar ? 0 : 100; }
     iBloom = 0;
-    uBloom = TargetNotes | TargetKeys;
     iBloomRadius = 24;
     iBloomThreshold = 60;
+    iVignette = 0;
     eDecay = DecayNone;
     iDecayMs = 600;
     iDecayFloor = 40;
     iReleaseMs = 300;
     bStats = false;
+    bHitLine = false;
+    iHitLineColor = 0x00FFFFFF;
+    iHitLineSize = 4;
+    iHitLineSoft = 24;
+    iHitLineStrength = 100;
+    iHitLineGlow = 0;
+    bHitLinePlaying = false;
+    bHitLineNoteColor = false;
+    iHitLineFadeMs = 300;
+    eHitLineCurve = DecayLinear;
+    iHitLineSmear = 16;
 }
+
+bool EffectSettings::Any() const
+{
+    if ( !bOn ) return false;
+    if ( bFlat || bNoBar || bHollow || bShortColor || iRestLight || iVignette || eDecay || bHitLine ) return true;
+    for ( int p = 0; p < PartCount; p++ )
+        if ( aDark[p] || aLightUp[p] || ( iBloom && aGlow[p] ) ) return true;
+    return false;
+}
+
+static const char *const PartNames[EffectSettings::PartCount] = { "Notes", "Short", "Keys", "Background", "Bar" };
 
 void EffectSettings::LoadConfigValues( const IniFile &ini )
 {
+    bOn = ini.GetBool( "Effects", "On", bOn );
     bFlat = ini.GetBool( "Effects", "Flat", bFlat );
     bFlatBorders = ini.GetBool( "Effects", "FlatBorders", bFlatBorders );
-    bOutlines = ini.GetBool( "Effects", "Outlines", bOutlines );
-    iDarkRoom = std::clamp( ini.GetInt( "Effects", "DarkRoom", iDarkRoom ), 0, 100 );
-    iVignette = std::clamp( ini.GetInt( "Effects", "Vignette", iVignette ), 0, 100 );
-    iLightUp = std::clamp( ini.GetInt( "Effects", "LightUp", iLightUp ), 0, 100 );
-    uLightUp = (unsigned)ini.GetInt( "Effects", "LightUpTargets", (int)uLightUp ) & ( TargetNotes | TargetKeys );
+    bNoBar = ini.GetBool( "Effects", "NoBar", bFlat );   // (the flat look once had no bar)
+    bHollow = ini.GetBool( "Effects", "Hollow", bHollow );
+    bShortColor = ini.GetBool( "Effects", "ShortColor", bShortColor );
+    // (by default from lighting only outlines, as far as OutlineLight: 100 the main colour, 200 white)
+    const bool bOutlines = ini.GetBool( "Effects", "Outlines", false );
+    iLightOutlines = std::clamp( ini.GetInt( "Effects", "LightOutlines", bOutlines ? 100 + ini.GetInt( "Effects", "OutlineLight", 100 ) : 100 ), 0, 300 );
+    iLightInsides = std::clamp( ini.GetInt( "Effects", "LightInsides", bOutlines ? 0 : 100 ), 0, 100 );
     iBloom = std::clamp( ini.GetInt( "Effects", "Bloom", iBloom ), 0, 400 );
-    uBloom = (unsigned)ini.GetInt( "Effects", "BloomTargets", (int)uBloom ) & 7;
     iBloomRadius = std::clamp( ini.GetInt( "Effects", "BloomRadius", iBloomRadius ), 1, 200 );
     iBloomThreshold = std::clamp( ini.GetInt( "Effects", "BloomThreshold", iBloomThreshold ), 0, 99 );
+    iVignette = std::clamp( ini.GetInt( "Effects", "Vignette", iVignette ), 0, 100 );
     eDecay = std::clamp( ini.GetInt( "Effects", "Decay", eDecay ), 0, DecayCount - 1 );
     iDecayMs = std::clamp( ini.GetInt( "Effects", "DecayMs", iDecayMs ), 1, 60000 );
     iDecayFloor = std::clamp( ini.GetInt( "Effects", "DecayFloor", iDecayFloor ), 0, 100 );
     iReleaseMs = std::clamp( ini.GetInt( "Effects", "ReleaseMs", iReleaseMs ), 0, 60000 );
     bStats = ini.GetBool( "Effects", "Stats", bStats );
+    bHitLine = ini.GetBool( "Effects", "HitLine", bHitLine );
+    iHitLineColor = ParseRGB( ini.GetString( "Effects", "HitLineColor" ), iHitLineColor );
+    iHitLineSize = std::clamp( ini.GetInt( "Effects", "HitLineSize", iHitLineSize ), 0, 200 );
+    iHitLineSoft = std::clamp( ini.GetInt( "Effects", "HitLineSoft", iHitLineSoft ), 0, 400 );
+    iHitLineStrength = std::clamp( ini.GetInt( "Effects", "HitLineStrength", iHitLineStrength ), 0, 100 );
+    iHitLineGlow = std::clamp( ini.GetInt( "Effects", "HitLineGlow", iHitLineGlow ), 0, 300 );
+    bHitLinePlaying = ini.GetBool( "Effects", "HitLinePlaying", bHitLinePlaying );
+    bHitLineNoteColor = ini.GetBool( "Effects", "HitLineNoteColor", bHitLineNoteColor );
+    iHitLineFadeMs = std::clamp( ini.GetInt( "Effects", "HitLineFadeMs", iHitLineFadeMs ), 0, 60000 );
+    eHitLineCurve = std::clamp( ini.GetInt( "Effects", "HitLineCurve", eHitLineCurve ), 0, DecayCount - 1 );
+    iHitLineSmear = std::clamp( ini.GetInt( "Effects", "HitLineSmear", iHitLineSmear ), 0, 400 );
+
+    // The parts' values, by default from v0.8's settings: one dark room, and a light-up and glow
+    // each with its targets (bits: notes 1, keys 2, the whole frame 4)
+    const int iDarkRoom = std::clamp( ini.GetInt( "Effects", "DarkRoom", 0 ), 0, 100 );
+    const int iLightUp = std::clamp( ini.GetInt( "Effects", "LightUp", 0 ), 0, 100 );
+    const int iLightUpTo = ini.GetInt( "Effects", "LightUpTargets", 3 ), iBloomTo = ini.GetInt( "Effects", "BloomTargets", 3 );
+    const int aOldLightUp[PartCount] = { iLightUpTo & 1 ? iLightUp : 0, iLightUpTo & 1 ? iLightUp : 0, iLightUpTo & 2 ? iLightUp : 0, 0, 0 };
+    const int aOldGlow[PartCount] = { iBloomTo & 1 ? 100 : 0, iBloomTo & 1 ? 100 : 0, iBloomTo & 2 ? 100 : 0, iBloomTo & 4 ? 100 : 0, 0 };
+    for ( int p = 0; p < PartCount; p++ )
+    {
+        const std::string sPart = PartNames[p];
+        aDark[p] = std::clamp( ini.GetInt( "Effects", "Dark" + sPart, iDarkRoom ), 0, 100 );
+        aLightUp[p] = p == PartBackground ? 0 : std::clamp( ini.GetInt( "Effects", "LightUp" + sPart, aOldLightUp[p] ), 0, 100 );
+        aGlow[p] = std::clamp( ini.GetInt( "Effects", "Glow" + sPart, aOldGlow[p] ), 0, 300 );
+    }
+    iRestLight = std::clamp( ini.GetInt( "Effects", "RestLight", 0 ), 0, 100 );
 }
 
 void EffectSettings::Save( IniFile &ini ) const
 {
+    ini.SetInt( "Effects", "On", bOn );
     ini.SetInt( "Effects", "Flat", bFlat );
     ini.SetInt( "Effects", "FlatBorders", bFlatBorders );
-    ini.SetInt( "Effects", "Outlines", bOutlines );
-    ini.SetInt( "Effects", "DarkRoom", iDarkRoom );
-    ini.SetInt( "Effects", "Vignette", iVignette );
-    ini.SetInt( "Effects", "LightUp", iLightUp );
-    ini.SetInt( "Effects", "LightUpTargets", (int)uLightUp );
+    ini.SetInt( "Effects", "NoBar", bNoBar );
+    ini.SetInt( "Effects", "Hollow", bHollow );
+    ini.SetInt( "Effects", "ShortColor", bShortColor );
+    ini.SetInt( "Effects", "LightOutlines", iLightOutlines );
+    ini.SetInt( "Effects", "LightInsides", iLightInsides );
+    ini.SetInt( "Effects", "RestLight", iRestLight );
+    for ( int p = 0; p < PartCount; p++ )
+    {
+        const std::string sPart = PartNames[p];
+        ini.SetInt( "Effects", "Dark" + sPart, aDark[p] );
+        if ( p != PartBackground ) ini.SetInt( "Effects", "LightUp" + sPart, aLightUp[p] );
+        ini.SetInt( "Effects", "Glow" + sPart, aGlow[p] );
+    }
     ini.SetInt( "Effects", "Bloom", iBloom );
-    ini.SetInt( "Effects", "BloomTargets", (int)uBloom );
     ini.SetInt( "Effects", "BloomRadius", iBloomRadius );
     ini.SetInt( "Effects", "BloomThreshold", iBloomThreshold );
+    ini.SetInt( "Effects", "Vignette", iVignette );
     ini.SetInt( "Effects", "Decay", eDecay );
     ini.SetInt( "Effects", "DecayMs", iDecayMs );
     ini.SetInt( "Effects", "DecayFloor", iDecayFloor );
     ini.SetInt( "Effects", "ReleaseMs", iReleaseMs );
     ini.SetInt( "Effects", "Stats", bStats );
+    ini.SetInt( "Effects", "HitLine", bHitLine );
+    ini.Set( "Effects", "HitLineColor", FormatRGB( iHitLineColor ) );
+    ini.SetInt( "Effects", "HitLineSize", iHitLineSize );
+    ini.SetInt( "Effects", "HitLineSoft", iHitLineSoft );
+    ini.SetInt( "Effects", "HitLineStrength", iHitLineStrength );
+    ini.SetInt( "Effects", "HitLineGlow", iHitLineGlow );
+    ini.SetInt( "Effects", "HitLinePlaying", bHitLinePlaying );
+    ini.SetInt( "Effects", "HitLineNoteColor", bHitLineNoteColor );
+    ini.SetInt( "Effects", "HitLineFadeMs", iHitLineFadeMs );
+    ini.SetInt( "Effects", "HitLineCurve", eHitLineCurve );
+    ini.SetInt( "Effects", "HitLineSmear", iHitLineSmear );
 }
 
 //-----------------------------------------------------------------------------
@@ -518,7 +605,6 @@ void PerformanceSettings::LoadDefaultValues()
     bTuning31 = false;
     bTuning31PitchBend = false;
     bKdmapiLongSends = false;
-    iKdmapiLongBytes = 65535;   // a legacy synth's limit, which players keep to
     bVelocitySkip = false;
     iSkipLagMs = 100;
     bVelocityFloor = false;
@@ -543,7 +629,6 @@ void PerformanceSettings::Load( const IniFile &ini )
     bTuning31 = ini.GetBool( "Performance", "Tuning31", bTuning31 );
     bTuning31PitchBend = ini.GetBool( "Performance", "Tuning31PitchBend", bTuning31PitchBend );
     bKdmapiLongSends = ini.GetBool( "Performance", "KdmapiLongSends", bKdmapiLongSends );
-    iKdmapiLongBytes = std::clamp( ini.GetInt( "Performance", "KdmapiLongBytes", iKdmapiLongBytes ), LongBytesMin, LongBytesMax );
     bVelocitySkip = ini.GetBool( "Performance", "VelocitySkip", bVelocitySkip );
     iSkipLagMs = std::clamp( ini.GetInt( "Performance", "SkipLagMs", iSkipLagMs ), 1, 10000 );
     bVelocityFloor = ini.GetBool( "Performance", "VelocityFloor", bVelocityFloor );
@@ -567,7 +652,6 @@ void PerformanceSettings::Save( IniFile &ini ) const
     ini.SetInt( "Performance", "Tuning31", bTuning31 );
     ini.SetInt( "Performance", "Tuning31PitchBend", bTuning31PitchBend );
     ini.SetInt( "Performance", "KdmapiLongSends", bKdmapiLongSends );
-    ini.SetInt( "Performance", "KdmapiLongBytes", iKdmapiLongBytes );
     ini.SetInt( "Performance", "VelocitySkip", bVelocitySkip );
     ini.SetInt( "Performance", "SkipLagMs", iSkipLagMs );
     ini.SetInt( "Performance", "VelocityFloor", bVelocityFloor );
@@ -644,6 +728,7 @@ void ViewSettings::LoadDefaultValues()
     m_iMainTop = CW_USEDEFAULT;
     m_iMainWidth = 960;
     m_iMainHeight = 589;
+    m_eTheme = 0;
 }
 
 void ViewSettings::Load( const IniFile &ini )
@@ -658,6 +743,7 @@ void ViewSettings::Load( const IniFile &ini )
     m_iMainTop = ini.GetInt( "View", "MainTop", m_iMainTop );
     m_iMainWidth = ini.GetInt( "View", "MainWidth", m_iMainWidth );
     m_iMainHeight = ini.GetInt( "View", "MainHeight", m_iMainHeight );
+    m_eTheme = std::clamp( ini.GetInt( "View", "Theme", m_eTheme ), 0, 2 );
 }
 
 void ViewSettings::Save( IniFile &ini ) const
@@ -672,6 +758,7 @@ void ViewSettings::Save( IniFile &ini ) const
     ini.SetInt( "View", "MainTop", m_iMainTop );
     ini.SetInt( "View", "MainWidth", m_iMainWidth );
     ini.SetInt( "View", "MainHeight", m_iMainHeight );
+    ini.SetInt( "View", "Theme", m_eTheme );
 }
 
 void ViewSettings::SetControls( bool b, bool bUpdateGUI ) { m_bControls = b; if ( bUpdateGUI ) ::ShowControls( b ); }
@@ -679,3 +766,4 @@ void ViewSettings::SetKeyboard( bool b, bool bUpdateGUI ) { m_bKeyboard = b; if 
 void ViewSettings::SetOnTop( bool b, bool bUpdateGUI ) { m_bOnTop = b; if ( bUpdateGUI ) ::SetOnTop( b ); }
 void ViewSettings::SetFullScreen( bool b, bool bUpdateGUI ) { m_bFullScreen = b; if ( bUpdateGUI ) ::SetFullScreen( b ); }
 void ViewSettings::SetZoomMove( bool b, bool bUpdateGUI ) { m_bZoomMove = b; if ( bUpdateGUI ) ::SetZoomMove( b ); }
+void ViewSettings::SetTheme( int e, bool bUpdateGUI ) { m_eTheme = e; if ( bUpdateGUI ) ::SetInterfaceTheme( e ); }

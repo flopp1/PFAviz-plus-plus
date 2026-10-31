@@ -24,6 +24,7 @@ struct SceneColors
 {
     SceneColors();
     void SetBackground( unsigned int iBkgColor );
+    void SetBar( unsigned int iBarColor );
     ChannelSettings csBackground, csKBRed, csKBWhite, csKBSharp, csKBBackground;
     ChannelSettings csKBHalf, csKBSharp31;    // 31-EDO layout: half sharps and flats, full sharps (full flats: csKBSharp)
 };
@@ -58,6 +59,8 @@ struct ViewInputs
     bool bLines = true;               // the key dividers and measure lines
     bool bEdo31 = false;              // the 256-key view in the 31-EDO layout (Visual tab)
     bool bFlat = false;               // the effects' flat look (DrawKeys)
+    bool bNoBar = false;              // the keyboard without its red bar
+    int iHitLine = -1;                // the effects' hit line in the red bar's place: its height, pixels at 1080p (-1: none)
 };
 
 struct FrameGlobals
@@ -72,7 +75,10 @@ struct FrameGlobals
     unsigned uClean;
     bool bLines;
     bool bEdo31 = false;              // 31-EDO layout: 8 octaves of 31 keys and C to D#, by Scene's key table
-    bool bFlat = false;               // flat keys, from the notes' bottom down, without the red bar
+    bool bFlat = false;               // flat keys, from the notes' bottom down
+    bool bNoBar = false;              // no red bar: the keys from the notes' bottom down
+    bool bHitLine = false;            // the hit line instead of the red bar (DrawHitLine)
+    float fHitLineCY = 0.0f;          // its place over the keys, as tall as it (0: none, or no keyboard)
 };
 
 // The effects' changes to the keyboard (visual/Effects.h)
@@ -82,6 +88,22 @@ struct KeyLook
     D3DCOLOR aGlow[256] = {};                   // each key's glow (0: none, drawn black, so it hides the glow of the keys under it)
     std::vector< Renderer::GlowRect > *pGlow = nullptr;     // the keys' glow rects go here (null: none)
     bool bBorders = true;                                   // the flat look: gaps between the white keys (off: they meet)
+    D3DCOLOR cBarGlow = 0;                                  // the red bar's glow (with pGlow)
+};
+
+// The effects' hit line (Scene::DrawHitLine)
+struct HitLineLook
+{
+    float fCore = 0.0f, fSoft = 0.0f;           // its solid middle's height (with the keyboard, g.fHitLineCY), and its fade's above and below (pixels)
+    float fSmear = 0.0f;                        // how far it spreads sideways past a key's column (pixels; 0: cut sharp)
+    float fStrength = 0.0f;                     // how opaque at full
+    D3DCOLOR cLine = 0;                         // its colour
+    bool bAcross = false;                       // across the keys: over a key, its colour mixed towards aKey's by afKey
+                                                // (off: only over the keys, by afKey)
+    D3DCOLOR aKey[256] = {};                    // each key's colour, and its light (0: none). Where keys overlap, the
+    float afKey[256] = {};                      // brightest is drawn
+    std::vector< Renderer::GlowRect > *pGlow = nullptr;     // the solid middle's glow rects go here (null: none)
+    float fGlow = 0.0f;                                     // their brightness, times the line's
 };
 
 namespace Scene
@@ -108,14 +130,17 @@ namespace Scene
     NoteKey GetNoteKey( const FrameGlobals &g, int iNote );
     void NoteVertices( const FrameGlobals &g, const NoteKey &nk, long long llNoteStart, long long llNoteEnd,
                        const ChannelSettings &cs, Renderer::SCREEN_VERTEX *pOut );
+    // Those vertices' colours made cs's, as NoteVertices gives them
+    void PaintNote( const ChannelSettings &cs, Renderer::SCREEN_VERTEX *pVerts );
 
     void DrawBackground( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c ); // field + vertical lines
     // pKeyColor[i] is the colour of the note lighting key i, or nullptr when the key is not lit
     void DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c, const ChannelSettings *const pKeyColor[256],
                    const KeyLook *pLook = nullptr );
-    // The top of the keyboard's red bar (DrawKeys; the flat look: of the keys)
+    // The top of the keyboard's red bar (DrawKeys; without the bar or with the flat look: of the keys)
     float RedBarY( const FrameGlobals &g );
     void DrawBorder( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c );
+    void DrawHitLine( Renderer *pRenderer, const FrameGlobals &g, const HitLineLook &h );
 }
 
 // Tempo / time signature tracking for measure lines and the metronome

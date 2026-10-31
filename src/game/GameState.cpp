@@ -122,8 +122,9 @@ void SplashScreen::InitState()
 
     SetChannelColors( std::vector< unsigned >( cVisual.colors, cVisual.colors + cVisual.iColorCount ) );
 
+    // (the device's own volume is left alone: midiOutSetVolume at 100% set the synth's, and with some,
+    // the program's mixer volume, back to full on every start)
     m_OutDevice.OpenConfigured();
-    m_OutDevice.SetVolume( 1.0 );
 }
 
 void SplashScreen::SetChannelColors( const std::vector< unsigned > &vColor )
@@ -184,8 +185,8 @@ GameState::GameError SplashScreen::Logic()
     m_dVolume = cPlayback.GetVolume();
 
     double dMaxCorrect = ( mInfo.iMaxVolume > 0 ? 127.0 / mInfo.iMaxVolume : 1.0 );
-    double dVolumeCorrect = ( mInfo.llVolumeSum > 0 ? ( m_dVolume * 127.0 * mInfo.llNoteCount ) / mInfo.llVolumeSum : 1.0 );
-    dVolumeCorrect = min( dVolumeCorrect, dMaxCorrect );
+    double dVolumeCorrect = ( mInfo.llVolumeSum > 0 ? ( 127.0 * mInfo.llNoteCount ) / mInfo.llVolumeSum : 1.0 );
+    dVolumeCorrect = m_dVolume * min( dVolumeCorrect, dMaxCorrect );    // as MainScreen's
 
     long long llMaxTime = mInfo.llTotalMicroSecs + 500000;
     long long llElapsed = m_Timer.GetMicroSecs();

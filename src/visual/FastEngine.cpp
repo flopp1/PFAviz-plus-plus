@@ -613,7 +613,9 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
     vPixels.assign( vActive.size(), 0.0 );
     std::vector< std::vector< uint64_t > > &vScratch = m_vScratch;
     if ( vScratch.size() < (size_t)m_iThreads + 1 ) vScratch.resize( m_iThreads + 1 );
-    const bool bInst = pRenderer->InstancingOn() && m_Song.info.iMaxNote < 128;
+    // (not with hollow notes: an instance always fills its inside)
+    const bool bHollow = m_pLight && m_pLight->pFx->bHollow;
+    const bool bInst = pRenderer->InstancingOn() && m_Song.info.iMaxNote < 128 && !bHollow;
     // Keys that may share a pixel column with another are drawn interleaved with it, owner by owner
     // (below), so only the others merge rects across owners
     bool abMerge[256] = {};
@@ -657,7 +659,8 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
         std::vector< Renderer::NoteInstance > &vInst = m_aInst[k];
         std::vector< uint32_t > &vStart = m_aVertStart[k];
         if ( bInst ) { if ( vInst.size() < m_aOwners[k].size() ) vInst.resize( m_aOwners[k].size() ); }
-        else if ( vVerts.size() < m_aOwners[k].size() * 8 ) vVerts.resize( m_aOwners[k].size() * 8 );  // grows only: no per-frame fill
+        else if ( vVerts.size() < m_aOwners[k].size() * ( bHollow ? 16 : 8 ) )    // grows only: no per-frame fill
+            vVerts.resize( m_aOwners[k].size() * ( bHollow ? 16 : 8 ) );
         vStart.resize( m_aOwners[k].size() + 1 );
         size_t iOut = 0;
         Renderer::SCREEN_VERTEX aNote[12];
@@ -680,36 +683,55 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
         {
             vStart[o] = (uint32_t)iOut;
             const Owner &ow = m_aOwners[k][o];
-            // Effects: a note playing at the hit line is drawn lit, and glows over the rows it owns
+            // Effects: a note is drawn by its light (Effects.h), as its part: a short note when it has no
+            // inside (the short path's owners have none). At rest the colours given (or the short
+            // notes'); playing at the hit line, lit from the rest light up along its curve. It glows
+            // over the rows it owns.
             const ChannelSettings *pcs = &vTracks[ow.uSlot >> 4].aChannels[ow.uSlot & 15];
             ChannelSettings csLit;
-            if ( pLight && ow.llStart <= pLight->llNow && ow.llEnd > pLight->llNow )
+            const bool bShortOwner = bShortPath && ow.bShort && ow.iRowA != INT_MIN;
+            bool bNoInside = bShortOwner, bVerts = false, bShortMain = false;
+            if ( pLight )
             {
-                const ChannelSettings &base = ( *pLight->pBase )[ow.uSlot >> 4].aChannels[ow.uSlot & 15];
-                const float fLight = Effects::Held( *pLight->pFx, pLight->llNow - ow.llStart );
-                csLit = pLight->bOutlines ? pLight->pLook->LitOutline( base, *pcs, fLight, pLight->bLightUp )
-                                          : pLight->pLook->Lit( base, *pcs, fLight, pLight->bLightUp );
-                pcs = &csLit;
-                if ( pLight->bGlow )
+                const Effects::Look &look = *pLight->pLook;
+                if ( !bShortOwner )
                 {
-                    // Over the owned rows: the note, or its outline (the note, then its inside in black)
-                    Renderer::SCREEN_VERTEX aOuter[12];
-                    Scene::NoteVertices( g, nk, ow.llStart, ow.llEnd, base, aOuter );
+                    Scene::NoteVertices( g, nk, ow.llStart, ow.llEnd, *pcs, aNote );
+                    bVerts = true;
+                    bNoInside = !( aNote[8].y > aNote[6].y );
+                }
+                const int ePart = bNoInside ? EffectSettings::PartShort : EffectSettings::PartNotes;
+                if ( bNoInside && pLight->pShortRest ) pcs = &( *pLight->pShortRest )[ow.uSlot >> 4].aChannels[ow.uSlot & 15];
+                const ChannelSettings &base = ( *pLight->pBase )[ow.uSlot >> 4].aChannels[ow.uSlot & 15];
+                const bool bPlaying = ow.llStart <= pLight->llNow && ow.llEnd > pLight->llNow;
+                float fLight = look.RestLight();
+                if ( bPlaying )
+                {
+                    fLight += ( 1.0f - fLight ) * Effects::Held( *pLight->pFx, pLight->llNow - ow.llStart );
+                    csLit = look.Lit( ePart, base, fLight );
+                    pcs = &csLit;
+                }
+                bShortMain = bNoInside && pLight->pFx->bShortColor;    // a short note in its main colour
+                if ( pLight->bGlow && fLight > 0.0f && look.Glows( ePart ) )
+                {
+                    // Over the owned rows: the note by its outline's share of the light, then its inside
+                    // by its own (a short note whole)
                     auto Push = [&]( float x, float cx, float y0, float y1, D3DCOLOR c ) {
                         if ( ow.iRowA != INT_MIN ) { y0 = std::max( y0, (float)ow.iRowA ); y1 = std::min( y1, (float)ow.iRowB ); }
                         if ( y1 > y0 && cx > 0.0f ) vGlow.push_back( { x, y0, cx, y1 - y0, c } );
                     };
-                    const float y0 = aOuter[0].y + 0.5f, y1 = aOuter[2].y + 0.5f;
-                    Push( nk.x, nk.cx, y0, y1, pLight->pLook->Glow( base, fLight ) );
-                    if ( pLight->bOutlines ) Push( nk.x + nk.fDeflate, nk.cx - nk.fDeflate * 2.0f, y0 + nk.fDeflate, y1 - nk.fDeflate, 0 );
+                    const float y0 = bVerts ? aNote[0].y + 0.5f : (float)ow.iRowA, y1 = bVerts ? aNote[2].y + 0.5f : (float)ow.iRowB;
+                    const float fOut = bNoInside ? 1.0f : look.OutlineShare(), fIn = bNoInside ? 1.0f : look.InsideShare();
+                    Push( nk.x, nk.cx, y0, y1, look.Glow( ePart, base, fLight * fOut ) );
+                    if ( fIn != fOut ) Push( nk.x + nk.fDeflate, nk.cx - nk.fDeflate * 2.0f, y0 + nk.fDeflate, y1 - nk.fDeflate, look.Glow( ePart, base, fLight * fIn ) );
                 }
             }
             const ChannelSettings &cs = *pcs;
-            if ( bShortPath && ow.bShort && ow.iRowA != INT_MIN )
+            if ( bShortOwner )
             {
                 if ( ow.iRowA >= ow.iRowB ) continue;       // owns nothing
                 const float y0 = ow.iRowA - 0.5f, y1 = ow.iRowB - 0.5f;
-                const D3DCOLOR c = cs.iVeryDarkRGB;
+                const D3DCOLOR c = bShortMain ? cs.iPrimaryRGB : cs.iVeryDarkRGB;
                 if ( bInst )
                 {
                     if ( bPrevFlat )
@@ -749,10 +771,16 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
                 bPrevFlat = abMerge[k];
                 continue;
             }
-            Scene::NoteVertices( g, nk, ow.llStart, ow.llEnd, cs, aNote );
+            if ( !bVerts ) Scene::NoteVertices( g, nk, ow.llStart, ow.llEnd, cs, aNote );
+            else if ( pcs != &vTracks[ow.uSlot >> 4].aChannels[ow.uSlot & 15] ) Scene::PaintNote( cs, aNote );
+            if ( bShortMain )
+                for ( int v = 0; v < 6; v++ ) aNote[v].color = cs.iPrimaryRGB;
             bool abDraw[2] = { false, false };
+            // Effects, hollow notes: a note with an inside is its outline alone, four rects around it
+            const bool bFrame = bHollow && aNote[7].x > aNote[6].x && aNote[8].y > aNote[6].y;
             for ( int r = 0; r < 12; r += 6 )
             {
+                if ( bFrame && r == 6 ) break;
                 float dx = aNote[r + 1].x - aNote[r].x, dy = aNote[r + 2].y - aNote[r].y;
                 if ( ow.iRowA != INT_MIN && dx > 0.0f && dy > 0.0f )
                 {
@@ -768,6 +796,29 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
                         aNote[2].y = aNote[4].y = aNote[5].y = y1;
                         dy = y1 - y0;
                     }
+                }
+                if ( bFrame )
+                {
+                    // (the outer rect as cut to the owned span; the inside as it is)
+                    const float x0 = aNote[0].x, x1 = aNote[1].x, y0 = aNote[0].y, y1 = aNote[2].y;
+                    const float ix0 = aNote[6].x, ix1 = aNote[7].x;
+                    const float iy0 = std::clamp( aNote[6].y, y0, y1 ), iy1 = std::clamp( aNote[8].y, y0, y1 );
+                    const D3DCOLOR c = aNote[0].color;
+                    auto Quad = [&]( float qx0, float qx1, float qy0, float qy1 ) {
+                        if ( !( qx1 > qx0 && qy1 > qy0 ) ) return;
+                        Renderer::SCREEN_VERTEX *p = &vVerts[iOut];
+                        p[0] = { qx0, qy0, 0.5f, 1.0f, c };
+                        p[1] = { qx1, qy0, 0.5f, 1.0f, c };
+                        p[2] = { qx1, qy1, 0.5f, 1.0f, c };
+                        p[3] = { qx0, qy1, 0.5f, 1.0f, c };
+                        iOut += 4;
+                    };
+                    Quad( x0, x1, y0, iy0 );
+                    Quad( x0, x1, iy1, y1 );
+                    Quad( x0, ix0, iy0, iy1 );
+                    Quad( ix1, x1, iy0, iy1 );
+                    bPrevFlat = false;
+                    continue;
                 }
                 if ( ( dx > 0.0f && dy > 0.0f ) || ( dx < 0.0f && dy < 0.0f ) )
                 {

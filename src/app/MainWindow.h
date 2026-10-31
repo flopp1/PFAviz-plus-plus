@@ -25,6 +25,7 @@ VOID HandOffMsg( UINT msg, WPARAM wParam, LPARAM lParam );
 VOID ShowControls( BOOL bShow );
 VOID ShowKeyboard( BOOL bShow );
 VOID SetOnTop( BOOL bOnTop );
+VOID SetInterfaceTheme( INT eTheme );     // DarkMode::Theme
 VOID SetFullScreen( BOOL bFullScreen );
 // The main window's largest size (its monitor's), its size now (the restored size when maximized),
 // and setting it: clamped to MINWIDTH x MINHEIGHT up to the largest, and moved to lie wholly on its

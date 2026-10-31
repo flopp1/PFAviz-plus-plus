@@ -15,7 +15,7 @@
 namespace
 {
     // Down: 4 bilinear taps (c0 to c3: their offsets) averaged, each above the threshold first
-    // (c4: x the threshold, y 1 / (1 - threshold) / 4)
+    // (c4: x the threshold, y 1 / (1 - threshold) / 4, times a gain)
     const char *DownPS = R"(
 sampler2D s0 : register( s0 );
 float4 cTap[4] : register( c0 );
@@ -186,7 +186,7 @@ void Renderer::EndPost()
     }
     m_pDevice->SetRenderState( D3DRS_ALPHABLENDENABLE, FALSE );
 
-    const bool bBloom = m_Post.fBloom > 0.0f && ( m_bSourceUsed || m_Post.bSceneGlow );
+    const bool bBloom = m_Post.fBloom > 0.0f && ( m_bSourceUsed || m_Post.fSceneGlow > 0.0f );
     if ( bBloom )
     {
         PostTex &g0 = m_aPostGlow[0], &g1 = m_aPostGlow[1];
@@ -195,7 +195,8 @@ void Renderer::EndPost()
         // wide glow then goes down by 2 more: the 4 taps on the centre, the average of 2 x 2.
         PostTex &q = m_iPostDiv == 4 ? g0 : m_PostQuarter;
         m_pDevice->SetPixelShader( m_pDownPS );
-        auto Down = [&]( const PostTex &from, PostTex &to, float fOff, float fThreshold ) {
+        // (fGain: what is over the threshold times this)
+        auto Down = [&]( const PostTex &from, PostTex &to, float fOff, float fThreshold, float fGain = 1.0f ) {
             float aTap[5][4] = {};
             for ( int i = 0; i < 4; i++ )
             {
@@ -203,7 +204,7 @@ void Renderer::EndPost()
                 aTap[i][1] = ( i & 2 ? fOff : -fOff ) / from.iH;
             }
             aTap[4][0] = fThreshold;
-            aTap[4][1] = 0.25f / ( 1.0f - fThreshold );
+            aTap[4][1] = fGain * 0.25f / ( 1.0f - fThreshold );
             m_pDevice->SetPixelShaderConstantF( 0, &aTap[0][0], 5 );
             m_pDevice->SetTexture( 0, from.pTex );
             PostQuad( to.pSurf, to.iW, to.iH );
@@ -211,13 +212,13 @@ void Renderer::EndPost()
         m_pDevice->SetRenderTarget( 0, q.pSurf );
         m_pDevice->Clear( 0, nullptr, D3DCLEAR_TARGET, 0, 1.0f, 0 );
         if ( m_bSourceUsed ) Down( m_PostSource, q, 1.0f, 0.0f );
-        if ( m_Post.bSceneGlow )
+        if ( m_Post.fSceneGlow > 0.0f )
         {
             // Added to what the rects gave
             m_pDevice->SetRenderState( D3DRS_ALPHABLENDENABLE, TRUE );
             m_pDevice->SetRenderState( D3DRS_SRCBLEND, D3DBLEND_ONE );
             m_pDevice->SetRenderState( D3DRS_DESTBLEND, D3DBLEND_ONE );
-            Down( m_PostScene, q, 1.0f, std::clamp( m_Post.fThreshold, 0.0f, 0.99f ) );
+            Down( m_PostScene, q, 1.0f, std::clamp( m_Post.fThreshold, 0.0f, 0.99f ), m_Post.fSceneGlow );
             m_pDevice->SetRenderState( D3DRS_ALPHABLENDENABLE, FALSE );
         }
         if ( &q != &g0 ) Down( q, g0, 0.0f, 0.0f );

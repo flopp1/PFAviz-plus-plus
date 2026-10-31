@@ -93,14 +93,14 @@ public:
     // Effects (visual/Effects.h): between BeginPost and EndPost the frame is drawn into a texture, which
     // EndPost draws into the render target with a bloom and a vignette over it. The bloom glows from
     // the rects given to DrawGlow (in the frame's pixels, each over the ones before), and with
-    // bSceneGlow also from the frame itself where it is brighter than fThreshold.
+    // fSceneGlow (its strength, times fBloom) also from the frame itself where it is brighter than fThreshold.
     struct GlowRect { float x, y, cx, cy; D3DCOLOR color; };
     struct PostParams
     {
         float fBloom = 0.0f;            // the glow's strength (0: none)
         float fRadius = 24.0f;          // its reach in the frame's pixels
         float fThreshold = 1.0f;
-        bool bSceneGlow = false;
+        float fSceneGlow = 0.0f;
         float fVignette = 0.0f;         // the corners darkened that much (0 to 1)
     };
     bool BeginPost( const PostParams &p );     // false: not possible here (no shaders); drawing goes on into the target

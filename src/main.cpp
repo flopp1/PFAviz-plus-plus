@@ -7,6 +7,7 @@
 #include <shellapi.h>
 #include <ctime>
 
+#include "app/DarkMode.h"
 #include "app/LoadingDialog.h"
 #include "app/MainWindow.h"
 #include "app/VideoExport.h"
@@ -132,6 +133,9 @@ int WINAPI wWinMain( HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow )
             cView.SetMainPos( iLeft, iTop );
         }
     }
+    // The interface's theme, before any window
+    DarkMode::Install();
+    DarkMode::SetTheme( cView.GetTheme() );
     g_hWnd = CreateWindowExW( 0, CLASSNAME, APPNAME, WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, iLeft, iTop,
                               cView.GetMainWidth(), cView.GetMainHeight(), nullptr, nullptr, hInstance, nullptr );
     if ( !g_hWnd ) return 1;
@@ -157,6 +161,8 @@ int WINAPI wWinMain( HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow )
     // Set up GUI and show
     SetPlayMode( PlayMode::Splash );
     SetOnTop( cView.GetOnTop() );
+    DarkMode::Apply( g_hWnd );
+    SetInterfaceTheme( cView.GetTheme() );
     ShowControls( cView.GetControls() );
     ShowKeyboard( cView.GetKeyboard() );
     ShowWindow( g_hWndGfx, SW_SHOW );

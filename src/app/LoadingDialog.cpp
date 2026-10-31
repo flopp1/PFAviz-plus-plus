@@ -244,7 +244,7 @@ void FinishLoad( LPARAM lParam )
         pGameState->SetChannelColors( cVisual.colors, cVisual.iColorCount );
         if ( !cPlayback.GetPlayable() ) cPlayback.SetPlayable( true, true );
         if ( cPlayback.GetPlayMode() != PlayMode::Play ) cPlayback.SetPlayMode( PlayMode::Play, true );
-        cPlayback.SetPaused( pJob->bRenderOnly || Config::GetConfig().GetControlsSettings().bStartPaused, true );
+        pGameState->SetStartPaused( pJob->bRenderOnly || Config::GetConfig().GetControlsSettings().bStartPaused );
         cPlayback.SetPosition( 0 );
         cView.SetZoomMove( false, true );
         std::wstring sTitle = pJob->sFile.substr( pJob->sFile.find_last_of( L'\\' ) + 1 );

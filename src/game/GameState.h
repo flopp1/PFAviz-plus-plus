@@ -140,6 +140,9 @@ public:
 
     bool IsValid() const { return m_pSong != nullptr; }
     const Song &GetSong() const { return *m_pSong; }
+    // Whether Init pauses the song or plays it. Set when the song is loaded and applied when this screen
+    // takes over, so the screen it replaces (still running until then) cannot change it
+    void SetStartPaused( bool b ) { m_bStartPaused = b; }
 
     void MuteChannel( int iTrack, int iChannel, bool bMuted );
     void HideChannel( int iTrack, int iChannel, bool bHidden );
@@ -197,6 +200,7 @@ private:
     long long m_iStartTick;
     double m_dSpeed;
     bool m_bPaused;
+    bool m_bStartPaused = false;
     Timer m_Timer;
     bool m_bMute;
     double m_dVolume, m_dVolumeCorrect;
@@ -246,6 +250,7 @@ private:
     SceneColors m_Colors;
     std::vector< TrackSettings > m_vTrackSettings;
     unsigned m_uTracksGen = 0;      // counts changes to m_vTrackSettings (the effects copy its colours)
+    std::vector< unsigned > m_vPalette;     // the track colours (and bLoopColors, last) the song was coloured from (empty: not seen yet)
     Effects::Look m_Look;
     Effects::KeyLights m_KeyLights;
     bool m_bHiddenChanged = false;  // the draw view needs the new hidden channels

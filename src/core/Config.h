@@ -24,25 +24,53 @@ struct EffectSettings
     void LoadDefaultValues();
     void LoadConfigValues( const IniFile &ini );
     void Save( IniFile &ini ) const;
-    bool Any() const { return bFlat || iDarkRoom || iVignette || iLightUp || ( iBloom && uBloom ) || eDecay; }
+    bool Any() const;           // any effect to draw (none while bOn is off)
 
+    bool bOn;                   // the effects at all (off: none, whatever they are set to)
+
+    // Light: every note and key has a light of 0 to 1. A note rests at iRestLight; one playing at the
+    // hit line, and the key it presses, rise from there to 1 and fall along the curve (eDecay). Each
+    // part is drawn by its light: towards its own colour undarkened (aDark), lightened (aLightUp),
+    // glowing (aGlow).
+    // PartShort: notes too short to have an inside; PartBar: the keyboard's red bar, never lit (its
+    // light-up and glow always as at full light)
+    enum Part { PartNotes, PartShort, PartKeys, PartBackground, PartBar, PartCount };
     bool bFlat;                 // flat look: plain keys without the red bar, notes one flat colour without outlines
     bool bFlatBorders;          // the flat keys have gaps between them (off: the white keys meet)
-    bool bOutlines;             // lit notes are lit only in their outlines (light-up, dark room, bloom); the rest stays as unlit
-    int iDarkRoom;              // percent: what is not lit is darkened that much
-    int iVignette;              // percent: the corners darkened that much more
-    int iLightUp;               // percent: playing notes and pressed keys lightened towards white
-    unsigned uLightUp;          // Target bits: what lights up
+    bool bNoBar;                // the keyboard without its red bar
+    bool bHollow;               // the notes' insides are not drawn: only their outlines, the scene showing through
+    bool bShortColor;           // short notes are drawn in their main colour, not their outline's
+    // percent: how much of a note's light reaches its outline and its inside (not short notes', which
+    // have only the one colour): 100 lights it fully; an outline goes on, to 200 its note's main
+    // colour, to 300 white
+    int iLightOutlines;
+    int iLightInsides;
+    int iRestLight;             // percent: every note's light when not playing
+    int aDark[PartCount];       // percent: an unlit part darkened that much (the background's also darkens the stats box, with bStats)
+    int aLightUp[PartCount];    // percent: a fully lit part lightened that much towards white (not the background)
+    int aGlow[PartCount];       // percent: a fully lit part's glow, of iBloom (the background's: the whole frame's, over iBloomThreshold)
     int iBloom;                 // percent: the glow's strength
-    unsigned uBloom;            // Target bits: what glows
     int iBloomRadius;           // the glow's reach, pixels at 1080p
-    int iBloomThreshold;        // percent: TargetScene glows where it is brighter than this
-    int eDecay;                 // Decay: how the light fades while a note is held
+    int iBloomThreshold;        // percent: the frame glows where it is brighter than this
+    int iVignette;              // percent: the corners darkened that much more
+    int eDecay;                 // Decay: how a played note's light falls while it is held
     int iDecayMs;               // the time it takes
     int iDecayFloor;            // percent: the light left after it
     int iReleaseMs;             // a key's light fading out after it is let go (not with DecayNone)
     bool bStats;                // the stats box is drawn before the effects, so they change it too
-    enum Target { TargetNotes = 1, TargetKeys = 2, TargetScene = 4 };
+    // The hit line: a band over everything else, centred on the notes' bottom (where the red bar is),
+    // solid in the middle and fading out above and below
+    bool bHitLine;
+    unsigned iHitLineColor;     // its colour (as Windows' COLORREF)
+    int iHitLineSize;           // its solid middle's height, pixels at 1080p
+    int iHitLineSoft;           // its fade above and below, pixels at 1080p
+    int iHitLineStrength;       // percent: how opaque
+    int iHitLineGlow;           // percent: its glow, of iBloom
+    bool bHitLinePlaying;       // only over the keys being played, by their light
+    bool bHitLineNoteColor;     // over the keys being played in their notes' colours (with the line across, over it)
+    int iHitLineFadeMs;         // a key let go: its part of the line fades out over this long
+    int eHitLineCurve;          // along this curve (Decay; DecayNone: gone at once)
+    int iHitLineSmear;          // how far it spreads sideways past a key's column, pixels at 1080p (0: not at all)
     enum Decay { DecayNone, DecayLinear, DecayExponential, DecaySmooth, DecayCount };
 };
 
@@ -78,6 +106,7 @@ struct VisualSettings
     unsigned char aStatOrder[StatCount];
     static const int MaxColors = 128;
     unsigned int colors[MaxColors], iBkgColor;     // the track colors: the first iColorCount are used
+    unsigned int iBarColor;     // the keyboard's red bar
     int iColorCount;
     bool bBkgImage;             // the background image is shown
     std::wstring sBkgImage;     // its file, drawn over iBkgColor
@@ -173,9 +202,7 @@ struct PerformanceSettings
     bool bPreferKDMAPI;
     bool bTuning31;
     bool bTuning31PitchBend;
-    bool bKdmapiLongSends;      // KDMAPI: batches go out as long messages of raw MIDI bytes (off: one call an event)
-    int iKdmapiLongBytes;       // the most bytes in one (LongBytesMin to LongBytesMax)
-    static const int LongBytesMin = 16, LongBytesMax = 16 << 20;
+    bool bKdmapiLongSends;      // KDMAPI: each batch goes out as one long message of raw MIDI bytes (off: one call an event)
     bool bVelocitySkip;         // skip quiet note-ons while the output lags (off: every event is sent)
     int iSkipLagMs;             // the lag above which velocity skipping starts
     bool bVelocityFloor;        // always skip note-ons quieter than iMinVelocity
@@ -253,6 +280,7 @@ public:
     void SetOnTop( bool b, bool bUpdateGUI = false );
     void SetFullScreen( bool b, bool bUpdateGUI = false );
     void SetZoomMove( bool b, bool bUpdateGUI = false );
+    void SetTheme( int eTheme, bool bUpdateGUI = false );   // DarkMode::Theme
 
     int GetMainLeft() const { return m_iMainLeft; }
     int GetMainTop() const { return m_iMainTop; }
@@ -266,11 +294,13 @@ public:
     bool GetOnTop() const { return m_bOnTop; }
     bool GetFullScreen() const { return m_bFullScreen; }
     bool GetZoomMove() const { return m_bZoomMove; }
+    int GetTheme() const { return m_eTheme; }
 
 private:
     bool m_bControls, m_bKeyboard, m_bOnTop, m_bFullScreen, m_bZoomMove;
     float m_fOffsetX, m_fOffsetY, m_fZoomX;
     int m_iMainLeft, m_iMainTop, m_iMainWidth, m_iMainHeight;
+    int m_eTheme;
 };
 
 class Config

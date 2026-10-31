@@ -1,4 +1,5 @@
 #include "app/MainWindow.h"
+#include "app/DarkMode.h"
 
 #include "app/LoadingDialog.h"
 #include "app/Preferences.h"
@@ -98,8 +99,13 @@ LRESULT WINAPI WndProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
     static const ControlsSettings &cControls = Config::GetConfig().GetControlsSettings();
     static bool bInSizeMove = false;
 
+    LRESULT lrDark;
+    if ( DarkMode::MenuBar( hWnd, msg, wParam, lParam, lrDark ) ) return lrDark;
     switch ( msg )
     {
+        case WM_SETTINGCHANGE:
+            DarkMode::OnSettingChange( lParam );
+            break;
         case WM_COMMAND:
         {
             int iId = LOWORD( wParam );
@@ -186,6 +192,9 @@ LRESULT WINAPI WndProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
                     return 0;
                 case ID_VIEW_ALWAYSONTOP:
                     cView.ToggleOnTop( true );
+                    return 0;
+                case ID_VIEW_THEMELIGHT: case ID_VIEW_THEMEDARK: case ID_VIEW_THEMESYSTEM:
+                    cView.SetTheme( iId - ID_VIEW_THEMELIGHT, true );
                     return 0;
                 case ID_VIEW_FULLSCREEN:
                     cView.ToggleFullScreen( true );
@@ -515,7 +524,14 @@ static LRESULT WINAPI BarProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam
         {
             HDC hDC = ( HDC )wParam;
             SetBkMode( hDC, TRANSPARENT );
+            if ( DarkMode::On() ) SetTextColor( hDC, DarkMode::Text() );
             return ( INT_PTR )GetStockObject( NULL_BRUSH );
+        }
+        case WM_CTLCOLOREDIT: case WM_CTLCOLORLISTBOX:
+        {
+            LRESULT lr;
+            if ( DarkMode::CtlColor( msg, wParam, lr, ( HWND )lParam ) ) return lr;
+            break;
         }
         // Slider controls: draw our own channel
         case WM_NOTIFY:
@@ -633,8 +649,7 @@ HWND CreateRebar( HWND hWndOwner )
                                CLIP_DEFAULT_PRECIS, DEFAULT_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"MS Shell Dlg 2" );
     ReleaseDC( hWndOwner, hDC );
 
-    HIMAGELIST hIml = ImageList_LoadImageW( g_hInstance, MAKEINTRESOURCEW( IDB_MEDIAICONSSMALL ),
-                                            16, 20, RGB( 255, 255, 0 ), IMAGE_BITMAP, LR_CREATEDIBSECTION );
+    HIMAGELIST hIml = DarkMode::Images( g_hInstance, IDB_MEDIAICONSSMALL, 16, RGB( 255, 255, 0 ) );
 
     HWND hWndToolbar = CreateWindowExW( WS_EX_CONTROLPARENT, TOOLBARCLASSNAMEW, nullptr,
                                         WS_CHILD | WS_TABSTOP | CCS_NODIVIDER | CCS_NOPARENTALIGN | CCS_NORESIZE | TBSTYLE_FLAT | TBSTYLE_TOOLTIPS,
@@ -753,6 +768,7 @@ static VOID DrawSliderChannel( LPNMCUSTOMDRAW lpnmcd, HWND hWndOwner )
     static HDC hdcMem = nullptr;
     static HBITMAP hBitmap = nullptr;
     static SIZE szCopy = {};
+    static unsigned uTheme = 0;
 
     RECT rcCtrl, rcOwner;
     GetWindowRect( lpnmcd->hdr.hwndFrom, &rcCtrl );
@@ -764,7 +780,8 @@ static VOID DrawSliderChannel( LPNMCUSTOMDRAW lpnmcd, HWND hWndOwner )
     // The copy of the parent is made again when the parent's size changes: one made while the window
     // was too narrow to hold a slider has nothing (black) where the slider shows once it is widened
     SIZE szOwner = { rcOwner.right - rcOwner.left, rcOwner.bottom - rcOwner.top };
-    if ( hBitmap && ( szOwner.cx != szCopy.cx || szOwner.cy != szCopy.cy ) )
+    // (and under another theme)
+    if ( hBitmap && ( szOwner.cx != szCopy.cx || szOwner.cy != szCopy.cy || uTheme != DarkMode::Generation() ) )
     {
         DeleteDC( hdcMem );
         DeleteObject( hBitmap );
@@ -774,10 +791,11 @@ static VOID DrawSliderChannel( LPNMCUSTOMDRAW lpnmcd, HWND hWndOwner )
     if ( !hdcMem && !hBitmap )
     {
         szCopy = szOwner;
+        uTheme = DarkMode::Generation();
         hdcMem = CreateCompatibleDC( lpnmcd->hdc );
         hBitmap = CreateCompatibleBitmap( lpnmcd->hdc, rcOwner.right - rcOwner.left, rcOwner.bottom - rcOwner.top );
         SelectObject( hdcMem, hBitmap );
-        FillRect( hdcMem, &rcOwnerClient, ( HBRUSH )( COLOR_BTNFACE + 1 ) );
+        FillRect( hdcMem, &rcOwnerClient, DarkMode::On() ? DarkMode::BackBrush() : ( HBRUSH )( COLOR_BTNFACE + 1 ) );
         SendMessageW( hWndOwner, WM_PRINTCLIENT, ( WPARAM )hdcMem, PRF_CLIENT | PRF_NONCLIENT );
     }
 
@@ -798,12 +816,12 @@ LRESULT WINAPI PosnProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
     static HIMAGELIST hIml = nullptr;
     static HBITMAP hBackbuffer = nullptr;
     static HBITMAP hBackground = nullptr;
+    static unsigned uTheme = 0;
 
     switch ( msg )
     {
         case WM_CREATE:
-            hIml = ImageList_LoadImageW( g_hInstance, MAKEINTRESOURCEW( IDB_MEDIAICONSSMALL ),
-                                         16, 20, CLR_DEFAULT, IMAGE_BITMAP, LR_CREATEDIBSECTION );
+            hIml = DarkMode::Images( g_hInstance, IDB_MEDIAICONSSMALL, 16, RGB( 255, 255, 0 ) );
             bEnabled = ( ( GetWindowLongPtrW( hWnd, GWL_STYLE ) & WS_DISABLED ) == 0 );
             return 0;
         case WM_ENABLE:
@@ -839,12 +857,22 @@ LRESULT WINAPI PosnProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
             OffsetRect( &rcOwnerClient, -rcOwner.left, -rcOwner.top );
 
             HGDIOBJ hbmpOld2 = nullptr;
+            // (the background copied again under another theme, and the thumb's image made again)
+            if ( hBackbuffer && uTheme != DarkMode::Generation() )
+            {
+                DeleteObject( hBackbuffer );
+                DeleteObject( hBackground );
+                hBackbuffer = hBackground = nullptr;
+                ImageList_Destroy( hIml );
+                hIml = DarkMode::Images( g_hInstance, IDB_MEDIAICONSSMALL, 16, RGB( 255, 255, 0 ) );
+            }
             if ( !hBackbuffer )
             {
+                uTheme = DarkMode::Generation();
                 hBackbuffer = CreateCompatibleBitmap( hDC, rcCtrlClient.right, rcCtrlClient.bottom );
                 hBackground = CreateCompatibleBitmap( hDC, rcOwner.right - rcOwner.left, rcOwner.bottom - rcOwner.top );
                 hbmpOld2 = SelectObject( hDCBkg, hBackground );
-                FillRect( hDCBkg, &rcOwnerClient, ( HBRUSH )( COLOR_BTNFACE + 1 ) );
+                FillRect( hDCBkg, &rcOwnerClient, DarkMode::On() ? DarkMode::BackBrush() : ( HBRUSH )( COLOR_BTNFACE + 1 ) );
                 SendMessageW( g_hWndBar, WM_PRINT, ( WPARAM )hDCBkg, PRF_CLIENT | PRF_NONCLIENT | PRF_ERASEBKGND );
             }
             else
@@ -859,7 +887,7 @@ LRESULT WINAPI PosnProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
                     hDCBkg, rcCtrl.left - rcOwner.left + ps.rcPaint.left, rcCtrl.top - rcOwner.top + ps.rcPaint.top, SRCCOPY );
             if ( bEnabled )
             {
-                SetDCBrushColor( hDCMem, RGB( 255, 255, 255 ) );
+                SetDCBrushColor( hDCMem, DarkMode::On() ? DarkMode::Field() : RGB( 255, 255, 255 ) );
                 FillRect( hDCMem, &rcChannel, ( HBRUSH )GetStockObject( DC_BRUSH ) );
             }
             DrawEdge( hDCMem, &rcChannel, BDR_SUNKENOUTER, BF_RECT );
@@ -1048,6 +1076,20 @@ VOID ShowControls( BOOL bShow )
 VOID ShowKeyboard( BOOL bShow )
 {
     CheckMenuItem( GetMainMenu(), ID_VIEW_KEYBOARD, MF_BYCOMMAND | ( bShow ? MF_CHECKED : MF_UNCHECKED ) );
+}
+
+VOID SetInterfaceTheme( INT eTheme )
+{
+    DarkMode::SetTheme( eTheme );
+    CheckMenuRadioItem( GetMainMenu(), ID_VIEW_THEMELIGHT, ID_VIEW_THEMESYSTEM, ID_VIEW_THEMELIGHT + eTheme, MF_BYCOMMAND );
+    // The toolbar's icons for the theme; the playback bar drawn again (its sliders' backgrounds are
+    // copies of it)
+    if ( !g_hWndBar ) return;
+    HWND hWndToolbar = GetDlgItem( g_hWndBar, IDC_TOPTOOLBAR );
+    HIMAGELIST hOld = ( HIMAGELIST )SendMessageW( hWndToolbar, TB_SETIMAGELIST, 0,
+                                                  ( LPARAM )DarkMode::Images( g_hInstance, IDB_MEDIAICONSSMALL, 16, RGB( 255, 255, 0 ) ) );
+    if ( hOld ) ImageList_Destroy( hOld );
+    RedrawWindow( g_hWndBar, nullptr, nullptr, RDW_ERASE | RDW_INVALIDATE | RDW_ALLCHILDREN );
 }
 
 VOID SetOnTop( BOOL bOnTop )

@@ -6,6 +6,7 @@
 
 #include "core/Util.h"
 #include "midi/Notes.h"
+#include "visual/Effects.h"
 
 using std::floor;
 using std::max;
@@ -90,6 +91,11 @@ void SceneColors::SetBackground( unsigned int iBkgColor )
     if ( iBkgColor != csBackground.iOrigBGR ) csBackground.SetColor( iBkgColor, 0.7f, 1.3f );
 }
 
+void SceneColors::SetBar( unsigned int iBarColor )
+{
+    if ( iBarColor != csKBRed.iOrigBGR ) csKBRed.SetColor( iBarColor, 0.5f );
+}
+
 //-----------------------------------------------------------------------------
 // Globals and notes
 //-----------------------------------------------------------------------------
@@ -104,6 +110,8 @@ FrameGlobals Scene::ComputeGlobals( const ViewInputs &in )
     g.uClean = in.uClean;
     g.bLines = in.bLines;
     g.bFlat = in.bFlat;
+    g.bNoBar = in.bNoBar;
+    g.bHitLine = in.iHitLine >= 0;
 
     g.iStartNote = min( in.iFirstKey, in.iLastKey );
     g.iEndNote = max( in.iFirstKey, in.iLastKey );
@@ -163,6 +171,9 @@ FrameGlobals Scene::ComputeGlobals( const ViewInputs &in )
         // .95 for the top vs near. 2.0 for the spacer. .93 for the transition and the red. ESTIMATE.
         fIdealKeyCY = ( fIdealKeyCY / 0.95f + 2.0f ) / 0.93f;
         g.fNotesCY = floor( in.iBufferHeight - min( fIdealKeyCY, fMaxKeyCY ) + 0.5f );
+        if ( in.iHitLine > 0 )
+            g.fHitLineCY = min( max( 1.0f, floor( in.iHitLine * in.iBufferHeight / 1080.0f + 0.5f ) ),
+                                floor( ( in.iBufferHeight - g.fNotesCY ) / 2.0f ) );
     }
 
     // Round down start time. This is only used for rendering purposes
@@ -259,6 +270,15 @@ void Scene::NoteVertices( const FrameGlobals &g, const NoteKey &nk, long long ll
                             csTrack.iPrimaryRGB, csTrack.iDarkRGB, csTrack.iDarkRGB, csTrack.iPrimaryRGB, pOut + 6 );
 }
 
+void Scene::PaintNote( const ChannelSettings &cs, Renderer::SCREEN_VERTEX *pVerts )
+{
+    // The outer rect the very dark colour; the inner one's left side (RectVertices' c1, c4) the
+    // primary, its right (c2, c3) the dark
+    for ( int v = 0; v < 6; v++ ) pVerts[v].color = cs.iVeryDarkRGB;
+    for ( int v : { 6, 9, 11 } ) pVerts[v].color = cs.iPrimaryRGB;
+    for ( int v : { 7, 8, 10 } ) pVerts[v].color = cs.iDarkRGB;
+}
+
 //-----------------------------------------------------------------------------
 // Background, keys, border
 //-----------------------------------------------------------------------------
@@ -295,9 +315,152 @@ static float TransitionCY( float fKeysCY )
     return max( 3.0f, floor( fKeysCY * fTransitionPct + 0.5f ) );
 }
 
+// In the red bar's place, right on the keys (without the keyboard: on the frame's bottom). The fade
+// falls as (1 - t)^2, in three steps
+void Scene::DrawHitLine( Renderer *pRenderer, const FrameGlobals &g, const HitLineLook &h )
+{
+    const float y1 = g.fNotesY + g.fNotesCY + g.fHitLineCY, y0 = y1 - h.fCore;
+    const float fStep = h.fSoft / 3.0f;
+    static const float aFade[4] = { 1.0f, 4.0f / 9.0f, 1.0f / 9.0f, 0.0f };
+    // One stretch of the line, from its left side's colour and strength to its right side's
+    auto Band = [&]( float x, float cx, D3DCOLOR cL, float fL, D3DCOLOR cR, float fR )
+    {
+        // (alpha 0 is opaque: the renderer's inverted blend)
+        auto At = [&]( D3DCOLOR c, float f, float t ) {
+            return ( c & 0x00FFFFFF ) | (D3DCOLOR)( 255 - (int)( std::clamp( f * t, 0.0f, 1.0f ) * 255.0f + 0.5f ) ) << 24;
+        };
+        if ( h.fCore > 0.0f )
+        {
+            const D3DCOLOR a = At( cL, fL, 1.0f ), b = At( cR, fR, 1.0f );
+            pRenderer->DrawRect( x, y0, cx, h.fCore, a, b, b, a );
+        }
+        if ( fStep > 0.0f )
+            for ( int i = 0; i < 3; i++ )
+            {
+                const D3DCOLOR aIn = At( cL, fL, aFade[i] ), aOut = At( cL, fL, aFade[i + 1] );
+                const D3DCOLOR bIn = At( cR, fR, aFade[i] ), bOut = At( cR, fR, aFade[i + 1] );
+                pRenderer->DrawRect( x, y0 - fStep * ( i + 1 ), cx, fStep, aOut, bOut, bIn, aIn );
+                pRenderer->DrawRect( x, y1 + fStep * i, cx, fStep, aIn, bIn, bOut, aOut );
+            }
+        if ( h.pGlow && h.fCore > 0.0f && h.fGlow > 0.0f )
+            h.pGlow->push_back( { x, y0, cx, h.fCore, Effects::Bright( fL >= fR ? cL : cR, h.fGlow * std::max( fL, fR ) ) & 0x00FFFFFF } );
+    };
+
+    // The keys with any light; at a point, the brightest of them over it (a black key over its white
+    // ones: not both, which would add up)
+    struct Column { float x0, x1; int k; };
+    static thread_local std::vector< Column > vKeys;
+    static thread_local std::vector< float > vCuts;
+    vKeys.clear();
+    vCuts.clear();
+    const float fLeft = g.fNotesX, fRight = g.fNotesX + g.fNotesCX;
+    if ( h.bAcross ) { vCuts.push_back( fLeft ); vCuts.push_back( fRight ); }
+    for ( int i = g.iStartNote; i <= g.iEndNote; i++ )
+        if ( h.afKey[i] > 0.0f )
+        {
+            const NoteKey nk = GetNoteKey( g, i );
+            vKeys.push_back( { nk.x, nk.x + nk.cx, i } );
+            vCuts.push_back( nk.x );
+            vCuts.push_back( nk.x + nk.cx );
+        }
+    if ( vCuts.empty() ) return;
+    auto LineAt = [&]( float x, D3DCOLOR &c, float &f )
+    {
+        int k = -1;
+        for ( const Column &col : vKeys )
+            if ( col.x0 <= x && x < col.x1 &&
+                 ( k < 0 || h.afKey[col.k] > h.afKey[k] || ( h.afKey[col.k] == h.afKey[k] && KeyLayer( g, col.k ) > KeyLayer( g, k ) ) ) )
+                k = col.k;
+        c = 0;
+        f = 0.0f;
+        if ( h.bAcross && x >= fLeft && x < fRight )
+        {
+            c = k < 0 ? h.cLine : Effects::Mix( h.cLine, h.aKey[k], h.afKey[k] );
+            f = h.fStrength;
+        }
+        else if ( !h.bAcross && k >= 0 )
+        {
+            c = h.aKey[k];
+            f = h.fStrength * h.afKey[k];
+        }
+    };
+
+    // Smeared: sampled every few pixels, blurred sideways twice (a box each time, together spreading it
+    // about fSmear; its colour weighted by its strength), and drawn as gradients between the samples
+    if ( h.fSmear > 0.0f )
+    {
+        struct Sample { float r, g, b, f; bool operator==( const Sample &o ) const { return r == o.r && g == o.g && b == o.b && f == o.f; } };
+        static thread_local std::vector< Sample > vS, vT;
+        const float fPitch = std::clamp( h.fSmear / 4.0f, 2.0f, 6.0f );
+        const int n = (int)std::ceil( ( fRight - fLeft ) / fPitch ) + 1;
+        const int r = std::max( 1, (int)( h.fSmear / fPitch / 2.0f + 0.5f ) );
+        auto X = [&]( int i ) { return std::min( fLeft + i * fPitch, fRight ); };
+        vS.resize( n );
+        vT.resize( n );
+        for ( int i = 0; i < n; i++ )
+        {
+            D3DCOLOR c;
+            float f;
+            LineAt( std::min( X( i ), fRight - 0.5f ), c, f );
+            vS[i] = { ( c >> 16 & 0xFF ) * f, ( c >> 8 & 0xFF ) * f, ( c & 0xFF ) * f, f };
+        }
+        for ( int iPass = 0; iPass < 2; iPass++ )
+        {
+            // (past the ends: the line across goes on as it is; keys only, nothing)
+            for ( int i = 0; i < n; i++ )
+            {
+                Sample sum = {};
+                for ( int j = i - r; j <= i + r; j++ )
+                {
+                    if ( !h.bAcross && ( j < 0 || j >= n ) ) continue;
+                    const Sample &s = vS[std::clamp( j, 0, n - 1 )];
+                    sum.r += s.r; sum.g += s.g; sum.b += s.b; sum.f += s.f;
+                }
+                const float fW = 1.0f / ( 2 * r + 1 );
+                vT[i] = { sum.r * fW, sum.g * fW, sum.b * fW, sum.f * fW };
+            }
+            vS.swap( vT );
+        }
+        auto Color = [&]( const Sample &s ) {
+            if ( s.f <= 0.0f ) return (D3DCOLOR)0;
+            auto Ch = [&]( float v ) { return (D3DCOLOR)std::clamp( (int)( v / s.f + 0.5f ), 0, 255 ); };
+            return Ch( s.r ) << 16 | Ch( s.g ) << 8 | Ch( s.b );
+        };
+        // (a run of samples alike is one band)
+        for ( int i = 0; i + 1 < n; )
+        {
+            int j = i + 1;
+            while ( j + 1 < n && vS[j] == vS[i] && vS[j + 1] == vS[i] ) j++;
+            if ( vS[i].f > 1.0f / 512.0f || vS[j].f > 1.0f / 512.0f )
+                Band( X( i ), X( j ) - X( i ), Color( vS[i] ), vS[i].f, Color( vS[j] ), vS[j].f );
+            i = j;
+        }
+        return;
+    }
+
+    // Cut sharp: where any key's column starts or ends. Pieces side by side alike are one band, so keys at
+    // one light show no edge between them
+    std::sort( vCuts.begin(), vCuts.end() );
+    vCuts.erase( std::unique( vCuts.begin(), vCuts.end() ), vCuts.end() );
+    float fFrom = 0.0f, fRun = 0.0f;
+    D3DCOLOR cRun = 0;
+    for ( size_t e = 0; e + 1 < vCuts.size(); e++ )
+    {
+        D3DCOLOR c;
+        float f;
+        LineAt( ( vCuts[e] + vCuts[e + 1] ) / 2.0f, c, f );
+        if ( f == fRun && c == cRun ) continue;
+        if ( fRun > 0.0f ) Band( fFrom, vCuts[e] - fFrom, cRun, fRun, cRun, fRun );
+        fFrom = vCuts[e];
+        fRun = f;
+        cRun = c;
+    }
+    if ( fRun > 0.0f ) Band( fFrom, vCuts.back() - fFrom, cRun, fRun, cRun, fRun );
+}
+
 float Scene::RedBarY( const FrameGlobals &g )
 {
-    return g.fNotesY + g.fNotesCY + ( g.bFlat ? 0.0f : TransitionCY( g.iBufferHeight - g.fNotesCY ) );
+    return g.fNotesY + g.fNotesCY + ( g.bFlat || g.bNoBar || g.bHitLine ? 0.0f : TransitionCY( g.iBufferHeight - g.fNotesCY ) );
 }
 
 // a to b by t (0 to 1), each channel; a's alpha
@@ -312,17 +475,24 @@ static D3DCOLOR MixRGB( D3DCOLOR a, D3DCOLOR b, float t )
     return r;
 }
 
-// The flat look: plain keys from the notes' bottom down, without the red bar or any depth. Unpressed
+// The flat look: plain keys from the notes' bottom down (under a flat red bar, unless it is off), without any depth. Unpressed
 // keys are one colour each (white; black; 31-EDO: the half keys light grey, the full sharps grey);
 // a pressed key is its note's colour, lighter towards its top.
 static void DrawKeysFlat( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c, const ChannelSettings *const pKeyColor[256],
                           const KeyLook *pLook )
 {
     using namespace Scene;
-    const float fKeysY = g.fNotesY + g.fNotesCY;
-    const float fKeysCY = g.iBufferHeight - g.fNotesCY;
+    const float fBarCY = g.bHitLine ? g.fHitLineCY : g.bNoBar ? 0.0f : floor( ( g.iBufferHeight - g.fNotesCY ) * 0.05f + 0.5f );
+    const float fKeysY = g.fNotesY + g.fNotesCY + fBarCY;
+    const float fKeysCY = g.iBufferHeight - g.fNotesCY - fBarCY;
     const D3DCOLOR cBlack = c.csKBBackground.iVeryDarkRGB;
     pRenderer->DrawRect( g.fNotesX, fKeysY, g.fNotesCX, fKeysCY, cBlack );
+    if ( fBarCY > 0.0f && g.bHitLine ) pRenderer->DrawRect( g.fNotesX, fKeysY - fBarCY, g.fNotesCX, fBarCY, cBlack );
+    else if ( fBarCY > 0.0f )
+    {
+        pRenderer->DrawRect( g.fNotesX, fKeysY - fBarCY, g.fNotesCX, fBarCY, c.csKBRed.iPrimaryRGB );
+        if ( pLook && pLook->pGlow ) pLook->pGlow->push_back( { g.fNotesX, fKeysY - fBarCY, g.fNotesCX, fBarCY, pLook->cBarGlow } );
+    }
 
     const bool bBorders = !pLook || pLook->bBorders;
     const float fKeyGap = bBorders ? max( 1.0f, floor( g.fWhiteCX * 0.05f + 0.5f ) ) : 0.0f;
@@ -358,8 +528,9 @@ static void DrawKeysFlat( Renderer *pRenderer, const FrameGlobals &g, const Scen
                 float fMXGap = floor( g.fWhiteCX * 0.25f + 0.5f );
                 float fMCX = g.fWhiteCX - fMXGap * 2.0f - fKeyGap;
                 float fMY = max( fKeysY + fKeysCY - fMCX - 5.0f, fKeysY + fSharpCY + 5.0f );
+                // (pressed: its key's colour, brighter)
                 pRenderer->DrawRect( fCurX + fKeyGap1 + fMXGap, fMY, fMCX, fKeysY + fKeysCY - 5.0f - fMY,
-                                     pLit ? pLit->iDarkRGB : c.csKBWhite.iDarkRGB );
+                                     pLit ? MixRGB( pLit->iPrimaryRGB, 0x00FFFFFF, 0.5f ) : c.csKBWhite.iDarkRGB );
             }
             fCurX += g.fWhiteCX;
         }
@@ -393,10 +564,11 @@ void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneCol
     float fKeysY = g.fNotesY + g.fNotesCY;
     float fKeysCY = g.iBufferHeight - g.fNotesCY;
 
-    float fTransitionCY = TransitionCY( fKeysCY );
+    // (no red bar: nor the shade into it; the keys from the top. The hit line: its place instead, right on the keys)
+    float fTransitionCY = g.bNoBar || g.bHitLine ? 0.0f : TransitionCY( fKeysCY );
     float fRedPct = .05f;
-    float fRedCY = floor( fKeysCY * fRedPct + 0.5f );
-    float fSpacerCY = 2.0f;
+    float fRedCY = g.bHitLine ? g.fHitLineCY : g.bNoBar ? 0.0f : floor( fKeysCY * fRedPct + 0.5f );
+    float fSpacerCY = g.bHitLine ? 0.0f : 2.0f;
     float fTopCY = floor( ( fKeysCY - fSpacerCY - fRedCY - fTransitionCY ) * 0.95f + 0.5f );
     float fNearCY = fKeysCY - fSpacerCY - fRedCY - fTransitionCY - fTopCY;
 
@@ -404,8 +576,10 @@ void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneCol
     pRenderer->DrawRect( g.fNotesX, fKeysY, g.fNotesCX, fKeysCY, c.csKBBackground.iVeryDarkRGB );
     pRenderer->DrawRect( g.fNotesX, fKeysY, g.fNotesCX, fTransitionCY,
         c.csBackground.iPrimaryRGB, c.csBackground.iPrimaryRGB, c.csKBBackground.iVeryDarkRGB, c.csKBBackground.iVeryDarkRGB );
-    pRenderer->DrawRect( g.fNotesX, fKeysY + fTransitionCY, g.fNotesCX, fRedCY,
-        c.csKBRed.iDarkRGB, c.csKBRed.iDarkRGB, c.csKBRed.iPrimaryRGB, c.csKBRed.iPrimaryRGB );
+    if ( !g.bHitLine )
+        pRenderer->DrawRect( g.fNotesX, fKeysY + fTransitionCY, g.fNotesCX, fRedCY,
+            c.csKBRed.iDarkRGB, c.csKBRed.iDarkRGB, c.csKBRed.iPrimaryRGB, c.csKBRed.iPrimaryRGB );
+    if ( pLook && pLook->pGlow && fRedCY > 0.0f && !g.bHitLine ) pLook->pGlow->push_back( { g.fNotesX, fKeysY + fTransitionCY, g.fNotesCX, fRedCY, pLook->cBarGlow } );
     pRenderer->DrawRect( g.fNotesX, fKeysY + fTransitionCY + fRedCY, g.fNotesCX, fSpacerCY,
         c.csKBBackground.iDarkRGB, c.csKBBackground.iDarkRGB, c.csKBBackground.iDarkRGB, c.csKBBackground.iDarkRGB );
 

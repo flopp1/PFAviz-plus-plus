@@ -479,8 +479,8 @@ void PlaybackEngine::SenderThread()
         if ( !m_bReopen.exchange( false, std::memory_order_acq_rel ) ) return;
         if ( m_pOut ) m_pOut->AllNotesOff();
         m_pOut.reset();
+        // (the device's own volume is left alone, as SplashScreen's)
         m_pOut = MidiOutputs::OpenConfigured( m_bTuning31.load( std::memory_order_relaxed ), m_bTuningBend.load( std::memory_order_relaxed ) );
-        if ( m_pOut ) m_pOut->SetVolume( 1.0 );
         {
             std::lock_guard< std::mutex > lock( m_mxName );
             m_sOutputName = m_pOut ? m_pOut->Name() : std::wstring();

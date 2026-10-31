@@ -4,11 +4,14 @@
 #include "app/Preferences.h"
 
 #include <algorithm>
+#include <colordlg.h>
 #include <commctrl.h>
 #include <commdlg.h>
 #include <cstdio>
+#include <cwctype>
 #include <thread>
 
+#include "app/DarkMode.h"
 #include "app/MainWindow.h"
 #include "app/VideoExport.h"
 #include "audio/MidiOutput.h"
@@ -241,6 +244,9 @@ namespace
         SendDlgItemMessageW( hWnd, IDC_COLORCOUNTSPIN, UDM_SETPOS32, 0, cVisual.iColorCount );
         InvalidateRect( GetDlgItem( hWnd, IDC_PALETTE ), nullptr, FALSE );
         SetWindowLongPtrW( GetDlgItem( hWnd, IDC_BKGCOLOR ), GWLP_USERDATA, cVisual.iBkgColor );
+        SetWindowLongPtrW( GetDlgItem( hWnd, IDC_BARCOLOR ), GWLP_USERDATA, cVisual.iBarColor );
+        InvalidateRect( GetDlgItem( hWnd, IDC_BKGCOLOR ), nullptr, FALSE );
+        InvalidateRect( GetDlgItem( hWnd, IDC_BARCOLOR ), nullptr, FALSE );
         CheckDlgButton( hWnd, IDC_BKGON, cVisual.bBkgImage ? BST_CHECKED : BST_UNCHECKED );
         CheckDlgButton( hWnd, IDC_HIDELINES, cVisual.bHideLines ? BST_CHECKED : BST_UNCHECKED );
         CheckDlgButton( hWnd, IDC_LOOPCOLORS, cVisual.bLoopColors ? BST_CHECKED : BST_UNCHECKED );
@@ -291,6 +297,116 @@ namespace
         return false;
     }
 
+    // The colour dialog's hex box (added under its buttons), kept in step with its Red, Green and Blue
+    // boxes both ways
+    const int IDC_HEXCOLOR = 0x7001, IDC_HEXLABEL = 0x7002;
+    bool g_bHexSync = false;      // one side is being set from the other
+
+    // "#RRGGBB", "RRGGBB" or "#RGB" (spaces around ignored); false: not one
+    bool ParseHex( const wchar_t *s, COLORREF &cr )
+    {
+        while ( *s == L' ' ) s++;
+        if ( *s == L'#' ) s++;
+        unsigned v = 0;
+        int n = 0;
+        for ( ; iswxdigit( *s ); s++, n++ ) v = v * 16 + ( iswdigit( *s ) ? *s - L'0' : towlower( *s ) - L'a' + 10 );
+        while ( *s == L' ' ) s++;
+        if ( *s || ( n != 6 && n != 3 ) ) return false;
+        if ( n == 3 ) v = ( v >> 8 & 0xF ) * 0x110000 + ( v >> 4 & 0xF ) * 0x1100 + ( v & 0xF ) * 0x11;
+        cr = RGB( v >> 16 & 0xFF, v >> 8 & 0xFF, v & 0xFF );
+        return true;
+    }
+
+    VOID ShowHex( HWND hDlg, COLORREF cr )
+    {
+        wchar_t s[16];
+        swprintf( s, 16, L"#%02X%02X%02X", GetRValue( cr ), GetGValue( cr ), GetBValue( cr ) );
+        g_bHexSync = true;
+        SetDlgItemTextW( hDlg, IDC_HEXCOLOR, s );
+        g_bHexSync = false;
+    }
+
+    UINT_PTR CALLBACK ColorHook( HWND hDlg, UINT msg, WPARAM wParam, LPARAM lParam )
+    {
+        if ( msg == WM_INITDIALOG )
+        {
+            // The hex box where OK and Cancel were; they move to a row of their own at the bottom right,
+            // under Add to Custom Colors, and the dialog grows to fit it
+            auto Rect = [&]( HWND h ) { RECT rc; GetWindowRect( h, &rc ); MapWindowPoints( nullptr, hDlg, ( LPPOINT )&rc, 2 ); return rc; };
+            HWND hOk = GetDlgItem( hDlg, IDOK ), hCancel = GetDlgItem( hDlg, IDCANCEL );
+            const RECT rcOk = Rect( hOk ), rcCancel = Rect( hCancel ), rcAdd = Rect( GetDlgItem( hDlg, COLOR_ADD ) );
+            RECT rcClient, rcWnd;
+            GetClientRect( hDlg, &rcClient );
+            const int cy = rcOk.bottom - rcOk.top, cxButton = rcCancel.right - rcCancel.left, cxGap = rcCancel.left - rcOk.right;
+            const int y = std::max( rcOk.bottom, rcAdd.bottom ) + cy / 2, iMargin = rcClient.bottom - rcOk.bottom;
+            const HFONT hFont = ( HFONT )SendMessageW( hDlg, WM_GETFONT, 0, 0 );
+            HWND hLabel = CreateWindowExW( 0, L"Static", L"He&x:", WS_CHILD | WS_VISIBLE | SS_CENTERIMAGE, rcOk.left, rcOk.top,
+                                           rcCancel.left - rcOk.left, cy, hDlg, ( HMENU )(INT_PTR)IDC_HEXLABEL, nullptr, nullptr );
+            HWND hEdit = CreateWindowExW( WS_EX_CLIENTEDGE, L"Edit", L"", WS_CHILD | WS_VISIBLE | WS_TABSTOP | ES_AUTOHSCROLL, rcCancel.left, rcCancel.top,
+                                          cxButton, cy, hDlg, ( HMENU )(INT_PTR)IDC_HEXCOLOR, nullptr, nullptr );
+            SendMessageW( hLabel, WM_SETFONT, ( WPARAM )hFont, FALSE );
+            SendMessageW( hEdit, WM_SETFONT, ( WPARAM )hFont, FALSE );
+            SendMessageW( hEdit, EM_SETLIMITTEXT, 9, 0 );
+            // (tab order: the hex box after Define Custom Colors, OK and Cancel last)
+            SetWindowPos( hLabel, GetDlgItem( hDlg, COLOR_MIX ), 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE );
+            SetWindowPos( hEdit, hLabel, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE );
+            SetWindowPos( hOk, HWND_BOTTOM, rcAdd.right - cxButton * 2 - cxGap, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE );
+            SetWindowPos( hCancel, HWND_BOTTOM, rcAdd.right - cxButton, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE );
+            GetWindowRect( hDlg, &rcWnd );
+            SetWindowPos( hDlg, nullptr, 0, 0, rcWnd.right - rcWnd.left, rcWnd.bottom - rcWnd.top + ( y + cy + iMargin - rcClient.bottom ),
+                          SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE );
+            ShowHex( hDlg, ( ( const CHOOSECOLORW * )lParam )->rgbResult );
+            DarkMode::Dialog( hDlg );
+        }
+        else if ( msg == WM_COMMAND && HIWORD( wParam ) == EN_CHANGE && !g_bHexSync )
+        {
+            // (COLOR_RED, COLOR_GREEN, COLOR_BLUE: the dialog's own boxes, set by it as the colour changes)
+            const int iId = LOWORD( wParam );
+            if ( iId == IDC_HEXCOLOR )
+            {
+                wchar_t s[16];
+                COLORREF cr;
+                GetDlgItemTextW( hDlg, IDC_HEXCOLOR, s, 16 );
+                if ( !ParseHex( s, cr ) ) return 0;
+                g_bHexSync = true;
+                SetDlgItemInt( hDlg, COLOR_RED, GetRValue( cr ), FALSE );
+                SetDlgItemInt( hDlg, COLOR_GREEN, GetGValue( cr ), FALSE );
+                SetDlgItemInt( hDlg, COLOR_BLUE, GetBValue( cr ), FALSE );
+                g_bHexSync = false;
+            }
+            else if ( iId == COLOR_RED || iId == COLOR_GREEN || iId == COLOR_BLUE )
+                ShowHex( hDlg, RGB( std::min( 255u, GetDlgItemInt( hDlg, COLOR_RED, nullptr, FALSE ) ),
+                                    std::min( 255u, GetDlgItemInt( hDlg, COLOR_GREEN, nullptr, FALSE ) ),
+                                    std::min( 255u, GetDlgItemInt( hDlg, COLOR_BLUE, nullptr, FALSE ) ) ) );
+        }
+        return 0;
+    }
+
+    // Windows' colour dialog from cr (darkened as it opens, with a hex box); false: cancelled
+    bool PickColor( HWND hWnd, COLORREF &cr )
+    {
+        static COLORREF acrCustClr[16] = { 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF,
+                                           0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF };
+        CHOOSECOLORW cc = {};
+        cc.lStructSize = sizeof( cc );
+        cc.hwndOwner = hWnd;
+        cc.lpCustColors = acrCustClr;
+        cc.rgbResult = cr;
+        cc.Flags = CC_FULLOPEN | CC_RGBINIT | CC_ENABLEHOOK;
+        cc.lpfnHook = ColorHook;
+        if ( !ChooseColorW( &cc ) ) return false;
+        cr = cc.rgbResult;
+        return true;
+    }
+
+    // A colour button: its colour (kept in its user data)
+    VOID DrawSwatch( LPDRAWITEMSTRUCT pdis )
+    {
+        SetDCBrushColor( pdis->hDC, ( COLORREF )GetWindowLongPtrW( pdis->hwndItem, GWLP_USERDATA ) );
+        FillRect( pdis->hDC, &pdis->rcItem, ( HBRUSH )GetStockObject( DC_BRUSH ) );
+        if ( pdis->itemState & ODS_FOCUS ) DrawFocusRect( pdis->hDC, &pdis->rcItem );
+    }
+
     INT_PTR CALLBACK VisualProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
     {
         switch ( msg )
@@ -317,7 +433,7 @@ namespace
                 if ( pdis->CtlID == IDC_PALETTE )
                 {
                     // Each colour in use filled, the rest outlined; a 1-pixel gap between cells
-                    FillRect( pdis->hDC, &pdis->rcItem, GetSysColorBrush( COLOR_BTNFACE ) );
+                    FillRect( pdis->hDC, &pdis->rcItem, DarkMode::On() ? DarkMode::BackBrush() : GetSysColorBrush( COLOR_BTNFACE ) );
                     int n = PaletteCount( hWnd );
                     for ( int i = 0; i < VisualSettings::MaxColors; i++ )
                     {
@@ -329,14 +445,17 @@ namespace
                             SetDCBrushColor( pdis->hDC, g_aPalette[i] );
                             FillRect( pdis->hDC, &rc, ( HBRUSH )GetStockObject( DC_BRUSH ) );
                         }
-                        else FrameRect( pdis->hDC, &rc, GetSysColorBrush( COLOR_BTNSHADOW ) );
+                        else
+                        {
+                            SetDCBrushColor( pdis->hDC, DarkMode::On() ? DarkMode::Edge() : GetSysColor( COLOR_BTNSHADOW ) );
+                            FrameRect( pdis->hDC, &rc, ( HBRUSH )GetStockObject( DC_BRUSH ) );
+                        }
                     }
                     if ( pdis->itemState & ODS_FOCUS ) DrawFocusRect( pdis->hDC, &pdis->rcItem );
                     return TRUE;
                 }
-                if ( pdis->CtlID != IDC_BKGCOLOR ) return FALSE;
-                SetDCBrushColor( pdis->hDC, ( COLORREF )GetWindowLongPtrW( pdis->hwndItem, GWLP_USERDATA ) );
-                FillRect( pdis->hDC, &pdis->rcItem, ( HBRUSH )GetStockObject( DC_BRUSH ) );
+                if ( pdis->CtlID != IDC_BKGCOLOR && pdis->CtlID != IDC_BARCOLOR ) return FALSE;
+                DrawSwatch( pdis );
                 return TRUE;
             }
             case WM_COMMAND:
@@ -375,9 +494,8 @@ namespace
                     // past the colours in use adds it, and those before it
                     case IDC_PALETTE:
                     case IDC_BKGCOLOR:
+                    case IDC_BARCOLOR:
                     {
-                        static COLORREF acrCustClr[16] = { 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF,
-                                                           0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF, 0x00FFFFFF };
                         HWND hWndBtn = ( HWND )lParam;
                         int iCell = -1;
                         if ( iId == IDC_PALETTE )
@@ -395,19 +513,14 @@ namespace
                                     if ( PtInRect( &rcCell, pt ) ) { iCell = i; break; }
                                 }
                         }
-                        CHOOSECOLORW cc = {};
-                        cc.lStructSize = sizeof( cc );
-                        cc.hwndOwner = hWnd;
-                        cc.lpCustColors = acrCustClr;
-                        cc.rgbResult = iCell >= 0 ? g_aPalette[iCell] : ( COLORREF )GetWindowLongPtrW( hWndBtn, GWLP_USERDATA );
-                        cc.Flags = CC_FULLOPEN | CC_RGBINIT;
-                        if ( !ChooseColorW( &cc ) ) return TRUE;
+                        COLORREF cr = iCell >= 0 ? g_aPalette[iCell] : ( COLORREF )GetWindowLongPtrW( hWndBtn, GWLP_USERDATA );
+                        if ( !PickColor( hWnd, cr ) ) return TRUE;
                         if ( iCell >= 0 )
                         {
-                            g_aPalette[iCell] = cc.rgbResult;
+                            g_aPalette[iCell] = cr;
                             if ( iCell >= PaletteCount( hWnd ) ) SendDlgItemMessageW( hWnd, IDC_COLORCOUNTSPIN, UDM_SETPOS32, 0, iCell + 1 );
                         }
-                        else SetWindowLongPtrW( hWndBtn, GWLP_USERDATA, cc.rgbResult );
+                        else SetWindowLongPtrW( hWndBtn, GWLP_USERDATA, cr );
                         InvalidateRect( hWndBtn, nullptr, FALSE );
                         return TRUE;
                     }
@@ -511,6 +624,7 @@ namespace
                     std::copy( g_aPalette, g_aPalette + VisualSettings::MaxColors, cVisual.colors );
                     cVisual.iColorCount = PaletteCount( hWnd );
                     cVisual.iBkgColor = ( unsigned )GetWindowLongPtrW( GetDlgItem( hWnd, IDC_BKGCOLOR ), GWLP_USERDATA );
+                    cVisual.iBarColor = ( unsigned )GetWindowLongPtrW( GetDlgItem( hWnd, IDC_BARCOLOR ), GWLP_USERDATA );
                     cVisual.bBkgImage = bBkgOn;
                     cVisual.sBkgImage = sImage;
                     cVisual.iBkgOpacity = std::min( 100, (int)uOpacity );
@@ -597,32 +711,71 @@ namespace
     // Effects (EffectSettings; visual/Effects.h)
     //-------------------------------------------------------------------------
 
-    struct FxNumber { int iId; int EffectSettings::*pValue; int iMin, iMax; const wchar_t *sName; };
+    // Each number's setting (EffectSettings' parts are arrays)
+    struct FxNumber { int iId; int &( *Get )( EffectSettings & ); int iMin, iMax; const wchar_t *sName; };
+#define FX( m ) []( EffectSettings &fx ) -> int & { return fx.m; }
     const FxNumber aFxNumbers[] = {
-        { IDC_FX_DARK, &EffectSettings::iDarkRoom, 0, 100, L"the dark room's darkening (0 to 100%)" },
-        { IDC_FX_VIGNETTE, &EffectSettings::iVignette, 0, 100, L"the vignette (0 to 100%)" },
-        { IDC_FX_LIGHTUP, &EffectSettings::iLightUp, 0, 100, L"the light-up (0 to 100%)" },
-        { IDC_FX_BLOOM, &EffectSettings::iBloom, 0, 400, L"the bloom's strength (0 to 400%)" },
-        { IDC_FX_RADIUS, &EffectSettings::iBloomRadius, 1, 200, L"the bloom's radius (1 to 200 pixels)" },
-        { IDC_FX_THRESHOLD, &EffectSettings::iBloomThreshold, 0, 99, L"the bloom's threshold (0 to 99%)" },
-        { IDC_FX_DECAYMS, &EffectSettings::iDecayMs, 1, 60000, L"the fade's time (1 to 60000 ms)" },
-        { IDC_FX_FLOOR, &EffectSettings::iDecayFloor, 0, 100, L"the light left after the fade (0 to 100%)" },
-        { IDC_FX_RELEASEMS, &EffectSettings::iReleaseMs, 0, 60000, L"the let-go keys' fade (0 to 60000 ms)" },
+        { IDC_FX_RESTLIGHT, FX( iRestLight ), 0, 100, L"the notes' resting light (0 to 100%)" },
+        { IDC_FX_LIGHTOUTLINES, FX( iLightOutlines ), 0, 300, L"the outlines' share of the light (0 to 300%)" },
+        { IDC_FX_LIGHTINSIDES, FX( iLightInsides ), 0, 100, L"the insides' share of the light (0 to 100%)" },
+        { IDC_FX_DECAYMS, FX( iDecayMs ), 1, 60000, L"the fall's time (1 to 60000 ms)" },
+        { IDC_FX_FLOOR, FX( iDecayFloor ), 0, 100, L"the light left after the fall (0 to 100%)" },
+        { IDC_FX_RELEASEMS, FX( iReleaseMs ), 0, 60000, L"the let-go keys' fade (0 to 60000 ms)" },
+        { IDC_FX_DARKNOTES, FX( aDark[EffectSettings::PartNotes] ), 0, 100, L"the notes' darkening (0 to 100%)" },
+        { IDC_FX_DARKSHORT, FX( aDark[EffectSettings::PartShort] ), 0, 100, L"the short notes' darkening (0 to 100%)" },
+        { IDC_FX_DARKKEYS, FX( aDark[EffectSettings::PartKeys] ), 0, 100, L"the keys' darkening (0 to 100%)" },
+        { IDC_FX_DARKBKG, FX( aDark[EffectSettings::PartBackground] ), 0, 100, L"the background's darkening (0 to 100%)" },
+        { IDC_FX_UPNOTES, FX( aLightUp[EffectSettings::PartNotes] ), 0, 100, L"the notes' lightening (0 to 100%)" },
+        { IDC_FX_UPSHORT, FX( aLightUp[EffectSettings::PartShort] ), 0, 100, L"the short notes' lightening (0 to 100%)" },
+        { IDC_FX_UPKEYS, FX( aLightUp[EffectSettings::PartKeys] ), 0, 100, L"the keys' lightening (0 to 100%)" },
+        { IDC_FX_GLOWNOTES, FX( aGlow[EffectSettings::PartNotes] ), 0, 300, L"the notes' glow (0 to 300%)" },
+        { IDC_FX_GLOWSHORT, FX( aGlow[EffectSettings::PartShort] ), 0, 300, L"the short notes' glow (0 to 300%)" },
+        { IDC_FX_GLOWKEYS, FX( aGlow[EffectSettings::PartKeys] ), 0, 300, L"the keys' glow (0 to 300%)" },
+        { IDC_FX_GLOWBKG, FX( aGlow[EffectSettings::PartBackground] ), 0, 300, L"the whole frame's glow (0 to 300%)" },
+        { IDC_FX_DARKBAR, FX( aDark[EffectSettings::PartBar] ), 0, 100, L"the red bar's darkening (0 to 100%)" },
+        { IDC_FX_UPBAR, FX( aLightUp[EffectSettings::PartBar] ), 0, 100, L"the red bar's lightening (0 to 100%)" },
+        { IDC_FX_GLOWBAR, FX( aGlow[EffectSettings::PartBar] ), 0, 300, L"the red bar's glow (0 to 300%)" },
+        { IDC_FX_BLOOM, FX( iBloom ), 0, 400, L"the bloom's strength (0 to 400%)" },
+        { IDC_FX_RADIUS, FX( iBloomRadius ), 1, 200, L"the bloom's radius (1 to 200 pixels)" },
+        { IDC_FX_THRESHOLD, FX( iBloomThreshold ), 0, 99, L"the bloom's threshold (0 to 99%)" },
+        { IDC_FX_VIGNETTE, FX( iVignette ), 0, 100, L"the vignette (0 to 100%)" },
+        { IDC_FX_HITSIZE, FX( iHitLineSize ), 0, 200, L"the hit line's thickness (0 to 200 pixels)" },
+        { IDC_FX_HITSOFT, FX( iHitLineSoft ), 0, 400, L"the hit line's fade (0 to 400 pixels)" },
+        { IDC_FX_HITSTRENGTH, FX( iHitLineStrength ), 0, 100, L"the hit line's strength (0 to 100%)" },
+        { IDC_FX_HITGLOW, FX( iHitLineGlow ), 0, 300, L"the hit line's glow (0 to 300%)" },
+        { IDC_FX_HITFADEMS, FX( iHitLineFadeMs ), 0, 60000, L"the hit line's fade (0 to 60000 ms)" },
+        { IDC_FX_HITSMEAR, FX( iHitLineSmear ), 0, 400, L"the hit line's smear (0 to 400 pixels)" },
     };
-    struct FxCheck { int iId; unsigned EffectSettings::*pBits; unsigned uBit; };
-    const FxCheck aFxChecks[] = {
-        { IDC_FX_LIGHTNOTES, &EffectSettings::uLightUp, EffectSettings::TargetNotes },
-        { IDC_FX_LIGHTKEYS, &EffectSettings::uLightUp, EffectSettings::TargetKeys },
-        { IDC_FX_GLOWNOTES, &EffectSettings::uBloom, EffectSettings::TargetNotes },
-        { IDC_FX_GLOWKEYS, &EffectSettings::uBloom, EffectSettings::TargetKeys },
-        { IDC_FX_GLOWSCENE, &EffectSettings::uBloom, EffectSettings::TargetScene },
-    };
+#undef FX
 
     // The fade's times and floor mean nothing without a curve
     VOID EnableFxDecay( HWND hWnd )
     {
         BOOL bOn = SendDlgItemMessageW( hWnd, IDC_FX_DECAY, CB_GETCURSEL, 0, 0 ) > 0;
         for ( int iId : { IDC_FX_DECAYMS, IDC_FX_FLOOR, IDC_FX_RELEASEMS } ) EnableWindow( GetDlgItem( hWnd, iId ), bOn );
+    }
+
+    // The hit line's settings mean nothing without it
+    VOID EnableFxHitLine( HWND hWnd )
+    {
+        BOOL bOn = IsDlgButtonChecked( hWnd, IDC_FX_HITLINE ) == BST_CHECKED;
+        for ( int iId : { IDC_FX_HITCOLOR, IDC_FX_HITNOTECOLOR, IDC_FX_HITSIZE, IDC_FX_HITSOFT, IDC_FX_HITSTRENGTH, IDC_FX_HITGLOW, IDC_FX_HITPLAYING,
+                           IDC_FX_HITFADEMS, IDC_FX_HITCURVE, IDC_FX_HITSMEAR } )
+            EnableWindow( GetDlgItem( hWnd, iId ), bOn );
+    }
+
+    // The whole tab by its first box; on, each setting as the ones it depends on allow
+    VOID EnableFx( HWND hWnd )
+    {
+        const BOOL bOn = IsDlgButtonChecked( hWnd, IDC_FX_ON ) == BST_CHECKED;
+        for ( HWND h = GetWindow( hWnd, GW_CHILD ); h; h = GetWindow( h, GW_HWNDNEXT ) )
+            if ( GetDlgCtrlID( h ) != IDC_FX_ON ) EnableWindow( h, bOn );
+        if ( bOn )
+        {
+            EnableWindow( GetDlgItem( hWnd, IDC_FX_FLATBORDERS ), IsDlgButtonChecked( hWnd, IDC_FX_FLAT ) == BST_CHECKED );
+            EnableFxDecay( hWnd );
+            EnableFxHitLine( hWnd );
+        }
     }
 
     INT_PTR CALLBACK EffectsProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
@@ -634,19 +787,45 @@ namespace
                 const EffectSettings &fx = Config::GetConfig().GetVisualSettings().fx;
                 CheckDlgButton( hWnd, IDC_FX_FLAT, fx.bFlat ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_FX_FLATBORDERS, fx.bFlatBorders ? BST_CHECKED : BST_UNCHECKED );
+                CheckDlgButton( hWnd, IDC_FX_NOBAR, fx.bNoBar ? BST_CHECKED : BST_UNCHECKED );
                 EnableWindow( GetDlgItem( hWnd, IDC_FX_FLATBORDERS ), fx.bFlat );
-                CheckDlgButton( hWnd, IDC_FX_OUTLINES, fx.bOutlines ? BST_CHECKED : BST_UNCHECKED );
+                CheckDlgButton( hWnd, IDC_FX_SHORTCOLOR, fx.bShortColor ? BST_CHECKED : BST_UNCHECKED );
+                CheckDlgButton( hWnd, IDC_FX_HOLLOW, fx.bHollow ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_FX_STATS, fx.bStats ? BST_CHECKED : BST_UNCHECKED );
-                for ( const FxNumber &n : aFxNumbers ) SetDlgItemInt( hWnd, n.iId, (UINT)( fx.*n.pValue ), FALSE );
-                for ( const FxCheck &c : aFxChecks ) CheckDlgButton( hWnd, c.iId, ( fx.*c.pBits & c.uBit ) ? BST_CHECKED : BST_UNCHECKED );
+                CheckDlgButton( hWnd, IDC_FX_HITLINE, fx.bHitLine ? BST_CHECKED : BST_UNCHECKED );
+                CheckDlgButton( hWnd, IDC_FX_HITPLAYING, fx.bHitLinePlaying ? BST_CHECKED : BST_UNCHECKED );
+                CheckDlgButton( hWnd, IDC_FX_HITNOTECOLOR, fx.bHitLineNoteColor ? BST_CHECKED : BST_UNCHECKED );
+                SetWindowLongPtrW( GetDlgItem( hWnd, IDC_FX_HITCOLOR ), GWLP_USERDATA, fx.iHitLineColor );
+                EnableFxHitLine( hWnd );
+                for ( const FxNumber &n : aFxNumbers ) SetDlgItemInt( hWnd, n.iId, (UINT)n.Get( const_cast< EffectSettings & >( fx ) ), FALSE );
                 // By EffectSettings::Decay
                 for ( const wchar_t *s : { L"None (steady)", L"Linear", L"Exponential", L"Smooth" } )
                     SendDlgItemMessageW( hWnd, IDC_FX_DECAY, CB_ADDSTRING, 0, ( LPARAM )s );
                 SendDlgItemMessageW( hWnd, IDC_FX_DECAY, CB_SETCURSEL, fx.eDecay, 0 );
-                EnableFxDecay( hWnd );
+                for ( const wchar_t *s : { L"None (off at once)", L"Linear", L"Exponential", L"Smooth" } )
+                    SendDlgItemMessageW( hWnd, IDC_FX_HITCURVE, CB_ADDSTRING, 0, ( LPARAM )s );
+                SendDlgItemMessageW( hWnd, IDC_FX_HITCURVE, CB_SETCURSEL, fx.eHitLineCurve, 0 );
+                CheckDlgButton( hWnd, IDC_FX_ON, fx.bOn ? BST_CHECKED : BST_UNCHECKED );
+                EnableFx( hWnd );
                 return TRUE;
             }
+            case WM_DRAWITEM:
+                if ( ( ( LPDRAWITEMSTRUCT )lParam )->CtlID != IDC_FX_HITCOLOR ) return FALSE;
+                DrawSwatch( ( LPDRAWITEMSTRUCT )lParam );
+                return TRUE;
             case WM_COMMAND:
+                if ( LOWORD( wParam ) == IDC_FX_HITCOLOR && HIWORD( wParam ) == BN_CLICKED )
+                {
+                    HWND hWndBtn = ( HWND )lParam;
+                    COLORREF cr = ( COLORREF )GetWindowLongPtrW( hWndBtn, GWLP_USERDATA );
+                    if ( !PickColor( hWnd, cr ) ) return TRUE;
+                    SetWindowLongPtrW( hWndBtn, GWLP_USERDATA, cr );
+                    InvalidateRect( hWndBtn, nullptr, FALSE );
+                    Changed( hWnd );
+                    return TRUE;
+                }
+                if ( LOWORD( wParam ) == IDC_FX_ON ) EnableFx( hWnd );
+                if ( LOWORD( wParam ) == IDC_FX_HITLINE ) EnableFxHitLine( hWnd );
                 if ( LOWORD( wParam ) == IDC_FX_DECAY && HIWORD( wParam ) == CBN_SELCHANGE ) EnableFxDecay( hWnd );
                 if ( LOWORD( wParam ) == IDC_FX_FLAT )
                     EnableWindow( GetDlgItem( hWnd, IDC_FX_FLATBORDERS ), IsDlgButtonChecked( hWnd, IDC_FX_FLAT ) == BST_CHECKED );
@@ -672,18 +851,21 @@ namespace
                             SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_INVALID );
                             return TRUE;
                         }
-                        fx.*n.pValue = (int)u;
-                    }
-                    for ( const FxCheck &c : aFxChecks )
-                    {
-                        if ( IsDlgButtonChecked( hWnd, c.iId ) == BST_CHECKED ) fx.*c.pBits |= c.uBit;
-                        else fx.*c.pBits &= ~c.uBit;
+                        n.Get( fx ) = (int)u;
                     }
                     fx.bFlat = IsDlgButtonChecked( hWnd, IDC_FX_FLAT ) == BST_CHECKED;
                     fx.bFlatBorders = IsDlgButtonChecked( hWnd, IDC_FX_FLATBORDERS ) == BST_CHECKED;
-                    fx.bOutlines = IsDlgButtonChecked( hWnd, IDC_FX_OUTLINES ) == BST_CHECKED;
+                    fx.bNoBar = IsDlgButtonChecked( hWnd, IDC_FX_NOBAR ) == BST_CHECKED;
+                    fx.bShortColor = IsDlgButtonChecked( hWnd, IDC_FX_SHORTCOLOR ) == BST_CHECKED;
+                    fx.bHollow = IsDlgButtonChecked( hWnd, IDC_FX_HOLLOW ) == BST_CHECKED;
                     fx.bStats = IsDlgButtonChecked( hWnd, IDC_FX_STATS ) == BST_CHECKED;
+                    fx.bOn = IsDlgButtonChecked( hWnd, IDC_FX_ON ) == BST_CHECKED;
+                    fx.bHitLine = IsDlgButtonChecked( hWnd, IDC_FX_HITLINE ) == BST_CHECKED;
+                    fx.bHitLinePlaying = IsDlgButtonChecked( hWnd, IDC_FX_HITPLAYING ) == BST_CHECKED;
+                    fx.bHitLineNoteColor = IsDlgButtonChecked( hWnd, IDC_FX_HITNOTECOLOR ) == BST_CHECKED;
+                    fx.iHitLineColor = ( unsigned )GetWindowLongPtrW( GetDlgItem( hWnd, IDC_FX_HITCOLOR ), GWLP_USERDATA );
                     fx.eDecay = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_FX_DECAY, CB_GETCURSEL, 0, 0 ) );
+                    fx.eHitLineCurve = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_FX_HITCURVE, CB_GETCURSEL, 0, 0 ) );
                     config.SetVisualSettings( cVisual );
                     SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_NOERROR );
                     return TRUE;
@@ -822,7 +1004,6 @@ namespace
                 EnableWindow( GetDlgItem( hWnd, IDC_PERF_TUNING31BEND ), cPerf.bTuning31 );
                 CheckDlgButton( hWnd, IDC_PERF_KDMAPI, cPerf.bPreferKDMAPI ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_PERF_LONGSENDS, cPerf.bKdmapiLongSends ? BST_CHECKED : BST_UNCHECKED );
-                SetDlgItemInt( hWnd, IDC_PERF_LONGBYTES, (UINT)cPerf.iKdmapiLongBytes, FALSE );
                 CheckDlgButton( hWnd, IDC_PERF_COLLAPSE, cPerf.bCollapseStacks ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_PERF_VELFLOOR, cPerf.bVelocityFloor ? BST_CHECKED : BST_UNCHECKED );
                 SetDlgItemInt( hWnd, IDC_PERF_MINVEL, (UINT)cPerf.iMinVelocity, FALSE );
@@ -882,14 +1063,6 @@ namespace
                         SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_INVALID );
                         return TRUE;
                     }
-                    UINT uLongBytes = GetDlgItemInt( hWnd, IDC_PERF_LONGBYTES, &bOk, FALSE );
-                    if ( !bOk || uLongBytes < (UINT)PerformanceSettings::LongBytesMin || uLongBytes > (UINT)PerformanceSettings::LongBytesMax )
-                    {
-                        MessageBoxW( hWnd, L"Please specify a long message size between 16 and 16,777,216 bytes (65,535 is the usual limit)", L"Error", MB_OK | MB_ICONEXCLAMATION );
-                        PostMessageW( hWnd, WM_NEXTDLGCTL, ( WPARAM )GetDlgItem( hWnd, IDC_PERF_LONGBYTES ), TRUE );
-                        SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_INVALID );
-                        return TRUE;
-                    }
                     UINT uCache = GetDlgItemInt( hWnd, IDC_PERF_CACHEMB, &bOk, FALSE );
                     if ( !bOk || uCache < 16 || uCache > 65536 )
                     {
@@ -918,7 +1091,6 @@ namespace
                     cPerf.bTuning31PitchBend = IsDlgButtonChecked( hWnd, IDC_PERF_TUNING31BEND ) == BST_CHECKED;
                     cPerf.bPreferKDMAPI = IsDlgButtonChecked( hWnd, IDC_PERF_KDMAPI ) == BST_CHECKED;
                     cPerf.bKdmapiLongSends = IsDlgButtonChecked( hWnd, IDC_PERF_LONGSENDS ) == BST_CHECKED;
-                    cPerf.iKdmapiLongBytes = (int)uLongBytes;
                     cVideo.bLimitFPS = IsDlgButtonChecked( hWnd, IDC_LIMITFPS ) == BST_CHECKED;
 
                     config.SetPerformanceSettings( cPerf );
@@ -951,7 +1123,9 @@ VOID DoPreferences( HWND hWndOwner )
     }
     PROPSHEETHEADERW psh = {};
     psh.dwSize = sizeof( PROPSHEETHEADERW );
-    psh.dwFlags = PSH_PROPSHEETPAGE | PSH_NOCONTEXTHELP;
+    psh.dwFlags = PSH_PROPSHEETPAGE | PSH_NOCONTEXTHELP | PSH_USECALLBACK;
+    // The sheet's frame is the property sheet's own dialog, which DarkMode does not see made
+    psh.pfnCallback = []( HWND hWnd, UINT msg, LPARAM ) -> int { if ( msg == PSCB_INITIALIZED ) DarkMode::Dialog( hWnd ); return 0; };
     psh.hwndParent = hWndOwner;
     psh.hInstance = g_hInstance;
     psh.pszCaption = L"Preferences";
