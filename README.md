@@ -46,6 +46,16 @@ A performance rewrite of [Piano From Above](https://github.com/brian-pantano/Pia
   - Playback pipeline, to see what holds playback back: messages decoded per second, how busy the decoder (with "×N" while N threads decode) and sender threads are, how full the ring between them is (average and peak) and the output's cost per message. A busy decoder with an empty ring is the decoder's limit; a full ring with a busy sender is the output's, and a rising send cost means the synth is pushing back.
   - Frame time, split into logic, notes, the rest of the scene and Present.
 
+**Effects** (Preferences > Effects, off until set; one box turns them all off)
+- Everything is drawn by its light, from 0 (unlit) to 1 (fully lit): a playing note and the key it presses rise to 1 and can fall along a curve while held; a key let go fades out. Every note can also have a resting light.
+- For each part (notes, short notes, keys, red bar, background): how dark it is unlit, how much it is lightened when lit, and how much it glows (bloom). How much of a note's light reaches its outline and its inside, so neither swamps the other.
+- Flat look (plain keys, flat notes), hollow notes (outlines only), no red bar, and a vignette.
+- **Hit line**: a line in the red bar's place, right on the keys, drawn over everything. It can run across the keyboard or show only over the keys being played, take the notes' colours, fade with its own time and curve after a key is let go, spread sideways, and glow.
+
+**Interface**
+- **Dark mode** (View > Interface: Light, Dark or Follow Windows), dialogs and menus included.
+- Colours of the background, the red bar and the tracks are set in Preferences > Visual; the colour dialog takes hex codes (`#RRGGBB` or `#RGB`), as do colour settings in the config file. A changed track palette recolours the open song at once.
+
 **Video rendering** (Performance tab, "Render video...")
 - Renders the open song from start to end to an MP4, off-screen at any resolution up to 8192 × 8192 and 1–240 fps, with x264 (CPU) or a hardware encoder (NVIDIA NVENC, AMD AMF or Intel QSV; H.264 or HEVC), a quality setting (CRF, CQ or QP; default 20) and a speed preset.
 - Frames are converted to YUV 4:2:0 (BT.709) on the GPU and read back a few frames behind the GPU, so ffmpeg only encodes. At 1080p60 on an RTX 3060: about 290 fps with x264 veryfast, 540 fps with NVENC.
