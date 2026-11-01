@@ -101,6 +101,7 @@ public:
         float fRadius = 24.0f;          // its reach in the frame's pixels
         float fThreshold = 1.0f;
         float fSceneGlow = 0.0f;
+        float fLimit = 0.0f;            // the glow added to a pixel tends to at most this, softly (0: no limit)
         float fVignette = 0.0f;         // the corners darkened that much (0 to 1)
     };
     bool BeginPost( const PostParams &p );     // false: not possible here (no shaders); drawing goes on into the target

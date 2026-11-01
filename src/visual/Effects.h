@@ -78,6 +78,7 @@ namespace Effects
         const std::vector< TrackSettings > *pShortRest = nullptr;   // short notes' at rest (the notes' are the ones drawn with)
         long long llNow = 0;                                    // the frame's time: playing notes started at or before it and end after it
         bool bGlow = false;                                     // glow rects are collected
+        float fExposure = 1.0f;                                 // a playing note's light above rest times this (at most 1)
     };
 
     // Each key's light: the note pressing it (from when), or, let go, when and with what light left
@@ -95,6 +96,10 @@ namespace Effects
         // slot (or -1)
         float HitLight( int k ) const { return m_aHit[k]; }
         int HitSlot( int k ) const { return m_aKey[k].iHitSlot; }
+        // Auto exposure (EffectSettings::iExposure), after Update: from the lit share of keys iFirst to
+        // iLast, followed over iExposureMs of song time
+        void UpdateExposure( const EffectSettings &fx, long long llNow, int iFirst, int iLast );
+        float Exposure() const { return m_fExposure; }      // what lights are multiplied by (1: none)
 
     private:
         struct Key { int iSlot = -1, iHitSlot = -1; bool bDown = false; long long llOn = 0, llOff = 0; float fAtOff = 0.0f; };
@@ -102,5 +107,8 @@ namespace Effects
         float m_aLight[256] = {}, m_aHit[256] = {};
         long long m_llLast = 0;
         bool m_bAny = false;
+        float m_fLitShare = 0.0f, m_fExposure = 1.0f;
+        long long m_llExposed = 0;
+        bool m_bExposed = false;    // m_fLitShare has a value
     };
 }

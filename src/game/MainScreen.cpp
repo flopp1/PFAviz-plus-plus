@@ -727,9 +727,12 @@ void MainScreen::DrawFrame( Renderer *pRenderer, const FrameGlobals &g, FastEngi
     bool bAnyGlow = false;
     for ( int p = 0; p < EffectSettings::PartCount; p++ ) bAnyGlow |= look.Glows( p );
     bAnyGlow |= fx.bHitLine && fx.iHitLineGlow > 0;
+    // (auto exposure: as the last frame left it; it only turns the glow down)
+    const float fExposure = lights.Exposure();
     if ( bAnyGlow )
     {
-        post.fBloom = fx.iBloom / 100.0f;
+        post.fBloom = fx.iBloom / 100.0f * std::min( fExposure, 1.0f );
+        post.fLimit = fx.iBloomLimit / 100.0f;
         post.fRadius = fx.iBloomRadius * g.iBufferHeight / 1080.0f;
         post.fThreshold = fx.iBloomThreshold / 100.0f;
         post.fSceneGlow = fx.aGlow[EffectSettings::PartBackground] / 100.0f;
@@ -751,6 +754,7 @@ void MainScreen::DrawFrame( Renderer *pRenderer, const FrameGlobals &g, FastEngi
     light.pShortRest = &look.Rest( EffectSettings::PartShort, m_vTrackSettings );
     light.llNow = g.llStartTime;
     light.bGlow = bBloom && ( look.Glows( EffectSettings::PartNotes ) || look.Glows( EffectSettings::PartShort ) );
+    light.fExposure = fExposure;
     engine.SetLight( &light );
     if ( pNotesUs ) pNotesUs[0] = Timer::NowMicroSecs();
     engine.DrawNotes( pRenderer, g, look.Rest( EffectSettings::PartNotes, m_vTrackSettings ) );
@@ -759,14 +763,13 @@ void MainScreen::DrawFrame( Renderer *pRenderer, const FrameGlobals &g, FastEngi
 
     // The keys, by their light: pressed ones from unlit in their note's colours; let go, from their own
     std::vector< Renderer::GlowRect > vKeyGlow;
-    if ( m_bShowKB || fx.bHitLine )
     {
         int aSlot[256];
         long long aStart[256];
         engine.GetKeySlots( aSlot, aStart );
         lights.Update( fx, g.llStartTime, aSlot, aStart );
+        lights.UpdateExposure( fx, g.llStartTime, g.iStartNote, g.iEndNote );
     }
-    else lights.Reset();
     if ( m_bShowKB )
     {
         const int eKeys = EffectSettings::PartKeys;
@@ -783,7 +786,7 @@ void MainScreen::DrawFrame( Renderer *pRenderer, const FrameGlobals &g, FastEngi
             const int iSlot = lights.Slot( k );
             if ( iSlot < 0 || (size_t)( iSlot >> 4 ) >= m_vTrackSettings.size() ) continue;
             const ChannelSettings &base = m_vTrackSettings[iSlot >> 4].aChannels[iSlot & 15];
-            const float fLight = lights.Light( k );
+            const float fLight = std::min( 1.0f, lights.Light( k ) * fExposure );
             if ( lights.Pressed( k ) )
             {
                 aLit[k] = look.Lit( eKeys, base, fLight );

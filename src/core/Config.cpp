@@ -282,6 +282,9 @@ void EffectSettings::LoadDefaultValues()
     iBloom = 0;
     iBloomRadius = 24;
     iBloomThreshold = 60;
+    iBloomLimit = 0;
+    iExposure = 0;
+    iExposureMs = 1500;
     iVignette = 0;
     eDecay = DecayNone;
     iDecayMs = 600;
@@ -327,6 +330,9 @@ void EffectSettings::LoadConfigValues( const IniFile &ini )
     iBloom = std::clamp( ini.GetInt( "Effects", "Bloom", iBloom ), 0, 400 );
     iBloomRadius = std::clamp( ini.GetInt( "Effects", "BloomRadius", iBloomRadius ), 1, 200 );
     iBloomThreshold = std::clamp( ini.GetInt( "Effects", "BloomThreshold", iBloomThreshold ), 0, 99 );
+    iBloomLimit = std::clamp( ini.GetInt( "Effects", "BloomLimit", iBloomLimit ), 0, 1000 );
+    iExposure = std::clamp( ini.GetInt( "Effects", "Exposure", iExposure ), 0, 100 );
+    iExposureMs = std::clamp( ini.GetInt( "Effects", "ExposureMs", iExposureMs ), 0, 60000 );
     iVignette = std::clamp( ini.GetInt( "Effects", "Vignette", iVignette ), 0, 100 );
     eDecay = std::clamp( ini.GetInt( "Effects", "Decay", eDecay ), 0, DecayCount - 1 );
     iDecayMs = std::clamp( ini.GetInt( "Effects", "DecayMs", iDecayMs ), 1, 60000 );
@@ -383,6 +389,9 @@ void EffectSettings::Save( IniFile &ini ) const
     ini.SetInt( "Effects", "Bloom", iBloom );
     ini.SetInt( "Effects", "BloomRadius", iBloomRadius );
     ini.SetInt( "Effects", "BloomThreshold", iBloomThreshold );
+    ini.SetInt( "Effects", "BloomLimit", iBloomLimit );
+    ini.SetInt( "Effects", "Exposure", iExposure );
+    ini.SetInt( "Effects", "ExposureMs", iExposureMs );
     ini.SetInt( "Effects", "Vignette", iVignette );
     ini.SetInt( "Effects", "Decay", eDecay );
     ini.SetInt( "Effects", "DecayMs", iDecayMs );

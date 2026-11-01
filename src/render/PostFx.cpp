@@ -38,14 +38,17 @@ float4 main( float2 t : TEXCOORD0 ) : COLOR
     return float4( a, 1 );
 }
 )";
-    // Composite: the frame, plus the glow times x, darkened towards the corners by y
+    // Composite: the frame, plus the glow times x (with z: towards at most z, as z (1 - e^(-g / z))),
+    // darkened towards the corners by y
     const char *CompositePS = R"(
 sampler2D s0 : register( s0 );
 sampler2D s1 : register( s1 );
 float4 c0 : register( c0 );
 float4 main( float2 t : TEXCOORD0 ) : COLOR
 {
-    float3 a = tex2D( s0, t ).rgb + tex2D( s1, t ).rgb * c0.x;
+    float3 g = tex2D( s1, t ).rgb * c0.x;
+    if ( c0.z > 0 ) g = c0.z * ( 1 - exp( -g / c0.z ) );
+    float3 a = tex2D( s0, t ).rgb + g;
     float d = length( ( t - 0.5 ) * 2 ) * 0.70710678;
     a *= 1 - c0.y * smoothstep( 0.25, 1.0, d );
     return float4( a, 1 );
@@ -266,7 +269,7 @@ void Renderer::EndPost()
     }
 
     // Into the target
-    const float aComp[4] = { bBloom ? m_Post.fBloom : 0.0f, m_Post.fVignette, 0.0f, 0.0f };
+    const float aComp[4] = { bBloom ? m_Post.fBloom : 0.0f, m_Post.fVignette, m_Post.fLimit, 0.0f };
     m_pDevice->SetPixelShader( m_pCompositePS );
     m_pDevice->SetPixelShaderConstantF( 0, aComp, 1 );
     m_pDevice->SetTexture( 0, m_PostScene.pTex );

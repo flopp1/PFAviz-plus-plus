@@ -183,6 +183,24 @@ void Effects::KeyLights::Reset()
     for ( float &f : m_aLight ) f = 0.0f;
     for ( float &f : m_aHit ) f = 0.0f;
     m_bAny = false;
+    m_bExposed = false;
+    m_fExposure = 1.0f;
+}
+
+// The light times (target share / lit share)^strength, between a quarter and 4 times; the target is a
+// tenth of the keys lit at full
+void Effects::KeyLights::UpdateExposure( const EffectSettings &fx, long long llNow, int iFirst, int iLast )
+{
+    if ( fx.iExposure <= 0 || iLast < iFirst ) { m_bExposed = false; m_fExposure = 1.0f; return; }
+    float fSum = 0.0f;
+    for ( int k = std::max( 0, iFirst ); k <= std::min( 255, iLast ); k++ ) fSum += m_aLight[k];
+    const float fShare = fSum / ( std::min( 255, iLast ) - std::max( 0, iFirst ) + 1 );
+    if ( !m_bExposed || llNow < m_llExposed || fx.iExposureMs <= 0 ) m_fLitShare = fShare;
+    else m_fLitShare += ( fShare - m_fLitShare ) * ( 1.0f - std::exp( -( llNow - m_llExposed ) / ( fx.iExposureMs * 1000.0f ) ) );
+    m_bExposed = true;
+    m_llExposed = llNow;
+    static const float fTarget = 0.1f;
+    m_fExposure = std::clamp( std::pow( fTarget / std::max( m_fLitShare, 0.001f ), fx.iExposure / 100.0f ), 0.25f, 4.0f );
 }
 
 void Effects::KeyLights::Update( const EffectSettings &fx, long long llNow, const int aSlot[256], const long long aStart[256] )

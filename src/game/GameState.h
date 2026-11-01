@@ -30,7 +30,12 @@ public:
     enum GameError { Success = 0, BadPointer, OutOfMemory, DirectXError };
 
     static const wchar_t *const Errors[];
+    // The screen replaced is deleted on a thread of its own (Dispose)
     static GameError ChangeState( GameState *pNextState, GameState **pDestObj );
+    // Deletes a screen off the game thread, so a big song's teardown (its notes freed, its threads
+    // joined, its synth stopped) does not stop the frames. Its audio goes first
+    static void Dispose( GameState *pState );
+    static void WaitForReleasedAudio();     // until the audio of every screen disposed of is released
 
     GameState( HWND hWnd, Renderer *pRenderer ) : m_hWnd( hWnd ), m_pRenderer( pRenderer ) {}
     virtual ~GameState() {}
@@ -41,6 +46,10 @@ public:
     virtual GameError Render() = 0;
     // Renders the open song to a video (app/VideoExport.h); the job is done when this returns
     virtual void RenderVideo( const std::shared_ptr< VideoJob > &pJob );
+    // Stops the screen's audio and closes its MIDI output (Dispose, before deleting it)
+    virtual void ReleaseAudio() {}
+    // Whether Init opens a MIDI output: it then waits for the screens before it to close theirs
+    virtual bool UsesAudio() const { return false; }
 
     GameState *NextState() { return m_pNextState; }
     void SetHWnd( HWND hWnd ) { m_hWnd = hWnd; }
@@ -68,6 +77,8 @@ public:
     SplashScreen( HWND hWnd, Renderer *pRenderer );
     GameError MsgProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam ) override;
     GameError Init() override { return Success; }
+    void ReleaseAudio() override { m_OutDevice.Close(); }
+    bool UsesAudio() const override { return true; }
     GameError Logic() override;
     GameError Render() override;
 
@@ -131,6 +142,8 @@ public:
     // bPlayback false: no playback engine (File > Render Song: nothing is sent to the synth)
     MainScreen( std::shared_ptr< const Song > pSong, HWND hWnd, Renderer *pRenderer, bool bPlayback = true );
     ~MainScreen();
+    void ReleaseAudio() override { m_pPlayback.reset(); }
+    bool UsesAudio() const override { return m_bWithPlayback; }
 
     GameError MsgProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam ) override;
     GameError Init() override;

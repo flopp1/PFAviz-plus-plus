@@ -707,7 +707,7 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
                 float fLight = look.RestLight();
                 if ( bPlaying )
                 {
-                    fLight += ( 1.0f - fLight ) * Effects::Held( *pLight->pFx, pLight->llNow - ow.llStart );
+                    fLight += ( 1.0f - fLight ) * std::min( 1.0f, Effects::Held( *pLight->pFx, pLight->llNow - ow.llStart ) * pLight->fExposure );
                     csLit = look.Lit( ePart, base, fLight );
                     pcs = &csLit;
                 }

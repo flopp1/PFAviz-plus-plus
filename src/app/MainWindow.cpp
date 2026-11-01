@@ -9,10 +9,13 @@
 #include <shellapi.h>
 #include <algorithm>
 #include <cmath>
+#include <deque>
 
 #include "core/Config.h"
 #include "game/GameState.h"
 #include "resource.h"
+
+static bool HandOffWaiting();       // hands on messages waiting for the game thread; true: some still wait
 
 namespace
 {
@@ -106,6 +109,21 @@ LRESULT WINAPI WndProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
         case WM_SETTINGCHANGE:
             DarkMode::OnSettingChange( lParam );
             break;
+        // A file dropped on the window: played as with File > Play Song (of several, the first)
+        case WM_DROPFILES:
+        {
+            HDROP hDrop = ( HDROP )wParam;
+            wchar_t sFilename[1024] = { 0 };
+            const bool bFile = DragQueryFileW( hDrop, 0, sFilename, sizeof( sFilename ) / sizeof( wchar_t ) ) > 0;
+            DragFinish( hDrop );
+            if ( bFile )
+            {
+                SetForegroundWindow( hWnd );
+                CheckActivity( TRUE );
+                PlayFile( sFilename );
+            }
+            return 0;
+        }
         case WM_COMMAND:
         {
             int iId = LOWORD( wParam );
@@ -277,6 +295,11 @@ LRESULT WINAPI WndProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
             if ( wParam == IDT_SAVECONFIG )
             {
                 Config::GetConfig().SaveConfigValues( true );
+                return 0;
+            }
+            if ( wParam == IDT_HANDOFF )
+            {
+                if ( !HandOffWaiting() ) KillTimer( hWnd, IDT_HANDOFF );
                 return 0;
             }
             if ( wParam != IDT_DEVICECHANGE ) break;
@@ -1054,10 +1077,23 @@ static INT_PTR WINAPI AboutProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lPar
 // Helpers involved with user interaction and the GUI
 //-----------------------------------------------------------------------------
 
+// While the game thread is busy and its queue full, messages for it wait here in order (handed on by
+// IDT_HANDOFF), so the UI thread never waits for it: a mouse move replaces one waiting just before it
+static std::deque< MSG > g_qHandOff;
+
+static bool HandOffWaiting()
+{
+    while ( !g_qHandOff.empty() && g_MsgQueue.Push( g_qHandOff.front() ) ) g_qHandOff.pop_front();
+    return !g_qHandOff.empty();
+}
+
 VOID HandOffMsg( UINT msg, WPARAM wParam, LPARAM lParam )
 {
     MSG msgGameThread = { g_hWndGfx, msg, wParam, lParam, 0, { 0, 0 } };
-    g_MsgQueue.ForcePush( msgGameThread );
+    if ( !HandOffWaiting() && g_MsgQueue.Push( msgGameThread ) ) return;
+    if ( msg == WM_MOUSEMOVE && !g_qHandOff.empty() && g_qHandOff.back().message == WM_MOUSEMOVE ) g_qHandOff.back() = msgGameThread;
+    else g_qHandOff.push_back( msgGameThread );
+    SetTimer( g_hWnd, IDT_HANDOFF, 20, nullptr );
 }
 
 VOID ShowControls( BOOL bShow )

@@ -55,6 +55,7 @@
 #define IDC_INACTIVITYTIMER             40103
 #define IDT_DEVICECHANGE                40104
 #define IDT_SAVECONFIG                  40106
+#define IDT_HANDOFF                     40107
 #define IDC_POSNCTRL                    40105
 #define ID_VIEW_MOVEANDZOOM             40109
 #define ID_VIEW_CANCELMOVEANDZOOM       40114
@@ -228,6 +229,9 @@
 #define IDC_FX_HITCURVE                 1543
 #define IDC_FX_ON                       1544
 #define IDC_FX_HITSMEAR                 1545
+#define IDC_FX_BLOOMLIMIT               1546
+#define IDC_FX_EXPOSURE                 1547
+#define IDC_FX_EXPOSUREMS               1548
 
 // Loading popup
 #define IDC_LOAD_FILE                   1200

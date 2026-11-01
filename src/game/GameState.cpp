@@ -4,7 +4,11 @@
 
 #include <algorithm>
 #include <cmath>
+#include <condition_variable>
 #include <cstdio>
+#include <deque>
+#include <mutex>
+#include <thread>
 
 #include "app/MainWindow.h"
 #include "app/VideoExport.h"
@@ -39,9 +43,11 @@ GameState::GameError GameState::ChangeState( GameState *pNextState, GameState **
     {
         if ( !pNextState->m_hWnd ) pNextState->m_hWnd = ( *pDestObj )->m_hWnd;
         if ( !pNextState->m_pRenderer ) pNextState->m_pRenderer = ( *pDestObj )->m_pRenderer;
-        delete *pDestObj;
+        Dispose( *pDestObj );
     }
     *pDestObj = pNextState;
+    // (one MIDI output at a time: the old screen's is closed before the new one opens its own)
+    if ( pNextState->UsesAudio() ) WaitForReleasedAudio();
     GameError iResult = pNextState->Init();
     if ( iResult )
     {
@@ -51,6 +57,61 @@ GameState::GameError GameState::ChangeState( GameState *pNextState, GameState **
         return iResult;
     }
     return Success;
+}
+
+namespace
+{
+    struct Disposal
+    {
+        std::mutex mx;
+        std::condition_variable cv;
+        std::deque< GameState * > q;
+        int iAudio = 0;             // screens queued whose audio is not released yet
+        bool bThread = false;
+    };
+    // (never destroyed: its thread may still run as the process ends)
+    Disposal &TheDisposal() { static Disposal *p = new Disposal; return *p; }
+}
+
+void GameState::Dispose( GameState *pState )
+{
+    Disposal &d = TheDisposal();
+    {
+        std::lock_guard< std::mutex > lock( d.mx );
+        d.q.push_back( pState );
+        d.iAudio++;
+        if ( !d.bThread )
+        {
+            d.bThread = true;
+            std::thread( [&d] {
+                for ( ;; )
+                {
+                    GameState *p;
+                    {
+                        std::unique_lock< std::mutex > lock( d.mx );
+                        d.cv.wait( lock, [&] { return !d.q.empty(); } );
+                        p = d.q.front();
+                        d.q.pop_front();
+                    }
+                    p->ReleaseAudio();
+                    {
+                        std::lock_guard< std::mutex > lock( d.mx );
+                        d.iAudio--;
+                    }
+                    d.cv.notify_all();
+                    delete p;
+                }
+            } ).detach();
+        }
+    }
+    d.cv.notify_all();
+}
+
+void GameState::WaitForReleasedAudio()
+{
+    Disposal &d = TheDisposal();
+    std::unique_lock< std::mutex > lock( d.mx );
+    d.cv.wait( lock, [&] { return d.iAudio == 0; } );
 }
 
 //-----------------------------------------------------------------------------

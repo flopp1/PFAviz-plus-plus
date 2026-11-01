@@ -66,6 +66,7 @@ static DWORD WINAPI GameThread( LPVOID lpParameter )
         pGameState->Render();
     }
 
+    GameState::WaitForReleasedAudio();
     delete pGameState;
     delete pRenderer;
     return 0;
@@ -136,7 +137,7 @@ int WINAPI wWinMain( HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow )
     // The interface's theme, before any window
     DarkMode::Install();
     DarkMode::SetTheme( cView.GetTheme() );
-    g_hWnd = CreateWindowExW( 0, CLASSNAME, APPNAME, WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, iLeft, iTop,
+    g_hWnd = CreateWindowExW( WS_EX_ACCEPTFILES, CLASSNAME, APPNAME, WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN, iLeft, iTop,
                               cView.GetMainWidth(), cView.GetMainHeight(), nullptr, nullptr, hInstance, nullptr );
     if ( !g_hWnd ) return 1;
 
@@ -198,8 +199,9 @@ int WINAPI wWinMain( HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow )
     // LoudMax VST unloading) blocks every exiting thread, including the ones the game thread joins,
     // and ExitProcess would block on the same lock.
     msg.message = WM_QUIT;
-    g_MsgQueue.ForcePush( msg );
-    if ( WaitForSingleObject( hThread, 5000 ) == WAIT_TIMEOUT )
+    const DWORD dwQuit = GetTickCount();
+    while ( !g_MsgQueue.Push( msg ) && GetTickCount() - dwQuit < 5000 ) Sleep( 1 );    // (its queue full: the game thread is stuck)
+    if ( WaitForSingleObject( hThread, 5000 - std::min< DWORD >( 5000, GetTickCount() - dwQuit ) ) == WAIT_TIMEOUT )
         TerminateProcess( GetCurrentProcess(), 0 );
 
     UnregisterClassW( CLASSNAME, hInstance );

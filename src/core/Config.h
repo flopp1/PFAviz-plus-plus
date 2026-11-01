@@ -52,6 +52,11 @@ struct EffectSettings
     int iBloom;                 // percent: the glow's strength
     int iBloomRadius;           // the glow's reach, pixels at 1080p
     int iBloomThreshold;        // percent: the frame glows where it is brighter than this
+    int iBloomLimit;            // percent: the glow added to a pixel tends to at most this, softly (0: no limit)
+    // Auto exposure: the lit share of the keyboard, followed over iExposureMs, sets how far the notes' and
+    // keys' light is turned up (little lit: fades last longer) or down (much lit), and the glow down
+    int iExposure;              // percent: how strongly (0: off)
+    int iExposureMs;
     int iVignette;              // percent: the corners darkened that much more
     int eDecay;                 // Decay: how a played note's light falls while it is held
     int iDecayMs;               // the time it takes

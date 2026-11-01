@@ -96,7 +96,7 @@ BEGIN
     LTEXT           "",IDC_KDMAPISTATUS,7,76,286,44
 END
 
-IDD_PP6_EFFECTS DIALOGEX 0, 0, 300, 468
+IDD_PP6_EFFECTS DIALOGEX 0, 0, 300, 486
 STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_DISABLED | WS_CAPTION
 CAPTION "Property Page"
 FONT 8, "MS Shell Dlg", 400, 0, 0x0
@@ -167,7 +167,7 @@ BEGIN
     EDITTEXT        IDC_FX_GLOWBKG,208,284,28,14,ES_AUTOHSCROLL | ES_NUMBER
     LTEXT           "%",IDC_STATIC,239,286,8,8
     LTEXT           "The red bar is never lit: its lightening and glow always show. The background glows from the whole frame, where it is brighter than the threshold.",IDC_STATIC,13,300,276,16
-    GROUPBOX        "Bloom",IDC_STATIC,7,326,288,30
+    GROUPBOX        "Bloom and exposure",IDC_STATIC,7,326,288,48
     LTEXT           "Stre&ngth:",IDC_STATIC,13,339,32,8
     EDITTEXT        IDC_FX_BLOOM,47,337,28,14,ES_AUTOHSCROLL | ES_NUMBER
     LTEXT           "%",IDC_STATIC,78,339,8,8
@@ -177,35 +177,43 @@ BEGIN
     LTEXT           "&Threshold:",IDC_STATIC,200,339,36,8
     EDITTEXT        IDC_FX_THRESHOLD,238,337,28,14,ES_AUTOHSCROLL | ES_NUMBER
     LTEXT           "%",IDC_STATIC,269,339,8,8
-    GROUPBOX        "Hit line: in the red bar's place, over everything (sizes in px at 1080p)",IDC_STATIC,7,360,288,84
-    CONTROL         "&Draw a hit line",IDC_FX_HITLINE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,373,70,10
-    LTEXT           "Colour:",IDC_STATIC,90,374,26,8
-    CONTROL         "",IDC_FX_HITCOLOR,"Button",BS_OWNERDRAW | WS_TABSTOP,118,372,13,12,WS_EX_CLIENTEDGE
-    CONTROL         "Over played keys in their notes' co&lours",IDC_FX_HITNOTECOLOR,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,145,373,146,10
-    LTEXT           "Thic&kness:",IDC_STATIC,13,392,38,8
-    EDITTEXT        IDC_FX_HITSIZE,53,390,28,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "px",IDC_STATIC,84,392,10,8
-    LTEXT           "Soft &edge:",IDC_STATIC,104,392,36,8
-    EDITTEXT        IDC_FX_HITSOFT,142,390,28,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "px",IDC_STATIC,173,392,10,8
-    LTEXT           "Strength:",IDC_STATIC,205,392,32,8
-    EDITTEXT        IDC_FX_HITSTRENGTH,239,390,28,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "%",IDC_STATIC,270,392,8,8
-    CONTROL         "Only over keys being &played",IDC_FX_HITPLAYING,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,410,108,10
-    LTEXT           "S&mear:",IDC_STATIC,128,410,24,8
-    EDITTEXT        IDC_FX_HITSMEAR,154,408,28,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "px",IDC_STATIC,185,410,10,8
-    LTEXT           "Glow:",IDC_STATIC,205,410,32,8
-    EDITTEXT        IDC_FX_HITGLOW,239,408,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "Soft limit:",IDC_STATIC,13,357,36,8
+    EDITTEXT        IDC_FX_BLOOMLIMIT,51,355,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "% (0: none)",IDC_STATIC,82,357,42,8
+    LTEXT           "Auto exposure:",IDC_STATIC,130,357,50,8
+    EDITTEXT        IDC_FX_EXPOSURE,182,355,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "%, over",IDC_STATIC,213,357,30,8
+    EDITTEXT        IDC_FX_EXPOSUREMS,245,355,30,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "ms",IDC_STATIC,278,357,12,8
+    GROUPBOX        "Hit line: in the red bar's place, over everything (sizes in px at 1080p)",IDC_STATIC,7,378,288,84
+    CONTROL         "&Draw a hit line",IDC_FX_HITLINE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,391,70,10
+    LTEXT           "Colour:",IDC_STATIC,90,392,26,8
+    CONTROL         "",IDC_FX_HITCOLOR,"Button",BS_OWNERDRAW | WS_TABSTOP,118,390,13,12,WS_EX_CLIENTEDGE
+    CONTROL         "Over played keys in their notes' co&lours",IDC_FX_HITNOTECOLOR,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,145,391,146,10
+    LTEXT           "Thic&kness:",IDC_STATIC,13,410,38,8
+    EDITTEXT        IDC_FX_HITSIZE,53,408,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "px",IDC_STATIC,84,410,10,8
+    LTEXT           "Soft &edge:",IDC_STATIC,104,410,36,8
+    EDITTEXT        IDC_FX_HITSOFT,142,408,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "px",IDC_STATIC,173,410,10,8
+    LTEXT           "Strength:",IDC_STATIC,205,410,32,8
+    EDITTEXT        IDC_FX_HITSTRENGTH,239,408,28,14,ES_AUTOHSCROLL | ES_NUMBER
     LTEXT           "%",IDC_STATIC,270,410,8,8
-    LTEXT           "A key let go fades its part out over",IDC_STATIC,13,428,118,8
-    EDITTEXT        IDC_FX_HITFADEMS,133,426,32,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "ms, curve:",IDC_STATIC,168,428,36,8
-    COMBOBOX        IDC_FX_HITCURVE,206,426,80,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    LTEXT           "&Vignette:",IDC_STATIC,7,452,32,8
-    EDITTEXT        IDC_FX_VIGNETTE,41,450,28,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "%",IDC_STATIC,72,452,8,8
-    CONTROL         "The effects also change the stats bo&x",IDC_FX_STATS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,100,452,193,10
+    CONTROL         "Only over keys being &played",IDC_FX_HITPLAYING,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,428,108,10
+    LTEXT           "S&mear:",IDC_STATIC,128,428,24,8
+    EDITTEXT        IDC_FX_HITSMEAR,154,426,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "px",IDC_STATIC,185,428,10,8
+    LTEXT           "Glow:",IDC_STATIC,205,428,32,8
+    EDITTEXT        IDC_FX_HITGLOW,239,426,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "%",IDC_STATIC,270,428,8,8
+    LTEXT           "A key let go fades its part out over",IDC_STATIC,13,446,118,8
+    EDITTEXT        IDC_FX_HITFADEMS,133,444,32,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "ms, curve:",IDC_STATIC,168,446,36,8
+    COMBOBOX        IDC_FX_HITCURVE,206,444,80,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Vignette:",IDC_STATIC,7,470,32,8
+    EDITTEXT        IDC_FX_VIGNETTE,41,468,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "%",IDC_STATIC,72,470,8,8
+    CONTROL         "The effects also change the stats bo&x",IDC_FX_STATS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,100,470,193,10
 END
 
 IDD_PP4_CONTROLS DIALOGEX 0, 0, 300, 212
