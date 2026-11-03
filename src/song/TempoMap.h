@@ -21,7 +21,7 @@ struct TempoMap
     // The time of a tick in segment s
     long long In( const Seg &s, long long llTick ) const
     {
-        if ( iDivision & 0x8000 )
+        if ( IsSmpteDivision( iDivision ) )
         {
             int iFramesPerSec100 = -( ( iDivision | static_cast< int >( 0xFFFF0000 ) ) >> 8 ) * 100;
             if ( iFramesPerSec100 == 2900 ) iFramesPerSec100 = 2997;

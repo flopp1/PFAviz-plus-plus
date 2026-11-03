@@ -38,7 +38,9 @@ namespace Clean
         MinHeight = 1,      // a note rounding to 0 rows is drawn 1 row tall (the original skips it)
         KeepBottom = 2,     // the frame's start is rounded up, not down, to whole rows, so a note leaves
                             // the hit line no later than it stops sounding (the original rounds down, so a
-                            // note can be gone while its last row would still show above the keyboard)
+                            // note can be gone while its last row would still show above the keyboard); and
+                            // the notes drawn reach past the frame's end as far (MainScreen::ViewEnd), so one
+                            // coming in at the top shows in its first row too
         EdgeRound = 4,      // a note's top and bottom rows are each rounded from its end and start time
                             // (the original rounds its start and its length, so two notes ending
                             // together can have tops a row apart and the lower layer peeks out)
@@ -88,6 +90,9 @@ struct KeyLook
     D3DCOLOR aGlow[256] = {};                   // each key's glow (0: none, drawn black, so it hides the glow of the keys under it)
     std::vector< Renderer::GlowRect > *pGlow = nullptr;     // the keys' glow rects go here (null: none)
     bool bBorders = true;                                   // the flat look: gaps between the white keys (off: they meet)
+    float fTopWhite = -1.0f;                                // a pressed key's colour this far towards white at its top
+                                                            // (below 0: off; the flat look then has none, the normal
+                                                            // look darkens towards the top)
     D3DCOLOR cBarGlow = 0;                                  // the red bar's glow (with pGlow)
 };
 

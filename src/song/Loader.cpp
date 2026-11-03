@@ -1553,7 +1553,7 @@ std::unique_ptr< Song > Loader::LoadFile( const std::wstring &sPath, int iThread
     {
         // A compressed file or archive: its MIDI read as it is decompressed, never expanded (song/Archive.h)
         progress.iStage = LoadProgress::Reading;
-        std::unique_ptr< Archive::Reader > reader = Archive::Open( sPath, &progress.bCancel, sError );
+        std::unique_ptr< Archive::Reader > reader = Archive::Open( sPath, &progress.bCancel, sError, progress.fnChoose );
         if ( !reader ) return nullptr;
         stats.adStageSeconds[LoadProgress::Reading] = ( Timer::NowMicroSecs() - llStart ) / 1e6;
         song = LoadImpl( nullptr, reader->Total(), nullptr, iThreads, progress, stats, sError, reader.get() );

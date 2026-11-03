@@ -44,6 +44,16 @@ struct RefTrackInfo
     bool bMalformed = false;
 };
 
+// A header's division is SMPTE time (frames per second, negated, then ticks per frame) only when it makes
+// sense as one: 24, 25, 29 or 30 frames per second and some ticks per frame. Otherwise it is ticks per
+// quarter note, all 16 bits of it (some black MIDIs use 61440)
+inline bool IsSmpteDivision( int iDivision )
+{
+    if ( !( iDivision & 0x8000 ) ) return false;
+    const int iFps = -static_cast< signed char >( iDivision >> 8 );
+    return ( iFps == 24 || iFps == 25 || iFps == 29 || iFps == 30 ) && ( iDivision & 0xFF ) > 0;
+}
+
 struct RefMidiInfo
 {
     std::wstring sFilename;

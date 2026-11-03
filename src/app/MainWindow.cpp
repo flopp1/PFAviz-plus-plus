@@ -208,6 +208,14 @@ LRESULT WINAPI WndProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
                 case ID_VIEW_KEYBOARD:
                     cView.ToggleKeyboard( true );
                     return 0;
+                case ID_VIEW_GRAPHS:
+                {
+                    VisualSettings cVisual = Config::GetConfig().GetVisualSettings();
+                    cVisual.bGraph = !cVisual.bGraph;
+                    Config::GetConfig().SetVisualSettings( cVisual );
+                    ShowGraphs( cVisual.bGraph );
+                    return 0;
+                }
                 case ID_VIEW_ALWAYSONTOP:
                     cView.ToggleOnTop( true );
                     return 0;
@@ -309,6 +317,9 @@ LRESULT WINAPI WndProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
             return 0;
         case WM_APP_LOADDONE:
             FinishLoad( lParam );
+            return 0;
+        case WM_APP_CHOOSEMIDI:
+            ChooseMidiEntry( lParam );
             return 0;
         case WM_APP_RENDERVIDEO:
             RenderVideoUnattended( reinterpret_cast< const wchar_t * >( lParam ) );
@@ -1112,6 +1123,11 @@ VOID ShowControls( BOOL bShow )
 VOID ShowKeyboard( BOOL bShow )
 {
     CheckMenuItem( GetMainMenu(), ID_VIEW_KEYBOARD, MF_BYCOMMAND | ( bShow ? MF_CHECKED : MF_UNCHECKED ) );
+}
+
+VOID ShowGraphs( BOOL bShow )
+{
+    CheckMenuItem( GetMainMenu(), ID_VIEW_GRAPHS, MF_BYCOMMAND | ( bShow ? MF_CHECKED : MF_UNCHECKED ) );
 }
 
 VOID SetInterfaceTheme( INT eTheme )

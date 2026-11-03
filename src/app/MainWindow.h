@@ -24,6 +24,7 @@ VOID SizeWindows( int iMainWidth, int iMainHeight );
 VOID HandOffMsg( UINT msg, WPARAM wParam, LPARAM lParam );
 VOID ShowControls( BOOL bShow );
 VOID ShowKeyboard( BOOL bShow );
+VOID ShowGraphs( BOOL bShow );      // View > Graphs checked or not
 VOID SetOnTop( BOOL bOnTop );
 VOID SetInterfaceTheme( INT eTheme );     // DarkMode::Theme
 VOID SetFullScreen( BOOL bFullScreen );

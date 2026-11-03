@@ -166,6 +166,7 @@ int WINAPI wWinMain( HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow )
     SetInterfaceTheme( cView.GetTheme() );
     ShowControls( cView.GetControls() );
     ShowKeyboard( cView.GetKeyboard() );
+    ShowGraphs( Config::GetConfig().GetVisualSettings().bGraph );
     ShowWindow( g_hWndGfx, SW_SHOW );
     ShowWindow( g_hWnd, nCmdShow );
     UpdateWindow( g_hWnd );

@@ -565,7 +565,7 @@ GameState::GameError MainScreen::Logic()
     if ( !m_bPaused && m_llStartTime < llMaxTime )
         m_llStartTime = m_Clock.Now();
     m_iStartTick = m_pMeter->GetCurrentTick( m_llStartTime );
-    long long llEndTime = m_llStartTime + m_llTimeSpan;
+    long long llEndTime = ViewEnd( m_llStartTime );
 
     RenderGlobals();
 
@@ -610,13 +610,20 @@ GameState::GameError MainScreen::Logic()
     return Success;
 }
 
+long long MainScreen::ViewEnd( long long llStartTime ) const
+{
+    // (a row is the span over the notes area's height, which is well over 32 pixels)
+    const bool bKeep = ( Config::GetConfig().GetVisualSettings().uClean & Clean::KeepBottom ) != 0;
+    return llStartTime + m_llTimeSpan + ( bKeep ? m_llTimeSpan / 32 + 1 : 0 );
+}
+
 void MainScreen::JumpTo( long long llStartTime, bool bUpdateGUI )
 {
     long long llFirstTime = GetMinTime();
     long long llLastTime = GetMaxTime();
     long long llPrevTime = m_llStartTime;
     m_llStartTime = min( max( llStartTime, llFirstTime ), llLastTime );
-    m_pEngine->Jump( llStartTime, m_llStartTime, m_llStartTime + m_llTimeSpan );
+    m_pEngine->Jump( llStartTime, m_llStartTime, ViewEnd( m_llStartTime ) );
 
     // AllNotesOff, PlaySkippedEvents and the clock move happen in the engine
     if ( m_pPlayback ) m_pPlayback->Seek( llStartTime, m_llStartTime, llPrevTime );
@@ -779,6 +786,7 @@ void MainScreen::DrawFrame( Renderer *pRenderer, const FrameGlobals &g, FastEngi
         KeyLook kl;
         if ( bGlowKeys ) kl.pGlow = &vKeyGlow;
         kl.bBorders = fx.bFlatBorders;
+        kl.fTopWhite = fx.abKeyWhite[fx.bFlat] ? fx.aiKeyWhite[fx.bFlat] / 100.0f : -1.0f;
         kl.cBarGlow = look.BarGlow();
         for ( int k = 0; k < 256; k++ )
         {
@@ -848,16 +856,192 @@ void MainScreen::DrawFrame( Renderer *pRenderer, const FrameGlobals &g, FastEngi
 
 void MainScreen::RenderStats( float fDark )
 {
-    int iLines = StatusLines( m_uStats );
-    if ( !iLines ) return;
-    const int iBufferCY = m_pRenderer->GetBufferHeight();
-    const StatsBox box = StatsLayout( m_pRenderer->GetBufferWidth(), iBufferCY, iLines, StatsBottom( m_G, iBufferCY ) );
-    const RECT &rcStatus = box.rc;
-    m_pRenderer->DrawRect( static_cast< float >( rcStatus.left ), static_cast< float >( rcStatus.top ),
-        static_cast< float >( rcStatus.right - rcStatus.left ), static_cast< float >( rcStatus.bottom - rcStatus.top ), 0x80000000 );
-    m_pRenderer->BeginText();
-    RenderStatus( m_pRenderer, box, m_llStartTime, m_dFPS, m_uStats, m_llPastEndUs, fDark );
-    m_pRenderer->EndText();
+    const int iLines = StatusLines( m_uStats );
+    const int iBufferCX = m_pRenderer->GetBufferWidth(), iBufferCY = m_pRenderer->GetBufferHeight();
+    const int iBottom = StatsBottom( m_G, iBufferCY );
+    StatsBox box = {};
+    if ( iLines )
+    {
+        box = FitStats( m_pRenderer, iBufferCX, iBufferCY, m_uStats, iBottom );
+        DrawStatsBackground( m_pRenderer, box );
+        m_pRenderer->BeginText();
+        RenderStatus( m_pRenderer, box, m_llStartTime, m_dFPS, m_uStats, m_llPastEndUs, fDark );
+        m_pRenderer->EndText();
+    }
+    RenderGraph( m_pRenderer, iBufferCX, iBufferCY, iBottom, m_llStartTime, m_llPastEndUs, iLines ? &box : nullptr, fDark, m_GraphScale );
+}
+
+static long long TempoAt( const std::vector< RefMetaEvent > &vMeta, long long llTime );
+
+// Per pixel column of a plot, each series' value: the notes per second at its end, the highest polyphony
+// in it (from at most 64 of its bins), the tempo at its end. A graph's top eases towards the highest value
+// shown (quickly up, slowly down), and its bottom (unless at zero) towards the lowest
+void MainScreen::RenderGraph( Renderer *pRenderer, int iWidth, int iHeight, int iBottomY, long long llTime, long long llPastEnd,
+                              const StatsBox *pStats, float fDark, GraphScale &scale )
+{
+    typedef VisualSettings::GraphSettings GS;
+    const VisualSettings &cVisual = Config::GetConfig().GetVisualSettings();
+    const GS &gs = cVisual.graph;
+    if ( !cVisual.bGraph ) return;
+    int aiShown[GS::SeriesCount], iShown = 0;
+    for ( int iPlace = 0; iPlace < GS::SeriesCount; iPlace++ )
+        for ( int i = 0; i < GS::SeriesCount; i++ ) if ( gs.abShow[i] && gs.aiPlace[i] == iPlace ) aiShown[iShown++] = i;
+    if ( !iShown ) return;
+    const double u = iHeight / 1080.0;
+    auto Px = [&]( double v ) { return std::max( 1, (int)std::lround( v * u ) ); };
+    const int iCX = std::min( iWidth, Px( gs.iCX ) ), iCY = std::min( iHeight, Px( gs.iCY ) );
+    const int iBoxes = gs.bTogether ? 1 : iShown;
+    const bool bBottom = ( gs.iCorner & VisualSettings::StatsBottom ) != 0;
+    // The boxes from the corner inwards, below (or above) the stats box when it is in the same corner
+    const int x = ( gs.iCorner & VisualSettings::StatsLeft ) ? 0 : iWidth - iCX;
+    int y = bBottom ? std::clamp( iBottomY, iCY, std::max( iCY, iHeight ) ) - iCY : 0;
+    if ( pStats && gs.iCorner == cVisual.iStatsCorner ) y = bBottom ? pStats->rc.top - iCY : pStats->rc.bottom;
+    if ( bBottom ) y -= ( iBoxes - 1 ) * iCY;     // (the top one's: in either corner the first place is at the top)
+
+    auto Dark = [&]( D3DCOLOR c ) { return fDark < 1.0f ? ( c & 0xFF000000 ) | ( Effects::Scale( c, fDark ) & 0x00FFFFFF ) : c; };
+    D3DCOLOR aColor[GS::SeriesCount];     // (no alpha)
+    for ( int s = 0; s < GS::SeriesCount; s++ ) aColor[s] = ( gs.aColor[s] & 0xFF ) << 16 | ( gs.aColor[s] & 0xFF00 ) | ( gs.aColor[s] >> 16 & 0xFF );
+    const int iFontCY = Px( gs.iFontPx ), iPad = Px( 4 ), iLabelCY = iFontCY + iPad;
+    pRenderer->SetGraphFont( iFontCY, cVisual.sStatsFont );
+    const NoteStats &ns = m_pSong->noteStats;
+
+    // The values (counts: none when the song was loaded without them)
+    const int n = iCX - iPad * 2;
+    if ( n < 2 ) return;
+    const long long llNow = llTime + llPastEnd, llSpan = gs.iSpanMs * 1000LL;
+    const long long llT0 = llNow - ( gs.bMiddle ? llSpan / 2 : llSpan );
+    static thread_local std::vector< double > av[GS::SeriesCount];
+    double adMax[GS::SeriesCount], adMin[GS::SeriesCount];
+    bool abHave[GS::SeriesCount];
+    for ( int s = 0; s < GS::SeriesCount; s++ )
+    {
+        av[s].assign( n, 0.0 );
+        adMax[s] = 0.0;
+        adMin[s] = 1e300;
+        abHave[s] = s == GS::Tempo || !ns.Empty();
+    }
+    // (the NPS as NoteStats::NPS sums it, the second's bins up to the column's end, by a window slid along
+    // the columns: their ends only go forward)
+    const long long llWindow = std::max< long long >( 1, 1000000 / ns.llBinUs ), llLastBin = (long long)ns.vOns.size() - 1;
+    long long llLo = 0, llHi = -1;
+    uint64_t uWindow = 0;
+    for ( int i = 0; i < n; i++ )
+    {
+        const long long a = llT0 + llSpan * i / n, b = llT0 + llSpan * ( i + 1 ) / n;
+        if ( gs.abShow[GS::NPS] && abHave[GS::NPS] && b >= 0 )
+        {
+            const long long llBin = b / ns.llBinUs;
+            const long long lo = std::max( 0LL, llBin - llWindow + 1 ), hi = std::min( llBin, llLastBin );
+            if ( lo <= hi )
+            {
+                if ( lo > llHi ) { llLo = llHi = lo; uWindow = ns.vOns[lo]; }
+                while ( llHi < hi ) uWindow += ns.vOns[++llHi];
+                while ( llLo < lo ) uWindow -= ns.vOns[llLo++];
+                av[GS::NPS][i] = (double)uWindow;
+            }
+        }
+        if ( gs.abShow[GS::Polyphony] && abHave[GS::Polyphony] && b >= 0 )
+        {
+            uint64_t llPoly = 0;
+            const long long llStep = std::max( ns.llBinUs, ( b - a ) / 64 );
+            for ( long long t = std::max( 0LL, a ); t < b; t += llStep ) llPoly = std::max( llPoly, ns.Polyphony( t ) );
+            av[GS::Polyphony][i] = (double)llPoly;
+        }
+        if ( gs.abShow[GS::Tempo] ) av[GS::Tempo][i] = 60000000.0 / TempoAt( m_pSong->vMeta, b );
+        for ( int s = 0; s < GS::SeriesCount; s++ ) { adMax[s] = std::max( adMax[s], av[s][i] ); adMin[s] = std::min( adMin[s], av[s][i] ); }
+    }
+    // The scales, eased (a jump, a first frame or a pause of over 2 s: straight there)
+    const long long llDt = scale.llLast == LLONG_MIN ? -1 : llNow - scale.llLast;
+    const bool bSnap = llDt < 0 || llDt > 2000000;
+    auto Ease = [&]( int iMs ) { return bSnap || iMs <= 0 ? 1.0 : 1.0 - std::exp( -llDt / ( iMs * 1000.0 ) ); };
+    const double kFast = Ease( gs.iGrowMs ), kSlow = Ease( gs.iShrinkMs );
+    scale.llLast = llNow;
+    for ( int s = 0; s < GS::SeriesCount; s++ )
+    {
+        // (a little room above the highest, and below the lowest when the bottom follows it: a level line
+        // is drawn halfway up, not along an edge)
+        const double dPad = std::max( ( adMax[s] - ( gs.bZero ? 0.0 : adMin[s] ) ) * 0.05, gs.bZero ? 0.0 : 0.5 );
+        const double dTop = std::max( adMax[s] + dPad, gs.bZero ? 1.0 : adMin[s] + 1.0 ), dBottom = gs.bZero ? 0.0 : adMin[s] - dPad;
+        scale.adTop[s] += ( dTop - scale.adTop[s] ) * ( dTop > scale.adTop[s] ? kFast : kSlow );
+        scale.adBottom[s] += ( dBottom - scale.adBottom[s] ) * ( dBottom < scale.adBottom[s] ? kFast : kSlow );
+        if ( scale.adTop[s] < scale.adBottom[s] + 1.0 ) scale.adTop[s] = scale.adBottom[s] + 1.0;
+    }
+
+    auto Count = []( double d, int s ) {
+        if ( s == GS::Tempo ) { wchar_t b[32]; swprintf( b, 32, L"%.2f", d ); return std::wstring( b ); }
+        std::wstring t = std::to_wstring( (unsigned long long)std::llround( d ) );
+        for ( int i = (int)t.size() - 3; i > 0; i -= 3 ) t.insert( i, L"," );
+        return t;
+    };
+    static const wchar_t *const asName[GS::SeriesCount] = { L"NPS", L"Polyphony", L"BPM" };
+    const int iNowCol = gs.bMiddle ? n / 2 : n - 1;
+    for ( int iBox = 0; iBox < iBoxes; iBox++ )
+    {
+        const int yBox = y + iBox * iCY;
+        if ( cVisual.bStatsBackground ) pRenderer->DrawRect( (float)x, (float)yBox, (float)iCX, (float)iCY, 0x80000000 );
+        const int iX0 = x + iPad, iY0 = yBox + iLabelCY, iY1 = yBox + iCY - iPad, iPlotCY = iY1 - iY0;
+        if ( iPlotCY < 2 ) continue;
+        const int iFirst = gs.bTogether ? 0 : iBox, iLast = gs.bTogether ? iShown : iBox + 1;
+        // Filled ones first, lines over them
+        for ( int bLines = 0; bLines < 2; bLines++ )
+            for ( int k = iFirst; k < iLast; k++ )
+            {
+                const int s = aiShown[k];
+                if ( gs.abLine[s] != ( bLines != 0 ) || !abHave[s] ) continue;
+                const double dLo = scale.adBottom[s], dRange = scale.adTop[s] - dLo;
+                auto Y = [&]( double v ) { return iY1 - (int)std::lround( std::clamp( ( v - dLo ) / dRange, 0.0, 1.0 ) * iPlotCY ); };
+                const std::vector< double > &v = av[s];
+                if ( !gs.abLine[s] )
+                {
+                    // Columns up from the bottom (a run of one height as one rect)
+                    const D3DCOLOR c = Dark( 0x50000000 | aColor[s] );
+                    for ( int i = 0; i < n; )
+                    {
+                        int j = i + 1, yTop = Y( v[i] );
+                        while ( j < n && Y( v[j] ) == yTop ) j++;
+                        if ( yTop < iY1 ) pRenderer->DrawRect( (float)( iX0 + i ), (float)yTop, (float)( j - i ), (float)( iY1 - yTop ), c );
+                        i = j;
+                    }
+                }
+                else
+                {
+                    // A step line, each level joined to the next by an upright
+                    const D3DCOLOR c = Dark( aColor[s] );
+                    const int iThick = Px( 2 );
+                    int yPrev = INT_MIN;
+                    for ( int i = 0; i < n; )
+                    {
+                        int j = i + 1, yv = Y( v[i] );
+                        while ( j < n && Y( v[j] ) == yv ) j++;
+                        const int yLine = std::min( yv, iY1 - iThick );
+                        pRenderer->DrawRect( (float)( iX0 + i ), (float)yLine, (float)( j - i ), (float)iThick, c );
+                        if ( yPrev != INT_MIN && yPrev != yLine )
+                            pRenderer->DrawRect( (float)( iX0 + i ), (float)std::min( yPrev, yLine ), (float)iThick, (float)( std::abs( yPrev - yLine ) + iThick ), c );
+                        yPrev = yLine;
+                        i = j;
+                    }
+                }
+            }
+        if ( gs.bMiddle ) pRenderer->DrawRect( (float)( iX0 + n / 2 ), (float)iY0, 1.0f, (float)iPlotCY, Dark( 0x80FFFFFF ) );
+
+        // The text: each series' name and value now, the left ones from the left, the right ones from the
+        // right, in their colours
+        pRenderer->BeginText();
+        int xLeft = iX0, xRight = x + iCX - iPad;
+        for ( int k = iFirst; k < iLast; k++ )
+        {
+            const int s = aiShown[k];
+            const std::wstring sText = abHave[s] ? std::wstring( asName[s] ) + L" " + Count( av[s][iNowCol], s ) : std::wstring( asName[s] ) + L": open the song again";
+            RECT rcCalc = { 0, 0, 0, 0 };
+            pRenderer->DrawText( sText.c_str(), Renderer::Graph, &rcCalc, DT_CALCRECT | DT_SINGLELINE, 0 );
+            const int iTextCX = rcCalc.right - rcCalc.left;
+            RECT rc = { 0, yBox + iPad / 2, 0, yBox + iPad / 2 + iFontCY + 2 };
+            if ( gs.abRight[s] ) { rc.right = xRight; rc.left = xRight - iTextCX; xRight -= iTextCX + iFontCY; }
+            else { rc.left = xLeft; rc.right = xLeft + iTextCX; xLeft += iTextCX + iFontCY; }
+            pRenderer->DrawText( sText.c_str(), Renderer::Graph, &rc, DT_SINGLELINE, Dark( 0xFF000000 | aColor[s] ) );
+        }
+        pRenderer->EndText();
+    }
 }
 
 void MainScreen::RenderText()
@@ -893,28 +1077,70 @@ int MainScreen::StatusLines( unsigned uStats )
     return __builtin_popcount( uStats & VisualSettings::AllStats );
 }
 
-MainScreen::StatsBox MainScreen::StatsLayout( int iWidth, int iHeight, int iLines, int iBottomY )
+void MainScreen::DrawStatsBackground( Renderer *pRenderer, const StatsBox &box )
+{
+    if ( !Config::GetConfig().GetVisualSettings().bStatsBackground ) return;
+    const RECT &rc = box.rc;
+    pRenderer->DrawRect( static_cast< float >( rc.left ), static_cast< float >( rc.top ),
+                         static_cast< float >( rc.right - rc.left ), static_cast< float >( rc.bottom - rc.top ), 0x80000000 );
+}
+
+// Each line's label and a value as wide as its can get (in the font's digits), so the box keeps its width
+// as the values change; measured again when the font or the lines change
+MainScreen::StatsBox MainScreen::FitStats( Renderer *pRenderer, int iWidth, int iHeight, unsigned uStats, int iBottomY )
+{
+    typedef VisualSettings VS;
+    const VisualSettings &cVisual = Config::GetConfig().GetVisualSettings();
+    const int iLines = StatusLines( uStats );
+    StatsBox box = StatsLayout( iWidth, iHeight, iLines, iBottomY );
+    static const wchar_t *const aWidest[VS::StatCount] = {
+        L"00:00.0 / 00:00.0", L"000.0", L"N/A", L"000,000,000", L"00,000,000", L"000,000", L"000.0K", L"000.0K", L"000.0K",
+        L"0000.0 ms", L"< 000, 000 at 000%", L"00.00 / 00.00", L"00.00 / 00.00", L"00.00 / 00.00", L"00.00 / 00.00",
+        L"000.00M", L"000% \u00d700", L"000%", L"000% avg, 000% max", L"0000.0 ns/msg", L"000.00 BPM", L"0000", L"000.0%",
+        L"000,000,000" };
+    static std::wstring sFace;
+    static int iFontCY = -1, iTextCX = 0;
+    static unsigned uMeasured = 0;
+    if ( sFace != cVisual.sStatsFont || iFontCY != box.iFontCY || uMeasured != uStats )
+    {
+        sFace = cVisual.sStatsFont;
+        iFontCY = box.iFontCY;
+        uMeasured = uStats;
+        Renderer::FontSize eFont = Renderer::Small;
+        if ( box.iFontCY ) { pRenderer->SetStatsFont( box.iFontCY, sFace ); eFont = Renderer::Stats; }
+        auto Width = [&]( const wchar_t *s ) { RECT rc = { 0, 0, 0, 0 }; pRenderer->DrawText( s, eFont, &rc, DT_CALCRECT | DT_SINGLELINE, 0 ); return (int)( rc.right - rc.left ); };
+        iTextCX = 0;
+        for ( int i = 0; i < VS::StatCount; i++ )
+            if ( ( uStats >> i ) & 1 ) iTextCX = std::max( iTextCX, Width( VS::StatLabels[i] ) + box.iPadX + Width( aWidest[i] ) );
+    }
+    return StatsLayout( iWidth, iHeight, iLines, iBottomY, iTextCX );
+}
+
+MainScreen::StatsBox MainScreen::StatsLayout( int iWidth, int iHeight, int iLines, int iBottomY, int iTextCX )
 {
     const VisualSettings &cVisual = Config::GetConfig().GetVisualSettings();
     StatsBox b;
-    int iBoxCX;
-    if ( !cVisual.bStatsScaled )
+    // The size set, its height shared by the lines as the original's: 16 a line with 3 above and below,
+    // Tahoma 15, 6 at the sides, the shadow 2 across and 1 down (all in proportion)
+    const double u = cVisual.bStatsScaled ? iHeight / 1080.0 : 1.0;
+    int iBoxCX = std::max( 1, (int)std::lround( cVisual.iStatsCX * u ) );
+    const int iSetCY = std::max( 1, (int)std::lround( cVisual.iStatsCY * u ) );
+    const double k = iSetCY / ( std::max( iLines, 1 ) + 6.0 / 16.0 ) / 16.0;
+    auto Px = [&]( double v ) { return std::max( 1, (int)std::lround( v * k ) ); };
+    b.iLineCY = std::max( 1, (int)( k * 16.0 + 1e-9 ) );
+    b.iPadY = std::max( 0, ( iSetCY - b.iLineCY * iLines ) / 2 );
+    b.iPadX = Px( 6 ); b.iShadowX = Px( 2 ); b.iShadowY = Px( 1 );
+    b.iFontCY = Px( 15 );
+    // At the original's line height in Tahoma: its own font (Renderer::Small)
+    if ( b.iLineCY == 16 && cVisual.sStatsFont == L"Tahoma" ) b.iFontCY = 0;
+    if ( !cVisual.bStatsShadow ) b.iShadowX = b.iShadowY = 0;
+    // The shadow mirrored with the corner: to the left in the left ones, up in the bottom ones
+    if ( cVisual.bStatsShadowMirror )
     {
-        // The original's: 156 pixels wide, 16 a line, Tahoma 15
-        iBoxCX = 156;
-        b.iLineCY = 16; b.iPadX = 6; b.iPadY = 3; b.iShadowX = 2; b.iShadowY = 1;
-        b.iFontCY = 0;
+        if ( cVisual.iStatsCorner & VisualSettings::StatsLeft ) b.iShadowX = -b.iShadowX;
+        if ( cVisual.iStatsCorner & VisualSettings::StatsBottom ) b.iShadowY = -b.iShadowY;
     }
-    else
-    {
-        // Scaled: as the fixed box at 1080p, times the size
-        double u = iHeight / 1080.0 * cVisual.iStatsSize / 100.0;
-        auto Px = [&]( double v ) { return std::max( 1, (int)std::lround( v * u ) ); };
-        b.iFontCY = Px( 15 );
-        b.iLineCY = Px( 16 );
-        b.iPadX = Px( 6 ); b.iPadY = Px( 3 ); b.iShadowX = Px( 2 ); b.iShadowY = Px( 1 );
-        iBoxCX = std::min( iWidth, Px( 156 ) );
-    }
+    iBoxCX = std::min( iWidth, std::max( iBoxCX, iTextCX + b.iPadX * 2 ) );
     int iBoxCY = b.iPadY * 2 + b.iLineCY * iLines;
     int x = ( cVisual.iStatsCorner & VisualSettings::StatsLeft ) ? 0 : iWidth - iBoxCX;
     int y = ( cVisual.iStatsCorner & VisualSettings::StatsBottom ) ? std::clamp( iBottomY, iBoxCY, std::max( iBoxCY, iHeight ) ) - iBoxCY : 0;
@@ -1026,7 +1252,7 @@ void MainScreen::RenderStatus( Renderer *pRenderer, const StatsBox &box, long lo
     RECT *prcStatus = &rcLine;
     InflateRect( prcStatus, -box.iPadX, -box.iPadY );
     Renderer::FontSize eFont = Renderer::Small;
-    if ( box.iFontCY ) { pRenderer->SetStatsFont( box.iFontCY ); eFont = Renderer::Stats; }
+    if ( box.iFontCY ) { pRenderer->SetStatsFont( box.iFontCY, Config::GetConfig().GetVisualSettings().sStatsFont ); eFont = Renderer::Stats; }
 
     // A line: shadow, then text (the original's offsets: the first line at +1, each next a line lower)
     const D3DCOLOR cShadow = fDark < 1.0f ? Effects::Scale( 0xFF404040, fDark ) : 0xFF404040;
@@ -1038,8 +1264,11 @@ void MainScreen::RenderStatus( Renderer *pRenderer, const StatsBox &box, long lo
         if ( !Shown( iStat ) ) continue;
         OffsetRect( prcStatus, box.iShadowX, bFirst ? box.iShadowY : box.iLineCY + box.iShadowY );
         bFirst = false;
-        pRenderer->DrawText( VS::StatLabels[iStat], eFont, prcStatus, 0, cShadow );
-        pRenderer->DrawText( aValue[iStat], eFont, prcStatus, DT_RIGHT, cShadow );
+        if ( cVisual.bStatsShadow )
+        {
+            pRenderer->DrawText( VS::StatLabels[iStat], eFont, prcStatus, 0, cShadow );
+            pRenderer->DrawText( aValue[iStat], eFont, prcStatus, DT_RIGHT, cShadow );
+        }
         OffsetRect( prcStatus, -box.iShadowX, -box.iShadowY );
         pRenderer->DrawText( VS::StatLabels[iStat], eFont, prcStatus, 0, cText );
         pRenderer->DrawText( aValue[iStat], eFont, prcStatus, DT_RIGHT, cText );

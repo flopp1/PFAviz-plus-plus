@@ -20,7 +20,7 @@ struct Image;
 class Renderer
 {
 public:
-    enum FontSize { Small, SmallBold, SmallComic, Medium, Large, Stats, FontCount };    // Stats: SetStatsFont's height
+    enum FontSize { Small, SmallBold, SmallComic, Medium, Large, Stats, Graph, FontCount };    // Stats, Graph: SetStatsFont's, SetGraphFont's
 
     struct SCREEN_VERTEX
     {
@@ -49,7 +49,8 @@ public:
     HRESULT BeginText();
     HRESULT DrawText( const WCHAR *sText, FontSize fsFont, LPRECT rcPos, DWORD dwFormat, DWORD dwColor, INT iChars = -1 );
     HRESULT EndText();
-    void SetStatsFont( int iHeight );
+    void SetStatsFont( int iHeight, const std::wstring &sFace = L"Tahoma" );
+    void SetGraphFont( int iHeight, const std::wstring &sFace );
 
     HRESULT DrawRect( float x, float y, float cx, float cy, DWORD color );
     HRESULT DrawRect( float x, float y, float cx, float cy, DWORD c1, DWORD c2, DWORD c3, DWORD c4 );
@@ -107,6 +108,23 @@ public:
     bool BeginPost( const PostParams &p );     // false: not possible here (no shaders); drawing goes on into the target
     void DrawGlow( const GlowRect *pRects, size_t iCount );
     void EndPost();
+
+    // Merged outlines (Effects): the notes are drawn without outlines by DrawEdgeQuads, each vertex
+    // with the note's ID (0: none, NoEdgesId: never outlined) and outline colour. The vertices go into
+    // the buffer once and are drawn from it three times: into the target, and as IDs and as outline
+    // colours into two textures of the target's size. EndNoteEdges then draws, over the target, the
+    // outline colour of each pixel that has a pixel up to iWidth (1 to 3) away across or down with
+    // another ID.
+    struct EDGE_VERTEX
+    {
+        float x, y, z, h;
+        D3DCOLOR color, id, outline;
+    };
+    static const D3DCOLOR NoEdgesId = 0x00FFFFFF;
+    bool NoteEdgesOn();                         // the shaders could be made
+    bool BeginNoteEdges();                      // false: the layers could not be set up (the quads still draw, unoutlined)
+    void DrawEdgeQuads( const EDGE_VERTEX *pVerts, size_t iQuads );    // as DrawQuads
+    void EndNoteEdges( int iWidth );
 
     bool GetLimitFPS() const { return m_bLimitFPS; }
     HRESULT SetLimitFPS( bool bLimitFPS );
@@ -189,6 +207,20 @@ private:
     bool m_bPostFailed = false;                     // the shaders could not be made: no effects pass on this device
     PostTex m_PostScene, m_PostSource, m_PostQuarter;   // the frame; the glow rects at full size; a wide glow's first step down
     PostTex m_aPostGlow[2];                             // the glow, small
+    PostTex m_NoteIds, m_NoteOutlines;                  // merged outlines: the notes' IDs and outline colours
+    IDirect3DPixelShader9 *m_apEdgePS[3] = {};          // by the outline's width - 1
+    IDirect3DVertexDeclaration9 *m_apEdgeDecl[3] = {};  // EDGE_VERTEX by its colour, its ID, its outline colour
+    IDirect3DSurface9 *m_pLayerTarget = nullptr;        // the target the notes go into with the layers
+    IDirect3DVertexBuffer9 *m_pEdgeVB = nullptr;        // DrawEdgeQuads' vertices, used as m_pVB is by DrawQuads
+    UINT m_uEdgePos = 0;
+    EDGE_VERTEX *m_pEdgeMap = nullptr;
+    UINT m_uEdgeUsed = 0, m_uEdgeCap = 0;
+    bool m_bLayers = false;                             // between BeginNoteEdges and EndNoteEdges, the layers set up
+    struct EdgeRun { UINT uPos, uCount; };
+    std::vector< EdgeRun > m_vEdgeRuns;                 // drawn into the target, not yet into the layers
+    void FlushEdgeQuads();
+    void DrawEdgeRuns( int iColor, const std::vector< EdgeRun > &vRuns );
+    void DrawEdgeLayers();
     IDirect3DSurface9 *m_pPostTarget = nullptr;     // where EndPost draws (the target BeginPost found)
     PostParams m_Post;
     int m_iPostDiv = 4;                             // the glow's size: the frame's / this

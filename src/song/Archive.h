@@ -7,8 +7,10 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace Archive
 {
@@ -33,7 +35,14 @@ namespace Archive
         std::wstring sError;
     };
 
-    // Opens the MIDI inside sPath (of several files in an archive: the first named .mid/.midi, else the
-    // largest). Null: sError says why.
-    std::unique_ptr< Reader > Open( const std::wstring &sPath, const std::atomic< bool > *pCancel, std::wstring &sError );
+    // A MIDI file in an archive, and which of several to read: its index, or -1 to cancel
+    struct Entry { std::wstring sName; int64_t llSize; };     // llSize: -1 when the archive does not say
+    typedef std::function< int( const std::vector< Entry > & ) > Chooser;
+
+    // Opens the MIDI inside sPath. In an archive only files named .mid or .midi (also compressed, as
+    // .mid.xz) count, and none is an error; of several, fnChoose picks (none given: the first). A
+    // compressed archive (a .tar.xz) cannot be listed without decompressing all of it, so there the
+    // first is taken. Null: sError says why.
+    std::unique_ptr< Reader > Open( const std::wstring &sPath, const std::atomic< bool > *pCancel, std::wstring &sError,
+                                    const Chooser &fnChoose = nullptr );
 }

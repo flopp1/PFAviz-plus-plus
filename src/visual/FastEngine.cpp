@@ -615,7 +615,10 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
     if ( vScratch.size() < (size_t)m_iThreads + 1 ) vScratch.resize( m_iThreads + 1 );
     // (not with hollow notes: an instance always fills its inside)
     const bool bHollow = m_pLight && m_pLight->pFx->bHollow;
-    const bool bInst = pRenderer->InstancingOn() && m_Song.info.iMaxNote < 128 && !bHollow;
+    // Merged outlines (Effects): the notes' rects without outlines, and as IDs and outline colours, for
+    // Renderer::DrawNoteEdges (not with the flat look, which has no outlines; nor without the shaders)
+    const bool bEdges = m_pLight && m_pLight->pFx->bMergeOutlines && !m_pLight->pFx->bFlat && pRenderer->NoteEdgesOn();
+    const bool bInst = pRenderer->InstancingOn() && m_Song.info.iMaxNote < 128 && !bHollow && !bEdges;
     // Keys that may share a pixel column with another are drawn interleaved with it, owner by owner
     // (below), so only the others merge rects across owners
     bool abMerge[256] = {};
@@ -661,6 +664,8 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
         if ( bInst ) { if ( vInst.size() < m_aOwners[k].size() ) vInst.resize( m_aOwners[k].size() ); }
         else if ( vVerts.size() < m_aOwners[k].size() * ( bHollow ? 16 : 8 ) )    // grows only: no per-frame fill
             vVerts.resize( m_aOwners[k].size() * ( bHollow ? 16 : 8 ) );
+        std::vector< Renderer::EDGE_VERTEX > &vEdgeVerts = m_aEdgeVerts[k];
+        if ( bEdges && vEdgeVerts.size() < m_aOwners[k].size() * 4 ) vEdgeVerts.resize( m_aOwners[k].size() * 4 );
         vStart.resize( m_aOwners[k].size() + 1 );
         size_t iOut = 0;
         Renderer::SCREEN_VERTEX aNote[12];
@@ -727,6 +732,57 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
                 }
             }
             const ChannelSettings &cs = *pcs;
+            if ( bEdges )
+            {
+                // Merged outlines: the owned span of the note's outer rect, in its inside's colours (left to
+                // right), with its ID and its outline colour (Renderer::EDGE_VERTEX). A short note kept apart is drawn as it is and never
+                // outlined; hollow notes leave their insides out (drawn see-through, the rects in step)
+                float x0, x1, y0, y1;
+                if ( bShortOwner )
+                {
+                    if ( ow.iRowA >= ow.iRowB ) continue;
+                    x0 = fX0; x1 = fX1; y0 = ow.iRowA - 0.5f; y1 = ow.iRowB - 0.5f;
+                }
+                else
+                {
+                    if ( !bVerts ) Scene::NoteVertices( g, nk, ow.llStart, ow.llEnd, cs, aNote );
+                    x0 = aNote[0].x; x1 = aNote[1].x; y0 = aNote[0].y; y1 = aNote[2].y;
+                    if ( ow.iRowA != INT_MIN ) { y0 = std::max( y0, ow.iRowA - 0.5f ); y1 = std::min( y1, ow.iRowB - 0.5f ); }
+                    if ( !( x1 > x0 && y1 > y0 ) ) continue;
+                }
+                const EffectSettings &fx = *pLight->pFx;
+                const bool bApart = bNoInside && !fx.bMergeShort;
+                D3DCOLOR cL = cs.iPrimaryRGB, cR = cs.iDarkRGB, cId;
+                if ( bApart )
+                {
+                    cL = cR = bShortMain ? cs.iPrimaryRGB : cs.iVeryDarkRGB;
+                    cId = Renderer::NoEdgesId;
+                }
+                else
+                {
+                    cId = ( ow.uSlot + 1 ) & 0x7FFFFF;
+                    if ( bNoInside && !fx.bMergeShortLong ) cId |= 0x800000;
+                    if ( bHollow ) { cL |= 0xFF000000; cR |= 0xFF000000; }    // (alpha 255: not drawn, the blend being inverted)
+                }
+                const D3DCOLOR cOut = cs.iVeryDarkRGB;
+                if ( bPrevFlat )
+                {
+                    Renderer::EDGE_VERTEX *q = &vEdgeVerts[iOut - 4];
+                    if ( q[0].x == x0 && q[1].x == x1 && q[0].color == cL && q[1].color == cR && q[0].id == cId && q[0].outline == cOut )
+                    {
+                        if ( q[0].y == y1 ) { q[0].y = q[1].y = y0; iMerged++; continue; }
+                        if ( q[2].y == y0 ) { q[2].y = q[3].y = y1; iMerged++; continue; }
+                    }
+                }
+                Renderer::EDGE_VERTEX *p = &vEdgeVerts[iOut];
+                p[0] = { x0, y0, 0.5f, 1.0f, cL, cId, cOut };
+                p[1] = { x1, y0, 0.5f, 1.0f, cR, cId, cOut };
+                p[2] = { x1, y1, 0.5f, 1.0f, cR, cId, cOut };
+                p[3] = { x0, y1, 0.5f, 1.0f, cL, cId, cOut };
+                iOut += 4;
+                bPrevFlat = abMerge[k];
+                continue;
+            }
             if ( bShortOwner )
             {
                 if ( ow.iRowA >= ow.iRowB ) continue;       // owns nothing
@@ -907,9 +963,12 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
         }
         pRenderer->SetNoteColumns( aCols );
     }
-    // Owners [a, b) of key k (in m_aVertStart's units)
+    // Owners [a, b) of key k (in m_aVertStart's units); merged outlines: with their IDs and outline colours, which
+    // the renderer draws into the note layers from the same vertices
+    if ( bEdges ) pRenderer->BeginNoteEdges();
     auto Emit = [&]( int k, size_t a, size_t b ) {
         if ( bInst ) pRenderer->DrawNoteInstances( m_aInst[k].data() + a, b - a );
+        else if ( bEdges ) pRenderer->DrawEdgeQuads( m_aEdgeVerts[k].data() + a, ( b - a ) / 4 );
         else pRenderer->DrawQuads( m_aVerts[k].data() + a, ( b - a ) / 4 );
     };
 
@@ -956,6 +1015,8 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
             i = j;
         }
     }
+    // Merged outlines: the edges between different IDs outlined (as wide as the notes' outlines)
+    if ( bEdges ) pRenderer->EndNoteEdges( (int)fDeflate );
     m_Stats.dSweepMs = ( Timer::NowMicroSecs() - llStart ) / 1000.0;
 }
 

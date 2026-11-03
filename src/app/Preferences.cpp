@@ -47,9 +47,194 @@ namespace
     };
     StatsChoice g_Stats;
 
+    // The graphs' settings, chosen in the Graphs dialog and saved with the Visual page
+    VisualSettings::GraphSettings g_Graph;
+
+    bool PickColor( HWND hWnd, COLORREF &cr );
+    VOID DrawSwatch( LPDRAWITEMSTRUCT pdis );
+
+    INT_PTR CALLBACK GraphProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
+    {
+        typedef VisualSettings::GraphSettings GS;
+        GS *p = ( GS * )GetWindowLongPtrW( hWnd, GWLP_USERDATA );
+        static int s_aiPlace[GS::SeriesCount];     // the places shown (before a change: to swap with)
+        // The controls as settings, and back (one box: only one filled, the one just set if any)
+        auto Read = [&]( GS &g ) {
+            for ( int i = 0; i < GS::SeriesCount; i++ )
+            {
+                g.abShow[i] = IsDlgButtonChecked( hWnd, IDC_GRAPH_SHOW0 + i ) == BST_CHECKED;
+                g.abLine[i] = SendDlgItemMessageW( hWnd, IDC_GRAPH_STYLE0 + i, CB_GETCURSEL, 0, 0 ) == 1;
+                g.abRight[i] = SendDlgItemMessageW( hWnd, IDC_GRAPH_ALIGN0 + i, CB_GETCURSEL, 0, 0 ) == 1;
+                g.aiPlace[i] = (int)SendDlgItemMessageW( hWnd, IDC_GRAPH_PLACE0 + i, CB_GETCURSEL, 0, 0 );
+                g.aColor[i] = ( unsigned )GetWindowLongPtrW( GetDlgItem( hWnd, IDC_GRAPH_COLOR0 + i ), GWLP_USERDATA );
+            }
+            g.bTogether = IsDlgButtonChecked( hWnd, IDC_GRAPH_TOGETHER ) == BST_CHECKED;
+        };
+        auto ShowStyles = [&]( const GS &g ) {
+            for ( int i = 0; i < GS::SeriesCount; i++ )
+            {
+                SendDlgItemMessageW( hWnd, IDC_GRAPH_STYLE0 + i, CB_SETCURSEL, g.abLine[i], 0 );
+                SendDlgItemMessageW( hWnd, IDC_GRAPH_PLACE0 + i, CB_SETCURSEL, g.aiPlace[i], 0 );
+                EnableWindow( GetDlgItem( hWnd, IDC_GRAPH_STYLE0 + i ), g.abShow[i] );
+                EnableWindow( GetDlgItem( hWnd, IDC_GRAPH_ALIGN0 + i ), g.abShow[i] );
+            }
+        };
+        switch ( msg )
+        {
+            case WM_DRAWITEM:
+            {
+                const UINT uId = ( ( LPDRAWITEMSTRUCT )lParam )->CtlID;
+                if ( uId < IDC_GRAPH_COLOR0 || uId >= IDC_GRAPH_COLOR0 + GS::SeriesCount ) return FALSE;
+                DrawSwatch( ( LPDRAWITEMSTRUCT )lParam );
+                return TRUE;
+            }
+            case WM_INITDIALOG:
+            {
+                p = ( GS * )lParam;
+                SetWindowLongPtrW( hWnd, GWLP_USERDATA, lParam );
+                for ( int i = 0; i < GS::SeriesCount; i++ ) s_aiPlace[i] = p->aiPlace[i];
+                for ( int i = 0; i < GS::SeriesCount; i++ )
+                {
+                    CheckDlgButton( hWnd, IDC_GRAPH_SHOW0 + i, p->abShow[i] ? BST_CHECKED : BST_UNCHECKED );
+                    SetWindowLongPtrW( GetDlgItem( hWnd, IDC_GRAPH_COLOR0 + i ), GWLP_USERDATA, p->aColor[i] );
+                    for ( const wchar_t *s : { L"Filled", L"A line" } ) SendDlgItemMessageW( hWnd, IDC_GRAPH_STYLE0 + i, CB_ADDSTRING, 0, ( LPARAM )s );
+                    for ( const wchar_t *s : { L"The left", L"The right" } ) SendDlgItemMessageW( hWnd, IDC_GRAPH_ALIGN0 + i, CB_ADDSTRING, 0, ( LPARAM )s );
+                    SendDlgItemMessageW( hWnd, IDC_GRAPH_ALIGN0 + i, CB_SETCURSEL, p->abRight[i], 0 );
+                    for ( const wchar_t *s : { L"1st (top)", L"2nd", L"3rd" } ) SendDlgItemMessageW( hWnd, IDC_GRAPH_PLACE0 + i, CB_ADDSTRING, 0, ( LPARAM )s );
+                }
+                CheckDlgButton( hWnd, IDC_GRAPH_TOGETHER, p->bTogether ? BST_CHECKED : BST_UNCHECKED );
+                ShowStyles( *p );
+                for ( const wchar_t *s : { L"At zero", L"At the lowest value shown" } )
+                    SendDlgItemMessageW( hWnd, IDC_GRAPH_BOTTOM, CB_ADDSTRING, 0, ( LPARAM )s );
+                SendDlgItemMessageW( hWnd, IDC_GRAPH_BOTTOM, CB_SETCURSEL, p->bZero ? 0 : 1, 0 );
+                // By VisualSettings::StatsCorner bits
+                for ( const wchar_t *s : { L"Top right", L"Top left", L"Bottom right", L"Bottom left" } )
+                    SendDlgItemMessageW( hWnd, IDC_GRAPH_CORNER, CB_ADDSTRING, 0, ( LPARAM )s );
+                SendDlgItemMessageW( hWnd, IDC_GRAPH_CORNER, CB_SETCURSEL, p->iCorner, 0 );
+                for ( const wchar_t *s : { L"The right edge", L"The middle" } )
+                    SendDlgItemMessageW( hWnd, IDC_GRAPH_NOW, CB_ADDSTRING, 0, ( LPARAM )s );
+                SendDlgItemMessageW( hWnd, IDC_GRAPH_NOW, CB_SETCURSEL, p->bMiddle, 0 );
+                SetDlgItemInt( hWnd, IDC_GRAPH_SPAN, p->iSpanMs, FALSE );
+                SetDlgItemInt( hWnd, IDC_GRAPH_CX, p->iCX, FALSE );
+                SetDlgItemInt( hWnd, IDC_GRAPH_CY, p->iCY, FALSE );
+                SetDlgItemInt( hWnd, IDC_GRAPH_FONT, p->iFontPx, FALSE );
+                SetDlgItemInt( hWnd, IDC_GRAPH_GROW, p->iGrowMs, FALSE );
+                SetDlgItemInt( hWnd, IDC_GRAPH_SHRINK, p->iShrinkMs, FALSE );
+                return TRUE;
+            }
+            case WM_COMMAND:
+            {
+                const int iId = LOWORD( wParam );
+                if ( iId >= IDC_GRAPH_COLOR0 && iId < IDC_GRAPH_COLOR0 + GS::SeriesCount )
+                {
+                    if ( HIWORD( wParam ) != BN_CLICKED ) return TRUE;
+                    HWND hWndBtn = ( HWND )lParam;
+                    COLORREF cr = ( COLORREF )GetWindowLongPtrW( hWndBtn, GWLP_USERDATA );
+                    if ( !PickColor( hWnd, cr ) ) return TRUE;
+                    SetWindowLongPtrW( hWndBtn, GWLP_USERDATA, cr );
+                    InvalidateRect( hWndBtn, nullptr, FALSE );
+                    return TRUE;
+                }
+                const bool bStyle = iId >= IDC_GRAPH_STYLE0 && iId < IDC_GRAPH_STYLE0 + GS::SeriesCount && HIWORD( wParam ) == CBN_SELCHANGE;
+                const bool bShow = iId >= IDC_GRAPH_SHOW0 && iId < IDC_GRAPH_SHOW0 + GS::SeriesCount;
+                const bool bPlace = iId >= IDC_GRAPH_PLACE0 && iId < IDC_GRAPH_PLACE0 + GS::SeriesCount && HIWORD( wParam ) == CBN_SELCHANGE;
+                if ( bStyle || bShow || bPlace || iId == IDC_GRAPH_TOGETHER )
+                {
+                    GS g = *p;
+                    Read( g );
+                    // (a place just chosen: the one that had it takes this one's old place)
+                    if ( bPlace )
+                    {
+                        const int iSet = iId - IDC_GRAPH_PLACE0;
+                        for ( int i = 0; i < GS::SeriesCount; i++ )
+                            if ( i != iSet && g.aiPlace[i] == g.aiPlace[iSet] ) g.aiPlace[i] = s_aiPlace[iSet];
+                    }
+                    for ( int i = 0; i < GS::SeriesCount; i++ ) s_aiPlace[i] = g.aiPlace[i];
+                    // (one just made filled in one box: the others become lines)
+                    if ( bStyle && g.bTogether && !g.abLine[iId - IDC_GRAPH_STYLE0] )
+                        for ( int i = 0; i < GS::SeriesCount; i++ ) if ( i != iId - IDC_GRAPH_STYLE0 ) g.abLine[i] = true;
+                    g.Fix();
+                    ShowStyles( g );
+                    return TRUE;
+                }
+                if ( iId == IDOK )
+                {
+                    // (numbers out of range are brought into it)
+                    auto Num = [&]( int iId, int iMin, int iMax, int iOld ) {
+                        BOOL bOk;
+                        UINT u = GetDlgItemInt( hWnd, iId, &bOk, FALSE );
+                        return bOk ? std::clamp( (int)std::min( u, 10000000u ), iMin, iMax ) : iOld;
+                    };
+                    Read( *p );
+                    p->bZero = SendDlgItemMessageW( hWnd, IDC_GRAPH_BOTTOM, CB_GETCURSEL, 0, 0 ) != 1;
+                    p->iCorner = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_GRAPH_CORNER, CB_GETCURSEL, 0, 0 ) );
+                    p->bMiddle = SendDlgItemMessageW( hWnd, IDC_GRAPH_NOW, CB_GETCURSEL, 0, 0 ) == 1;
+                    p->iSpanMs = Num( IDC_GRAPH_SPAN, 1, 600000, p->iSpanMs );     // (1 ms: the counts' bin)
+                    p->iCX = Num( IDC_GRAPH_CX, 60, 3840, p->iCX );
+                    p->iCY = Num( IDC_GRAPH_CY, 30, 2160, p->iCY );
+                    p->iFontPx = Num( IDC_GRAPH_FONT, 6, 200, p->iFontPx );
+                    p->iGrowMs = Num( IDC_GRAPH_GROW, 0, 10000, p->iGrowMs );
+                    p->iShrinkMs = Num( IDC_GRAPH_SHRINK, 0, 10000, p->iShrinkMs );
+                    p->Fix();
+                    EndDialog( hWnd, IDOK );
+                }
+                else if ( iId == IDCANCEL ) EndDialog( hWnd, IDCANCEL );
+                return TRUE;
+            }
+        }
+        return FALSE;
+    }
+
     // The track colors being edited (the count is its edit box): a grid of every colour the palette can
     // hold, PaletteCols to a row, the used ones filled
     unsigned g_aPalette[VisualSettings::MaxColors];
+    std::vector< VisualSettings::Palette > g_vPalettes;     // the saved ones, as edited (kept on Apply)
+
+    VOID ShowPalettes( HWND hWnd, int iSelect )
+    {
+        HWND hCombo = GetDlgItem( hWnd, IDC_PALETTES );
+        SendMessageW( hCombo, CB_RESETCONTENT, 0, 0 );
+        for ( const VisualSettings::Palette &p : g_vPalettes ) SendMessageW( hCombo, CB_ADDSTRING, 0, ( LPARAM )p.sName.c_str() );
+        SendMessageW( hCombo, CB_SETCURSEL, iSelect, 0 );
+        EnableWindow( GetDlgItem( hWnd, IDC_PALETTES ), !g_vPalettes.empty() );
+        EnableWindow( GetDlgItem( hWnd, IDC_PALETTEDELETE ), iSelect >= 0 );
+    }
+
+    // The palette editor's colours and count
+    VOID ShowColors( HWND hWnd, const unsigned *pColors, int iCount )
+    {
+        iCount = std::clamp( iCount, 1, VisualSettings::MaxColors );
+        std::copy( pColors, pColors + iCount, g_aPalette );
+        SendDlgItemMessageW( hWnd, IDC_COLORCOUNTSPIN, UDM_SETPOS32, 0, iCount );
+        InvalidateRect( GetDlgItem( hWnd, IDC_PALETTE ), nullptr, FALSE );
+    }
+
+    INT_PTR CALLBACK PaletteNameProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
+    {
+        switch ( msg )
+        {
+            case WM_INITDIALOG:
+                SetWindowLongPtrW( hWnd, GWLP_USERDATA, lParam );
+                SetDlgItemTextW( hWnd, IDC_PALETTENAME, ( ( std::wstring * )lParam )->c_str() );
+                SendDlgItemMessageW( hWnd, IDC_PALETTENAME, EM_SETSEL, 0, -1 );
+                return TRUE;
+            case WM_COMMAND:
+                if ( LOWORD( wParam ) == IDOK )
+                {
+                    wchar_t s[256] = L"";
+                    GetDlgItemTextW( hWnd, IDC_PALETTENAME, s, 256 );
+                    std::wstring sName( s );
+                    sName.erase( 0, sName.find_first_not_of( L' ' ) );
+                    sName.erase( sName.find_last_not_of( L' ' ) + 1 );
+                    if ( sName.empty() ) { MessageBeep( MB_ICONEXCLAMATION ); return TRUE; }
+                    *( std::wstring * )GetWindowLongPtrW( hWnd, GWLP_USERDATA ) = sName;
+                    EndDialog( hWnd, IDOK );
+                }
+                else if ( LOWORD( wParam ) == IDCANCEL ) EndDialog( hWnd, IDCANCEL );
+                return TRUE;
+        }
+        return FALSE;
+    }
     const int PaletteCols = 32, PaletteRows = VisualSettings::MaxColors / PaletteCols;
     int PaletteCount( HWND hWnd )
     {
@@ -232,6 +417,8 @@ namespace
     {
         g_Stats.uStats = cVisual.uStats;
         std::copy( cVisual.aStatOrder, cVisual.aStatOrder + VisualSettings::StatCount, g_Stats.aOrder );
+        g_Graph = cVisual.graph;
+        EnableWindow( GetDlgItem( hWnd, IDC_GRAPHBTN ), cVisual.bGraph );     // (graphs off: View > Graphs)
         ShowStatsCount( hWnd );
         for ( int i = 0; i < 5; i++ )
             CheckDlgButton( hWnd, aKeyModeIds[i], i == cVisual.eKeysShown ? BST_CHECKED : BST_UNCHECKED );
@@ -252,9 +439,14 @@ namespace
         CheckDlgButton( hWnd, IDC_LOOPCOLORS, cVisual.bLoopColors ? BST_CHECKED : BST_UNCHECKED );
         CheckDlgButton( hWnd, IDC_EDO31KEYS, cVisual.bEdo31Keys ? BST_CHECKED : BST_UNCHECKED );
         CheckDlgButton( hWnd, IDC_STATSSCALED, cVisual.bStatsScaled ? BST_CHECKED : BST_UNCHECKED );
-        SetDlgItemInt( hWnd, IDC_STATSSIZE, (UINT)cVisual.iStatsSize, FALSE );
-        EnableWindow( GetDlgItem( hWnd, IDC_STATSSIZE ), cVisual.bStatsScaled );
+        SetDlgItemInt( hWnd, IDC_STATSSIZE, (UINT)cVisual.iStatsCX, FALSE );
+        SetDlgItemInt( hWnd, IDC_STATSHEIGHT, (UINT)cVisual.iStatsCY, FALSE );
         SendDlgItemMessageW( hWnd, IDC_STATSCORNER, CB_SETCURSEL, cVisual.iStatsCorner, 0 );
+        SetDlgItemTextW( hWnd, IDC_STATSFONT, cVisual.sStatsFont.c_str() );
+        CheckDlgButton( hWnd, IDC_STATSBKG, cVisual.bStatsBackground ? BST_CHECKED : BST_UNCHECKED );
+        CheckDlgButton( hWnd, IDC_STATSSHADOW, cVisual.bStatsShadow ? BST_CHECKED : BST_UNCHECKED );
+        CheckDlgButton( hWnd, IDC_STATSMIRROR, cVisual.bStatsShadowMirror ? BST_CHECKED : BST_UNCHECKED );
+        EnableWindow( GetDlgItem( hWnd, IDC_STATSMIRROR ), cVisual.bStatsShadow );
         CheckDlgButton( hWnd, IDC_HIDESPEEDBOXES, cVisual.bHideSpeedBoxes ? BST_CHECKED : BST_UNCHECKED );
         SetDlgItemTextW( hWnd, IDC_BKGIMAGE, cVisual.sBkgImage.c_str() );
         SendDlgItemMessageW( hWnd, IDC_BKGFIT, CB_SETCURSEL, cVisual.iBkgFit, 0 );
@@ -423,7 +615,22 @@ namespace
                 // By VisualSettings::StatsCorner bits
                 for ( const wchar_t *s : { L"Top right", L"Top left", L"Bottom right", L"Bottom left" } )
                     SendDlgItemMessageW( hWnd, IDC_STATSCORNER, CB_ADDSTRING, 0, ( LPARAM )s );
+                // The installed fonts (each family once; not the vertical "@" ones)
+                {
+                    LOGFONTW lf = {};
+                    lf.lfCharSet = DEFAULT_CHARSET;
+                    HDC hdc = GetDC( hWnd );
+                    EnumFontFamiliesExW( hdc, &lf, []( const LOGFONTW *plf, const TEXTMETRICW *, DWORD, LPARAM l ) -> int {
+                        HWND hCombo = ( HWND )l;
+                        if ( plf->lfFaceName[0] != L'@' && SendMessageW( hCombo, CB_FINDSTRINGEXACT, (WPARAM)-1, ( LPARAM )plf->lfFaceName ) == CB_ERR )
+                            SendMessageW( hCombo, CB_ADDSTRING, 0, ( LPARAM )plf->lfFaceName );
+                        return 1;
+                    }, ( LPARAM )GetDlgItem( hWnd, IDC_STATSFONT ), 0 );
+                    ReleaseDC( hWnd, hdc );
+                }
                 SetVisualProc( hWnd, Config::GetConfig().GetVisualSettings() );
+                g_vPalettes = Config::GetConfig().GetVisualSettings().vPalettes;
+                ShowPalettes( hWnd, -1 );
                 SetWindowSizeEdits( hWnd );
                 return TRUE;
             // Draws the coloured buttons
@@ -470,10 +677,15 @@ namespace
                     case IDC_SHOWALLKEYS: case IDC_SHOWSONGKEYS: case IDC_SHOWALL128KEYS: case IDC_SHOWALL256KEYS:
                         EnableCustomKeys( hWnd, FALSE );
                         return TRUE;
-                    case IDC_STATSSCALED:
+                    case IDC_STATSSHADOW:
+                        EnableWindow( GetDlgItem( hWnd, IDC_STATSMIRROR ), IsDlgButtonChecked( hWnd, IDC_STATSSHADOW ) == BST_CHECKED );
+                        return TRUE;
+                    case IDC_GRAPHBTN:
                     {
-                        BOOL bScaled = IsDlgButtonChecked( hWnd, IDC_STATSSCALED ) == BST_CHECKED;
-                        EnableWindow( GetDlgItem( hWnd, IDC_STATSSIZE ), bScaled );
+                        VisualSettings::GraphSettings c = g_Graph;
+                        if ( DialogBoxParamW( GetModuleHandleW( nullptr ), MAKEINTRESOURCEW( IDD_GRAPH ), GetParent( hWnd ), GraphProc,
+                                              ( LPARAM )&c ) == IDOK )
+                            g_Graph = c;
                         return TRUE;
                     }
                     case IDC_STATSBOX:
@@ -490,6 +702,47 @@ namespace
                     case IDC_COLORCOUNT:
                         if ( HIWORD( wParam ) == EN_CHANGE ) InvalidateRect( GetDlgItem( hWnd, IDC_PALETTE ), nullptr, FALSE );
                         return TRUE;
+                    // Saved palettes: one chosen fills the editor; the editor's saved under a name; the
+                    // default palette as a new one
+                    case IDC_PALETTES:
+                    {
+                        if ( HIWORD( wParam ) != CBN_SELCHANGE ) return TRUE;
+                        int i = (int)SendDlgItemMessageW( hWnd, IDC_PALETTES, CB_GETCURSEL, 0, 0 );
+                        if ( i >= 0 && i < (int)g_vPalettes.size() ) ShowColors( hWnd, g_vPalettes[i].vColors.data(), (int)g_vPalettes[i].vColors.size() );
+                        EnableWindow( GetDlgItem( hWnd, IDC_PALETTEDELETE ), i >= 0 );
+                        return TRUE;
+                    }
+                    case IDC_PALETTESAVE:
+                    {
+                        int i = (int)SendDlgItemMessageW( hWnd, IDC_PALETTES, CB_GETCURSEL, 0, 0 );
+                        std::wstring sName = i >= 0 && i < (int)g_vPalettes.size() ? g_vPalettes[i].sName : L"Palette " + std::to_wstring( g_vPalettes.size() + 1 );
+                        if ( DialogBoxParamW( GetModuleHandleW( nullptr ), MAKEINTRESOURCEW( IDD_PALETTENAME ), GetParent( hWnd ), PaletteNameProc,
+                                              ( LPARAM )&sName ) != IDOK ) return TRUE;
+                        VisualSettings::Palette pal = { sName, std::vector< unsigned >( g_aPalette, g_aPalette + PaletteCount( hWnd ) ) };
+                        auto it = std::find_if( g_vPalettes.begin(), g_vPalettes.end(), [&]( const VisualSettings::Palette &p ) { return _wcsicmp( p.sName.c_str(), sName.c_str() ) == 0; } );
+                        if ( it != g_vPalettes.end() ) *it = pal;
+                        else it = g_vPalettes.insert( g_vPalettes.end(), pal );
+                        ShowPalettes( hWnd, (int)( it - g_vPalettes.begin() ) );
+                        return TRUE;
+                    }
+                    case IDC_PALETTEDELETE:
+                    {
+                        int i = (int)SendDlgItemMessageW( hWnd, IDC_PALETTES, CB_GETCURSEL, 0, 0 );
+                        if ( i < 0 || i >= (int)g_vPalettes.size() ) return TRUE;
+                        std::wstring sAsk = L"Delete the palette \"" + g_vPalettes[i].sName + L"\"?";
+                        if ( MessageBoxW( GetParent( hWnd ), sAsk.c_str(), L"Delete Palette", MB_YESNO | MB_ICONQUESTION ) != IDYES ) return TRUE;
+                        g_vPalettes.erase( g_vPalettes.begin() + i );
+                        ShowPalettes( hWnd, -1 );
+                        return TRUE;
+                    }
+                    case IDC_PALETTENEW:
+                    {
+                        VisualSettings def;
+                        def.LoadDefaultValues();
+                        ShowColors( hWnd, def.colors, def.iColorCount );
+                        ShowPalettes( hWnd, -1 );
+                        return TRUE;
+                    }
                     // A colour: the chooser. In the palette, the cell clicked (with the keyboard, the first); one
                     // past the colours in use adds it, and those before it
                     case IDC_PALETTE:
@@ -574,20 +827,27 @@ namespace
                         SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_INVALID );
                         return TRUE;
                     }
-                    // The scaled stats box's size (not checked while it is off)
+                    // The stats box's size
                     bool bStatsScaled = IsDlgButtonChecked( hWnd, IDC_STATSSCALED ) == BST_CHECKED;
-                    int iStatsSize = cVisual.iStatsSize;
-                    if ( bStatsScaled )
+                    int aiStatsSize[2];
                     {
-                        UINT u = GetDlgItemInt( hWnd, IDC_STATSSIZE, &bOk, FALSE );
-                        if ( !bOk || u < (UINT)VisualSettings::StatsSizeMin || u > (UINT)VisualSettings::StatsSizeMax )
+                        const int aiId[2] = { IDC_STATSSIZE, IDC_STATSHEIGHT };
+                        const int aiMin[2] = { VisualSettings::StatsCXMin, VisualSettings::StatsCYMin };
+                        const int aiMax[2] = { VisualSettings::StatsCXMax, VisualSettings::StatsCYMax };
+                        for ( int i = 0; i < 2; i++ )
                         {
-                            MessageBoxW( hWnd, L"Please specify a stats box size between 25 and 400 percent", L"Error", MB_OK | MB_ICONEXCLAMATION );
-                            PostMessageW( hWnd, WM_NEXTDLGCTL, ( WPARAM )GetDlgItem( hWnd, IDC_STATSSIZE ), TRUE );
-                            SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_INVALID );
-                            return TRUE;
+                            UINT u = GetDlgItemInt( hWnd, aiId[i], &bOk, FALSE );
+                            if ( !bOk || u < (UINT)aiMin[i] || u > (UINT)aiMax[i] )
+                            {
+                                wchar_t sMsg[128];
+                                swprintf( sMsg, 128, L"Please specify a stats box %ls between %d and %d pixels", i ? L"height" : L"width", aiMin[i], aiMax[i] );
+                                MessageBoxW( hWnd, sMsg, L"Error", MB_OK | MB_ICONEXCLAMATION );
+                                PostMessageW( hWnd, WM_NEXTDLGCTL, ( WPARAM )GetDlgItem( hWnd, aiId[i] ), TRUE );
+                                SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_INVALID );
+                                return TRUE;
+                            }
+                            aiStatsSize[i] = (int)u;
                         }
-                        iStatsSize = (int)u;
                     }
                     wchar_t sImage[1024] = {};
                     GetDlgItemTextW( hWnd, IDC_BKGIMAGE, sImage, 1024 );
@@ -618,10 +878,12 @@ namespace
                             cVisual.eKeysShown = static_cast< VisualSettings::KeysShown >( i );
                     cVisual.bAlwaysShowControls = IsDlgButtonChecked( hWnd, IDC_SHOWCONTROLS ) == BST_CHECKED;
                     cVisual.uStats = g_Stats.uStats;
+                    cVisual.graph = g_Graph;
                     std::copy( g_Stats.aOrder, g_Stats.aOrder + VisualSettings::StatCount, cVisual.aStatOrder );
                     cVisual.iFirstKey = (int)SendDlgItemMessageW( hWnd, IDC_FIRSTKEY, CB_GETCURSEL, 0, 0 );
                     cVisual.iLastKey = (int)SendDlgItemMessageW( hWnd, IDC_LASTKEY, CB_GETCURSEL, 0, 0 );
                     std::copy( g_aPalette, g_aPalette + VisualSettings::MaxColors, cVisual.colors );
+                    cVisual.vPalettes = g_vPalettes;
                     cVisual.iColorCount = PaletteCount( hWnd );
                     cVisual.iBkgColor = ( unsigned )GetWindowLongPtrW( GetDlgItem( hWnd, IDC_BKGCOLOR ), GWLP_USERDATA );
                     cVisual.iBarColor = ( unsigned )GetWindowLongPtrW( GetDlgItem( hWnd, IDC_BARCOLOR ), GWLP_USERDATA );
@@ -632,8 +894,15 @@ namespace
                     cVisual.bLoopColors = IsDlgButtonChecked( hWnd, IDC_LOOPCOLORS ) == BST_CHECKED;
                     cVisual.bEdo31Keys = IsDlgButtonChecked( hWnd, IDC_EDO31KEYS ) == BST_CHECKED;
                     cVisual.bStatsScaled = bStatsScaled;
-                    cVisual.iStatsSize = iStatsSize;
+                    cVisual.iStatsCX = aiStatsSize[0];
+                    cVisual.iStatsCY = aiStatsSize[1];
                     cVisual.iStatsCorner = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_STATSCORNER, CB_GETCURSEL, 0, 0 ) );
+                    wchar_t sFont[LF_FACESIZE] = L"";
+                    GetDlgItemTextW( hWnd, IDC_STATSFONT, sFont, LF_FACESIZE );
+                    cVisual.sStatsFont = sFont[0] ? sFont : L"Tahoma";
+                    cVisual.bStatsBackground = IsDlgButtonChecked( hWnd, IDC_STATSBKG ) == BST_CHECKED;
+                    cVisual.bStatsShadow = IsDlgButtonChecked( hWnd, IDC_STATSSHADOW ) == BST_CHECKED;
+                    cVisual.bStatsShadowMirror = IsDlgButtonChecked( hWnd, IDC_STATSMIRROR ) == BST_CHECKED;
                     bool bOldHideBoxes = cVisual.bHideSpeedBoxes;
                     cVisual.bHideSpeedBoxes = IsDlgButtonChecked( hWnd, IDC_HIDESPEEDBOXES ) == BST_CHECKED;
                     cVisual.iBkgFit = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_BKGFIT, CB_GETCURSEL, 0, 0 ) );
@@ -767,6 +1036,37 @@ namespace
             EnableWindow( GetDlgItem( hWnd, iId ), bOn );
     }
 
+    // The flat look's own settings mean nothing without it (and merged outlines nothing with it: it has none)
+    VOID EnableFxFlat( HWND hWnd )
+    {
+        BOOL bOn = IsDlgButtonChecked( hWnd, IDC_FX_FLAT ) == BST_CHECKED;
+        EnableWindow( GetDlgItem( hWnd, IDC_FX_FLATBORDERS ), bOn );
+        const BOOL bMerge = !bOn && IsDlgButtonChecked( hWnd, IDC_FX_MERGE ) == BST_CHECKED;
+        const BOOL bShort = bMerge && IsDlgButtonChecked( hWnd, IDC_FX_MERGESHORT ) == BST_CHECKED;
+        EnableWindow( GetDlgItem( hWnd, IDC_FX_MERGE ), !bOn );
+        EnableWindow( GetDlgItem( hWnd, IDC_FX_MERGESHORT ), bMerge );
+        EnableWindow( GetDlgItem( hWnd, IDC_FX_MERGESHORTLONG ), bShort );
+    }
+
+    // Pressed keys whitening: each look its own, the row showing the look chosen (g_iKeyWhiteLook)
+    bool g_abKeyWhite[2];
+    int g_aiKeyWhite[2], g_iKeyWhiteLook;
+
+    VOID ShowKeyWhite( HWND hWnd )
+    {
+        CheckDlgButton( hWnd, IDC_FX_KEYWHITE, g_abKeyWhite[g_iKeyWhiteLook] ? BST_CHECKED : BST_UNCHECKED );
+        SetDlgItemInt( hWnd, IDC_FX_KEYWHITEPCT, g_aiKeyWhite[g_iKeyWhiteLook], FALSE );
+        EnableWindow( GetDlgItem( hWnd, IDC_FX_KEYWHITEPCT ), IsWindowEnabled( GetDlgItem( hWnd, IDC_FX_KEYWHITE ) ) && g_abKeyWhite[g_iKeyWhiteLook] );
+    }
+
+    VOID KeepKeyWhite( HWND hWnd )
+    {
+        BOOL bOk;
+        UINT u = GetDlgItemInt( hWnd, IDC_FX_KEYWHITEPCT, &bOk, FALSE );
+        g_abKeyWhite[g_iKeyWhiteLook] = IsDlgButtonChecked( hWnd, IDC_FX_KEYWHITE ) == BST_CHECKED;
+        if ( bOk ) g_aiKeyWhite[g_iKeyWhiteLook] = (int)std::min( u, 100u );
+    }
+
     // The whole tab by its first box; on, each setting as the ones it depends on allow
     VOID EnableFx( HWND hWnd )
     {
@@ -775,9 +1075,10 @@ namespace
             if ( GetDlgCtrlID( h ) != IDC_FX_ON ) EnableWindow( h, bOn );
         if ( bOn )
         {
-            EnableWindow( GetDlgItem( hWnd, IDC_FX_FLATBORDERS ), IsDlgButtonChecked( hWnd, IDC_FX_FLAT ) == BST_CHECKED );
+            EnableFxFlat( hWnd );
             EnableFxDecay( hWnd );
             EnableFxHitLine( hWnd );
+            ShowKeyWhite( hWnd );
         }
     }
 
@@ -791,9 +1092,11 @@ namespace
                 CheckDlgButton( hWnd, IDC_FX_FLAT, fx.bFlat ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_FX_FLATBORDERS, fx.bFlatBorders ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_FX_NOBAR, fx.bNoBar ? BST_CHECKED : BST_UNCHECKED );
-                EnableWindow( GetDlgItem( hWnd, IDC_FX_FLATBORDERS ), fx.bFlat );
                 CheckDlgButton( hWnd, IDC_FX_SHORTCOLOR, fx.bShortColor ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_FX_HOLLOW, fx.bHollow ? BST_CHECKED : BST_UNCHECKED );
+                CheckDlgButton( hWnd, IDC_FX_MERGE, fx.bMergeOutlines ? BST_CHECKED : BST_UNCHECKED );
+                CheckDlgButton( hWnd, IDC_FX_MERGESHORT, fx.bMergeShort ? BST_CHECKED : BST_UNCHECKED );
+                CheckDlgButton( hWnd, IDC_FX_MERGESHORTLONG, fx.bMergeShortLong ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_FX_STATS, fx.bStats ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_FX_HITLINE, fx.bHitLine ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_FX_HITPLAYING, fx.bHitLinePlaying ? BST_CHECKED : BST_UNCHECKED );
@@ -809,6 +1112,10 @@ namespace
                     SendDlgItemMessageW( hWnd, IDC_FX_HITCURVE, CB_ADDSTRING, 0, ( LPARAM )s );
                 SendDlgItemMessageW( hWnd, IDC_FX_HITCURVE, CB_SETCURSEL, fx.eHitLineCurve, 0 );
                 CheckDlgButton( hWnd, IDC_FX_ON, fx.bOn ? BST_CHECKED : BST_UNCHECKED );
+                std::copy( fx.abKeyWhite, fx.abKeyWhite + 2, g_abKeyWhite );
+                std::copy( fx.aiKeyWhite, fx.aiKeyWhite + 2, g_aiKeyWhite );
+                g_iKeyWhiteLook = fx.bFlat;
+                ShowKeyWhite( hWnd );
                 EnableFx( hWnd );
                 return TRUE;
             }
@@ -828,10 +1135,19 @@ namespace
                     return TRUE;
                 }
                 if ( LOWORD( wParam ) == IDC_FX_ON ) EnableFx( hWnd );
+                if ( LOWORD( wParam ) == IDC_FX_KEYWHITE ) { KeepKeyWhite( hWnd ); ShowKeyWhite( hWnd ); }
+                if ( LOWORD( wParam ) == IDC_FX_MERGE || LOWORD( wParam ) == IDC_FX_MERGESHORT ) EnableFxFlat( hWnd );
+                if ( LOWORD( wParam ) == IDC_FX_FLAT )
+                {
+                    // (the other look's whitening shown)
+                    KeepKeyWhite( hWnd );
+                    g_iKeyWhiteLook = IsDlgButtonChecked( hWnd, IDC_FX_FLAT ) == BST_CHECKED;
+                    ShowKeyWhite( hWnd );
+                }
                 if ( LOWORD( wParam ) == IDC_FX_HITLINE ) EnableFxHitLine( hWnd );
                 if ( LOWORD( wParam ) == IDC_FX_DECAY && HIWORD( wParam ) == CBN_SELCHANGE ) EnableFxDecay( hWnd );
                 if ( LOWORD( wParam ) == IDC_FX_FLAT )
-                    EnableWindow( GetDlgItem( hWnd, IDC_FX_FLATBORDERS ), IsDlgButtonChecked( hWnd, IDC_FX_FLAT ) == BST_CHECKED );
+                    EnableFxFlat( hWnd );
                 if ( HIWORD( wParam ) == BN_CLICKED || HIWORD( wParam ) == EN_CHANGE || HIWORD( wParam ) == CBN_SELCHANGE ) Changed( hWnd );
                 break;
             case WM_NOTIFY:
@@ -861,8 +1177,14 @@ namespace
                     fx.bNoBar = IsDlgButtonChecked( hWnd, IDC_FX_NOBAR ) == BST_CHECKED;
                     fx.bShortColor = IsDlgButtonChecked( hWnd, IDC_FX_SHORTCOLOR ) == BST_CHECKED;
                     fx.bHollow = IsDlgButtonChecked( hWnd, IDC_FX_HOLLOW ) == BST_CHECKED;
+                    fx.bMergeOutlines = IsDlgButtonChecked( hWnd, IDC_FX_MERGE ) == BST_CHECKED;
+                    fx.bMergeShort = IsDlgButtonChecked( hWnd, IDC_FX_MERGESHORT ) == BST_CHECKED;
+                    fx.bMergeShortLong = IsDlgButtonChecked( hWnd, IDC_FX_MERGESHORTLONG ) == BST_CHECKED;
                     fx.bStats = IsDlgButtonChecked( hWnd, IDC_FX_STATS ) == BST_CHECKED;
                     fx.bOn = IsDlgButtonChecked( hWnd, IDC_FX_ON ) == BST_CHECKED;
+                    KeepKeyWhite( hWnd );
+                    std::copy( g_abKeyWhite, g_abKeyWhite + 2, fx.abKeyWhite );
+                    std::copy( g_aiKeyWhite, g_aiKeyWhite + 2, fx.aiKeyWhite );
                     fx.bHitLine = IsDlgButtonChecked( hWnd, IDC_FX_HITLINE ) == BST_CHECKED;
                     fx.bHitLinePlaying = IsDlgButtonChecked( hWnd, IDC_FX_HITPLAYING ) == BST_CHECKED;
                     fx.bHitLineNoteColor = IsDlgButtonChecked( hWnd, IDC_FX_HITNOTECOLOR ) == BST_CHECKED;

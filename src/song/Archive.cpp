@@ -173,15 +173,25 @@ namespace
         HANDLE m_h = INVALID_HANDLE_VALUE;
     };
 
-    bool IsMidiName( const char *s )
+    // A MIDI, also compressed: .mid or .midi, then perhaps more extensions (song.mid.xz, song.midi.7z)
+    bool IsMidiEntry( const char *s )
     {
         if ( !s ) return false;
-        size_t n = strlen( s );
-        return ( n >= 4 && _stricmp( s + n - 4, ".mid" ) == 0 ) || ( n >= 5 && _stricmp( s + n - 5, ".midi" ) == 0 );
+        std::string t( s );
+        for ( char &c : t ) c = (char)tolower( (unsigned char)c );
+        const size_t iSlash = t.find_last_of( "/\\" );
+        if ( iSlash != std::string::npos ) t = t.substr( iSlash + 1 );
+        for ( const char *sExt : { ".mid", ".midi" } )
+            for ( size_t i = t.find( sExt ); i != std::string::npos && i > 0; i = t.find( sExt, i + 1 ) )
+            {
+                const size_t iEnd = i + strlen( sExt );
+                if ( iEnd == t.size() || t[iEnd] == '.' ) return true;
+            }
+        return false;
     }
 
     // One layer: libarchive reading the stream around it through callbacks (stacked filters, such as
-    // .xz.xz, all at once), on the entry to take: the first named .mid/.midi, else the largest
+    // .xz.xz, all at once), on the entry to take (Archive::Open)
     class ArchiveStream : public Stream
     {
     public:
@@ -189,15 +199,16 @@ namespace
         ~ArchiveStream() { if ( m_a ) archive_read_free( m_a ); }
 
         // bSeek: the layer may seek in its parent (a 7z needs to)
-        bool Open( std::unique_ptr< Stream > pParent, bool bSeek, bool bOuter, std::wstring &sErr )
+        bool Open( std::unique_ptr< Stream > pParent, bool bSeek, bool bOuter, std::wstring &sErr, const Archive::Chooser &fnChoose )
         {
             m_pParent = std::move( pParent );
             m_bSeek = bSeek;
             if ( !Start() ) { sErr = Error( L"The file could not be opened as an archive or compressed file" ); return false; }
             archive_entry *e = nullptr;
-            int i = 0, iBest = -1, iRet;
-            int64_t llBest = -1;
-            std::string sBest;
+            int i = 0, iRet;
+            std::vector< Archive::Entry > vFound;
+            std::vector< int > vIndex;
+            std::vector< std::string > vName;
             while ( ( iRet = archive_read_next_header( m_a, &e ) ) == ARCHIVE_OK || iRet == ARCHIVE_WARN || ( i == 0 && SevenZipUnderFilter() ) )
             {
                 // A 7z under a compression filter (a .7z.xz) cannot seek in it: this layer is the
@@ -216,24 +227,33 @@ namespace
                     const char *s = archive_entry_pathname_utf8( e );
                     if ( !s ) s = archive_entry_pathname( e );
                     int64_t ll = archive_entry_size_is_set( e ) ? archive_entry_size( e ) : -1;
-                    if ( bRaw || IsMidiName( s ) )
+                    // A bare compressed file has just the one; in a compressed archive going back means
+                    // decompressing again, so the first MIDI is read on (as without a choice)
+                    if ( bRaw || ( IsMidiEntry( s ) && ( !fnChoose || archive_filter_count( m_a ) > 1 ) ) )
                     {
                         if ( !bRaw ) m_sName = s;
                         m_iEntry = i;
                         m_llSize = ll;
                         return Check( bOuter, sErr );
                     }
-                    if ( ll > llBest ) { llBest = ll; iBest = i; sBest = s ? s : ""; }
+                    if ( IsMidiEntry( s ) )
+                    {
+                        vFound.push_back( { Util::Utf8ToWide( s ), ll } );
+                        vIndex.push_back( i );
+                        vName.push_back( s );
+                    }
                 }
                 if ( archive_read_data_skip( m_a ) == ARCHIVE_FATAL ) break;
                 i++;
             }
             if ( Cancelled( m_pCancel ) ) { sErr = L"Cancelled."; return false; }
             if ( iRet == ARCHIVE_FATAL || iRet == ARCHIVE_WARN ) { sErr = Error( L"The archive could not be read" ); return false; }
-            if ( iBest < 0 ) { sErr = L"The archive holds no file."; return false; }
-            m_iEntry = iBest;
-            m_sName = sBest;
-            m_llSize = llBest;
+            if ( vFound.empty() ) { sErr = L"The archive holds no MIDI file (.mid or .midi)."; return false; }
+            int k = vFound.size() > 1 ? fnChoose( vFound ) : 0;
+            if ( k < 0 || k >= (int)vFound.size() || Cancelled( m_pCancel ) ) { sErr = L"Cancelled."; return false; }
+            m_iEntry = vIndex[k];
+            m_sName = vName[k];
+            m_llSize = vFound[k].llSize;
             if ( !DoRewind() ) { sErr = sError; return false; }
             return Check( bOuter, sErr );
         }
@@ -409,7 +429,8 @@ bool Archive::IsCompressed( const std::wstring &sPath )
     return _wcsicmp( sExt.c_str(), L".tar" ) == 0 || _wcsicmp( sExt.c_str(), L".lzma" ) == 0;
 }
 
-std::unique_ptr< Archive::Reader > Archive::Open( const std::wstring &sPath, const std::atomic< bool > *pCancel, std::wstring &sError )
+std::unique_ptr< Archive::Reader > Archive::Open( const std::wstring &sPath, const std::atomic< bool > *pCancel, std::wstring &sError,
+                                                  const Chooser &fnChoose )
 {
     std::unique_ptr< FileStream > file( new FileStream( pCancel ) );
     if ( !file->Open( sPath, sError ) ) return nullptr;
@@ -425,7 +446,7 @@ std::unique_ptr< Archive::Reader > Archive::Open( const std::wstring &sPath, con
         if ( !pHead ) { sError = cur->sError; return nullptr; }
         bool bSeek = !iDepth || ( got == 6 && memcmp( pHead, SevenZipMagic, 6 ) == 0 );
         std::unique_ptr< ArchiveStream > layer( new ArchiveStream( pCancel ) );
-        if ( !layer->Open( std::move( cur ), bSeek, !iDepth, sError ) ) return nullptr;
+        if ( !layer->Open( std::move( cur ), bSeek, !iDepth, sError, fnChoose ) ) return nullptr;
         sLayers += layer->Kind();
         pHead = layer->Peek( 4, got );
         if ( !pHead ) { sError = layer->sError; return nullptr; }

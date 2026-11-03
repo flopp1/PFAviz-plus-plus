@@ -130,10 +130,10 @@ void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
         long long llTime = FrameTime( f );
         if ( f == 0 )
         {
-            engine.Jump( llTime, llTime, llTime + m_llTimeSpan );
+            engine.Jump( llTime, llTime, ViewEnd( llTime ) );
             meter.Jump( llTime );
         }
-        engine.AdvanceEnd( llTime + m_llTimeSpan );
+        engine.AdvanceEnd( ViewEnd( llTime ) );
         if ( f ) engine.Process( llTime );
         meter.Advance( llTime );
         FrameGlobals g = Scene::ComputeGlobals( GetViewInputs( iW, iH, llTime ) );
@@ -141,15 +141,21 @@ void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
         cap.Begin();
         r.Clear( 0x00000000 );
         r.BeginScene();
+        static thread_local GraphScale graphScale;
+        if ( f == 0 ) graphScale = GraphScale();
         DrawFrame( &r, g, engine, meter, meter.GetCurrentTick( llTime ), look, lights, [&]( float fDark ) {
-            if ( !job.bShowStats || !iLines ) return;
-            const StatsBox box = StatsLayout( iW, iH, iLines, StatsBottom( g, iH ) );
-            const RECT &rcStatus = box.rc;
-            r.DrawRect( static_cast< float >( rcStatus.left ), static_cast< float >( rcStatus.top ),
-                        static_cast< float >( rcStatus.right - rcStatus.left ), static_cast< float >( rcStatus.bottom - rcStatus.top ), 0x80000000 );
-            r.BeginText();
-            RenderStatus( &r, box, llTime, job.iFPS, uStats, 0, fDark );
-            r.EndText();
+            // (the graph whenever it is on, with or without the stats box)
+            const bool bBox = job.bShowStats && iLines;
+            StatsBox box = {};
+            if ( bBox )
+            {
+                box = FitStats( &r, iW, iH, uStats, StatsBottom( g, iH ) );
+                DrawStatsBackground( &r, box );
+                r.BeginText();
+                RenderStatus( &r, box, llTime, job.iFPS, uStats, 0, fDark );
+                r.EndText();
+            }
+            RenderGraph( &r, iW, iH, StatsBottom( g, iH ), llTime, 0, bBox ? &box : nullptr, fDark, graphScale );
         } );
         r.EndScene();
         cap.End();

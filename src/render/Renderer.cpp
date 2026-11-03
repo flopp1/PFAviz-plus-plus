@@ -54,7 +54,8 @@ Renderer::~Renderer()
     if ( m_pInstVS ) m_pInstVS->Release();
     if ( m_pInstPS ) m_pInstPS->Release();
     if ( m_pInstDecl ) m_pInstDecl->Release();
-    for ( IDirect3DPixelShader9 *p : { m_pDownPS, m_pBlurPS, m_pCompositePS } ) if ( p ) p->Release();
+    for ( IDirect3DPixelShader9 *p : { m_pDownPS, m_pBlurPS, m_pCompositePS, m_apEdgePS[0], m_apEdgePS[1], m_apEdgePS[2] } ) if ( p ) p->Release();
+    for ( IDirect3DVertexDeclaration9 *p : m_apEdgeDecl ) if ( p ) p->Release();
     delete m_pText;
     if ( m_pDevice ) m_pDevice->Release();
     if ( m_pD3D ) m_pD3D->Release();
@@ -237,6 +238,8 @@ void Renderer::DestroyDeviceObjects()
     if ( m_pTmplVB ) { m_pTmplVB->Release(); m_pTmplVB = nullptr; }
     if ( m_pTmplIB ) { m_pTmplIB->Release(); m_pTmplIB = nullptr; }
     if ( m_pInstVB ) { m_pInstVB->Release(); m_pInstVB = nullptr; }
+    if ( m_pEdgeMap ) { m_pEdgeVB->Unlock(); m_pEdgeMap = nullptr; m_uEdgeUsed = 0; }
+    if ( m_pEdgeVB ) { m_pEdgeVB->Release(); m_pEdgeVB = nullptr; }
     if ( m_pBkgTex ) { m_pBkgTex->Release(); m_pBkgTex = nullptr; }
     ReleasePostTargets();
     m_bIsDeviceValid = false;
@@ -317,9 +320,14 @@ HRESULT Renderer::DrawText( const WCHAR *sText, FontSize fsFont, LPRECT rcPos, D
     return m_pText->DrawText( fsFont, sText, iChars, rcPos, dwFormat, dwColor );
 }
 
-void Renderer::SetStatsFont( int iHeight )
+void Renderer::SetStatsFont( int iHeight, const std::wstring &sFace )
 {
-    if ( m_pText ) m_pText->SetStatsHeight( iHeight );
+    if ( m_pText ) m_pText->SetCustomFont( Stats, iHeight, sFace );
+}
+
+void Renderer::SetGraphFont( int iHeight, const std::wstring &sFace )
+{
+    if ( m_pText ) m_pText->SetCustomFont( Graph, iHeight, sFace );
 }
 
 HRESULT Renderer::EndText()

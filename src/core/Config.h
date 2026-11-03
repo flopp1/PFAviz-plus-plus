@@ -37,9 +37,17 @@ struct EffectSettings
     enum Part { PartNotes, PartShort, PartKeys, PartBackground, PartBar, PartCount };
     bool bFlat;                 // flat look: plain keys without the red bar, notes one flat colour without outlines
     bool bFlatBorders;          // the flat keys have gaps between them (off: the white keys meet)
+    // Pressed keys whiten towards their top, each look its own (0: the normal look, 1: the flat look): on
+    // (the normal look's off: darkening towards the top, as the original), and how far (percent)
+    bool abKeyWhite[2];
+    int aiKeyWhite[2];
     bool bNoBar;                // the keyboard without its red bar
     bool bHollow;               // the notes' insides are not drawn: only their outlines, the scene showing through
     bool bShortColor;           // short notes are drawn in their main colour, not their outline's
+    // Merged outlines: touching notes of one track and channel share one outline, around them all (not with
+    // the flat look, which has none). Short notes stay apart unless bMergeShort (then among themselves,
+    // or with bMergeShortLong with the long notes too)
+    bool bMergeOutlines, bMergeShort, bMergeShortLong;
     // percent: how much of a note's light reaches its outline and its inside (not short notes', which
     // have only the one colour): 100 lights it fully; an outline goes on, to 200 its note's main
     // colour, to 300 white
@@ -113,6 +121,9 @@ struct VisualSettings
     unsigned int colors[MaxColors], iBkgColor;     // the track colors: the first iColorCount are used
     unsigned int iBarColor;     // the keyboard's red bar
     int iColorCount;
+    // The user's saved palettes (Visual tab: chosen, they replace the track colors), each its colours in order
+    struct Palette { std::wstring sName; std::vector< unsigned > vColors; };
+    std::vector< Palette > vPalettes;
     bool bBkgImage;             // the background image is shown
     std::wstring sBkgImage;     // its file, drawn over iBkgColor
     int iBkgFit;                // Renderer::ImageFit
@@ -122,11 +133,42 @@ struct VisualSettings
     bool bHideSpeedBoxes;       // the toolbar as the original's: sliders only, without the exact speed boxes
     bool bLoopColors;           // the track colors repeat (channel n gets colors[n % iColorCount]); off: random after them
     bool bEdo31Keys;            // the 256-key view in the 31-EDO layout (31 keys an octave; Scene.cpp)
-    bool bStatsScaled;          // the stats box scales with the picture's height, as at 1080p (off: fixed pixels)
-    int iStatsSize;             // scaled: the box's size, percent (StatsSizeMin to StatsSizeMax)
+    bool bStatsScaled;          // the stats box's size is as at 1080p, scaled with the picture's height (off: pixels)
+    int iStatsCX, iStatsCY;     // the box's size: its height over its lines sets the line height and font; the
+                                // width is the least, widened to fit the text
     int iStatsCorner;           // StatsCorner bits: where the box sits (0: top right)
+    std::wstring sStatsFont;    // the box's font (the original's: Tahoma)
+    bool bStatsBackground;      // the box's translucent black background
+    bool bStatsShadow;          // the text's shadow
+    bool bStatsShadowMirror;    // the text's shadow mirrored with the corner (off: always down and right, as the original)
+    // The graphs of notes per second, polyphony and tempo over time (on in View > Graphs; set in
+    // Visual > Graphs...)
+    bool bGraph;
+    struct GraphSettings
+    {
+        enum Series { NPS, Polyphony, Tempo, SeriesCount };
+        bool abShow[SeriesCount];       // drawn
+        bool abLine[SeriesCount];       // as a line (off: filled)
+        bool abRight[SeriesCount];      // its text at the right (off: the left)
+        unsigned aColor[SeriesCount];   // its colour (a COLORREF)
+        int aiPlace[SeriesCount];       // its place top to bottom, 0 first, in any corner (in one box: its
+                                        // text's place); each place held by one
+        bool bTogether;                 // all in one box (then only one filled), not a box each
+        bool bZero;                     // the bottom at zero (off: at the lowest value shown)
+        bool bMiddle;                   // the time now in the middle (off: at the right edge)
+        int iCorner;                    // StatsCorner bits (with the stats box there: next to it)
+        int iSpanMs;                    // the time shown, ms (at least the counts' 1 ms bin)
+        int iCX, iCY;                   // a box's size, pixels as at 1080p
+        int iFontPx;                    // the text's height, pixels as at 1080p
+        int iGrowMs, iShrinkMs;         // how quickly a scale follows its values up and down: the time to
+                                        // get most of the way there (0: at once), ms of song time
+        void Fix();                     // together: only the first filled one stays filled; places not
+                                        // each held once: back to the series' order
+    } graph;
     enum StatsCorner { StatsLeft = 1, StatsBottom = 2 };    // bottom: on the keyboard's red bar
-    static const int StatsSizeMin = 25, StatsSizeMax = 400;
+    static const int StatsCXMin = 20, StatsCXMax = 3840, StatsCYMin = 8, StatsCYMax = 2160;
+    // The original's box: 156 pixels wide, 16 a line and 3 above and below
+    static int StatsDefaultCY( unsigned uStats ) { return 6 + 16 * std::max( 1, __builtin_popcount( uStats & AllStats ) ); }
     EffectSettings fx;
 };
 

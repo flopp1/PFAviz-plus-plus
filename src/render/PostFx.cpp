@@ -56,6 +56,199 @@ float4 main( float2 t : TEXCOORD0 ) : COLOR
 )";
 }
 
+// Merged outlines: a pixel of a note (its ID neither 0 nor NoEdgesId) gets its outline colour when a pixel
+// 1 to W away left, right, up or down has another ID; every other pixel is left as it is (texkill).
+// c0: one pixel across and down
+static const char *EdgePS = R"(
+sampler2D s0 : register( s0 );
+sampler2D s1 : register( s1 );
+float4 c0 : register( c0 );
+float4 main( float2 t : TEXCOORD0 ) : COLOR
+{
+    float3 c = tex2D( s0, t ).rgb;
+    float fNone = dot( c, 1 ) < 0.5 / 255 || dot( c, 1 ) > 3 - 0.5 / 255 ? 1 : 0;
+    float fDiff = 0;
+    for ( int d = 1; d <= W; d++ )
+    {
+        fDiff += dot( abs( tex2D( s0, t + float2( c0.x * d, 0 ) ).rgb - c ), 1 );
+        fDiff += dot( abs( tex2D( s0, t - float2( c0.x * d, 0 ) ).rgb - c ), 1 );
+        fDiff += dot( abs( tex2D( s0, t + float2( 0, c0.y * d ) ).rgb - c ), 1 );
+        fDiff += dot( abs( tex2D( s0, t - float2( 0, c0.y * d ) ).rgb - c ), 1 );
+    }
+    clip( fDiff > 0.5 / 255 && fNone < 0.5 ? 1 : -1 );
+    return float4( tex2D( s1, t ).rgb, 1 );
+}
+)";
+
+bool Renderer::NoteEdgesOn()
+{
+    if ( m_apEdgePS[0] ) return true;
+    if ( !m_pDevice || !CreatePostShaders() ) return false;
+    static HMODULE hCompiler = LoadLibraryW( L"d3dcompiler_47.dll" );
+    pD3DCompile pCompile = hCompiler ? (pD3DCompile)(void *)GetProcAddress( hCompiler, "D3DCompile" ) : nullptr;
+    if ( !pCompile ) return false;
+    // The quads' vertices read three ways: by their own colour, their ID, their outline colour (the fixed
+    // function pipeline takes them from one stream only)
+    for ( int i = 0; i < 3; i++ )
+    {
+        if ( m_apEdgeDecl[i] ) continue;
+        const D3DVERTEXELEMENT9 aDecl[] = {
+            { 0, 0, D3DDECLTYPE_FLOAT4, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_POSITIONT, 0 },
+            { 0, (WORD)( 16 + 4 * i ), D3DDECLTYPE_D3DCOLOR, D3DDECLMETHOD_DEFAULT, D3DDECLUSAGE_COLOR, 0 },
+            D3DDECL_END() };
+        if ( FAILED( m_pDevice->CreateVertexDeclaration( aDecl, &m_apEdgeDecl[i] ) ) ) return false;
+    }
+    // (3 pixels wide is too many dependent reads for ps_2_0: ps_2_b or ps_2_a, which most cards take; failing
+    // those, it is drawn 2 wide)
+    for ( int w = 1; w <= 3; w++ )
+    {
+        char sW[4] = { (char)( '0' + w ), 0 };
+        const D3D_SHADER_MACRO aDefs[] = { { "W", sW }, { nullptr, nullptr } };
+        for ( const char *sProfile : { "ps_2_0", "ps_2_b", "ps_2_a" } )
+        {
+            ID3DBlob *pCode = nullptr;
+            bool bOk = SUCCEEDED( pCompile( EdgePS, strlen( EdgePS ), "edge.ps", aDefs, nullptr, "main", sProfile, D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &pCode, nullptr ) ) &&
+                       SUCCEEDED( m_pDevice->CreatePixelShader( (const DWORD *)pCode->GetBufferPointer(), &m_apEdgePS[w - 1] ) );
+            if ( pCode ) pCode->Release();
+            if ( bOk ) break;
+        }
+        if ( !m_apEdgePS[w - 1] && w == 3 && m_apEdgePS[1] ) { m_apEdgePS[2] = m_apEdgePS[1]; m_apEdgePS[2]->AddRef(); }
+        if ( !m_apEdgePS[w - 1] )
+        {
+            for ( IDirect3DPixelShader9 *&p : m_apEdgePS ) if ( p ) { p->Release(); p = nullptr; }
+            return false;
+        }
+    }
+    return true;
+}
+
+bool Renderer::BeginNoteEdges()
+{
+    FlushBuffer();
+    m_bLayers = false;
+    m_vEdgeRuns.clear();
+    if ( !NoteEdgesOn() ) return false;
+    if ( !m_pEdgeVB && FAILED( m_pDevice->CreateVertexBuffer( VBVertices * sizeof( EDGE_VERTEX ), D3DUSAGE_DYNAMIC | D3DUSAGE_WRITEONLY,
+                                                              0, D3DPOOL_DEFAULT, &m_pEdgeVB, nullptr ) ) )
+        return false;
+    IDirect3DSurface9 *pTarget = nullptr;
+    D3DSURFACE_DESC d;
+    if ( FAILED( m_pDevice->GetRenderTarget( 0, &pTarget ) ) || FAILED( pTarget->GetDesc( &d ) ) )
+    {
+        if ( pTarget ) pTarget->Release();
+        return false;
+    }
+    if ( !PostTarget( m_NoteIds.pTex, m_NoteIds.pSurf, m_NoteIds.iW, m_NoteIds.iH, (int)d.Width, (int)d.Height ) ||
+         !PostTarget( m_NoteOutlines.pTex, m_NoteOutlines.pSurf, m_NoteOutlines.iW, m_NoteOutlines.iH, (int)d.Width, (int)d.Height ) )
+    {
+        pTarget->Release();
+        return false;
+    }
+    // The IDs cleared (alone as the target, then back)
+    m_pDevice->SetRenderTarget( 0, m_NoteIds.pSurf );
+    m_pDevice->Clear( 0, nullptr, D3DCLEAR_TARGET, 0, 1.0f, 0 );
+    m_pDevice->SetRenderTarget( 0, pTarget );
+    if ( m_pLayerTarget ) m_pLayerTarget->Release();
+    m_pLayerTarget = pTarget;
+    m_bLayers = true;
+    return true;
+}
+
+void Renderer::DrawEdgeQuads( const EDGE_VERTEX *pVerts, size_t iQuads )
+{
+    if ( !iQuads || !m_pEdgeVB || !m_pIB || !m_apEdgeDecl[2] ) return;
+    if ( !m_vVerts.empty() || m_pQuadMap ) FlushBuffer();
+    FlushInstances();
+    while ( iQuads )
+    {
+        const UINT uQuads = (UINT)std::min< size_t >( iQuads, IBQuads ), uCount = uQuads * 4;
+        if ( m_pEdgeMap && m_uEdgeUsed + uCount > m_uEdgeCap ) FlushEdgeQuads();
+        if ( !m_pEdgeMap )
+        {
+            // The rest of the buffer, up to what one draw can index (discarded only when this does not fit,
+            // the layers first drawn from what it holds)
+            DWORD dwLock = D3DLOCK_NOOVERWRITE;
+            if ( m_uEdgePos + uCount > VBVertices ) { DrawEdgeLayers(); m_uEdgePos = 0; dwLock = D3DLOCK_DISCARD; }
+            m_uEdgeCap = std::min( VBVertices - m_uEdgePos, IBQuads * 4 );
+            void *pData = nullptr;
+            if ( FAILED( m_pEdgeVB->Lock( m_uEdgePos * sizeof( EDGE_VERTEX ), m_uEdgeCap * sizeof( EDGE_VERTEX ), &pData, dwLock ) ) ) return;
+            m_pEdgeMap = (EDGE_VERTEX *)pData;
+            m_uEdgeUsed = 0;
+        }
+        memcpy( m_pEdgeMap + m_uEdgeUsed, pVerts, uCount * sizeof( EDGE_VERTEX ) );
+        m_uEdgeUsed += uCount;
+        pVerts += uCount;
+        iQuads -= uQuads;
+    }
+}
+
+// The quads in the buffer drawn into the target in their own colours (and kept, to draw into the layers)
+void Renderer::FlushEdgeQuads()
+{
+    if ( !m_pEdgeMap ) return;
+    m_pEdgeVB->Unlock();
+    m_pEdgeMap = nullptr;
+    if ( !m_uEdgeUsed ) return;
+    DrawEdgeRuns( 0, { { m_uEdgePos, m_uEdgeUsed } } );
+    if ( m_bLayers ) m_vEdgeRuns.push_back( { m_uEdgePos, m_uEdgeUsed } );
+    m_uEdgePos += m_uEdgeUsed;
+    m_uEdgeUsed = 0;
+}
+
+// Runs of the buffer's quads, in colour i (0: their own, 1: their IDs, 2: their outlines')
+void Renderer::DrawEdgeRuns( int i, const std::vector< EdgeRun > &vRuns )
+{
+    m_pDevice->SetVertexDeclaration( m_apEdgeDecl[i] );
+    m_pDevice->SetStreamSource( 0, m_pEdgeVB, 0, sizeof( EDGE_VERTEX ) );
+    m_pDevice->SetIndices( m_pIB );
+    for ( const EdgeRun &r : vRuns ) m_pDevice->DrawIndexedPrimitive( D3DPT_TRIANGLELIST, (INT)r.uPos, 0, r.uCount, 0, r.uCount / 2 );
+    m_pDevice->SetFVF( SCREEN_VERTEX::FVF );
+}
+
+// The quads drawn so far into the layers, from the buffer as they are in it: as IDs, then as outline
+// colours (each layer in the order the target got them)
+void Renderer::DrawEdgeLayers()
+{
+    if ( m_vEdgeRuns.empty() ) return;
+    for ( int i = 1; i <= 2; i++ )
+    {
+        m_pDevice->SetRenderTarget( 0, i == 1 ? m_NoteIds.pSurf : m_NoteOutlines.pSurf );
+        DrawEdgeRuns( i, m_vEdgeRuns );
+    }
+    m_pDevice->SetRenderTarget( 0, m_pLayerTarget );
+    m_vEdgeRuns.clear();
+}
+
+void Renderer::EndNoteEdges( int iWidth )
+{
+    FlushEdgeQuads();
+    const bool bLayers = m_bLayers;
+    if ( bLayers ) DrawEdgeLayers();
+    m_bLayers = false;
+    if ( !bLayers || !m_pLayerTarget || !m_NoteIds.pTex || !m_NoteOutlines.pTex ) return;
+    for ( int s = 0; s < 2; s++ )
+    {
+        m_pDevice->SetSamplerState( s, D3DSAMP_MINFILTER, D3DTEXF_POINT );
+        m_pDevice->SetSamplerState( s, D3DSAMP_MAGFILTER, D3DTEXF_POINT );
+        m_pDevice->SetSamplerState( s, D3DSAMP_MIPFILTER, D3DTEXF_NONE );
+        m_pDevice->SetSamplerState( s, D3DSAMP_ADDRESSU, D3DTADDRESS_CLAMP );
+        m_pDevice->SetSamplerState( s, D3DSAMP_ADDRESSV, D3DTADDRESS_CLAMP );
+    }
+    m_pDevice->SetRenderState( D3DRS_ALPHABLENDENABLE, FALSE );
+    const float aC[4] = { 1.0f / m_NoteIds.iW, 1.0f / m_NoteIds.iH, 0.0f, 0.0f };
+    m_pDevice->SetPixelShader( m_apEdgePS[std::clamp( iWidth, 1, 3 ) - 1] );
+    m_pDevice->SetPixelShaderConstantF( 0, aC, 1 );
+    m_pDevice->SetTexture( 0, m_NoteIds.pTex );
+    m_pDevice->SetTexture( 1, m_NoteOutlines.pTex );
+    PostQuad( m_pLayerTarget, m_NoteIds.iW, m_NoteIds.iH );
+    m_pDevice->SetPixelShader( nullptr );
+    m_pDevice->SetTexture( 0, nullptr );
+    m_pDevice->SetTexture( 1, nullptr );
+    m_pLayerTarget->Release();
+    m_pLayerTarget = nullptr;
+    RestoreStates();
+}
+
 bool Renderer::CreatePostShaders()
 {
     if ( m_pCompositePS ) return true;
@@ -99,13 +292,14 @@ bool Renderer::PostTarget( IDirect3DTexture9 *&pTex, IDirect3DSurface9 *&pSurf, 
 
 void Renderer::ReleasePostTargets()
 {
-    for ( PostTex *p : { &m_PostScene, &m_PostSource, &m_PostQuarter, &m_aPostGlow[0], &m_aPostGlow[1] } )
+    for ( PostTex *p : { &m_PostScene, &m_PostSource, &m_PostQuarter, &m_aPostGlow[0], &m_aPostGlow[1], &m_NoteIds, &m_NoteOutlines } )
     {
         if ( p->pSurf ) p->pSurf->Release();
         if ( p->pTex ) p->pTex->Release();
         *p = PostTex();
     }
     if ( m_pPostTarget ) { m_pPostTarget->Release(); m_pPostTarget = nullptr; }
+    if ( m_pLayerTarget ) { m_pLayerTarget->Release(); m_pLayerTarget = nullptr; }
     m_bInPost = false;
 }
 
@@ -153,11 +347,19 @@ void Renderer::DrawGlow( const GlowRect *pRects, size_t iCount )
     m_pDevice->SetRenderTarget( 0, m_PostSource.pSurf );
     if ( !m_bSourceUsed ) m_pDevice->Clear( 0, nullptr, D3DCLEAR_TARGET, 0, 1.0f, 0 );
     m_bSourceUsed = true;
+    // (as quads in one go: the same triangles DrawRect's would be, in the same order)
+    static thread_local std::vector< SCREEN_VERTEX > vQuads;
+    vQuads.resize( iCount * 4 );
     for ( size_t i = 0; i < iCount; i++ )
     {
         const GlowRect &r = pRects[i];
-        DrawRect( r.x, r.y, r.cx, r.cy, r.color & 0x00FFFFFF );
+        SCREEN_VERTEX a[6];
+        const D3DCOLOR c = r.color & 0x00FFFFFF;
+        RectVertices( r.x, r.y, r.cx, r.cy, c, c, c, c, a );
+        SCREEN_VERTEX *q = &vQuads[i * 4];
+        q[0] = a[0]; q[1] = a[1]; q[2] = a[2]; q[3] = a[5];
     }
+    DrawQuads( vQuads.data(), iCount );
     FlushBuffer();
     m_pDevice->SetRenderTarget( 0, m_PostScene.pSurf );
 }

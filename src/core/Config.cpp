@@ -144,8 +144,28 @@ void VisualSettings::LoadDefaultValues()
     bLoopColors = false;
     bEdo31Keys = false;
     bStatsScaled = false;
-    iStatsSize = 100;
+    iStatsCX = 156;
+    iStatsCY = StatsDefaultCY( uStats );
     iStatsCorner = 0;
+    sStatsFont = L"Tahoma";
+    bStatsBackground = true;
+    bStatsShadow = true;
+    bStatsShadowMirror = false;
+    bGraph = false;
+    for ( int i = 0; i < GraphSettings::SeriesCount; i++ ) { graph.abShow[i] = true; graph.abLine[i] = graph.abRight[i] = false; graph.aiPlace[i] = i; }
+    graph.aColor[GraphSettings::NPS] = 0x00FFA050;
+    graph.aColor[GraphSettings::Polyphony] = 0x0040B0FF;
+    graph.aColor[GraphSettings::Tempo] = 0x0080E060;
+    graph.bTogether = false;
+    graph.bZero = true;
+    graph.bMiddle = false;
+    graph.iCorner = StatsLeft;
+    graph.iSpanMs = 1000;
+    graph.iCX = 800;
+    graph.iCY = 200;
+    graph.iFontPx = 18;
+    graph.iGrowMs = 60;
+    graph.iShrinkMs = 60;
     fx.LoadDefaultValues();
     int R, G, B, S = 80, V = 100;
     const int iColors = 16;     // the original's 16, as it made them
@@ -188,8 +208,45 @@ static std::string FormatRGB( unsigned c )
     return buf;
 }
 
+static const char *const GraphNames[VisualSettings::GraphSettings::SeriesCount] = { "NPS", "Polyphony", "Tempo" };
+
+void VisualSettings::GraphSettings::Fix()
+{
+    unsigned uPlaces = 0;
+    for ( int i = 0; i < SeriesCount; i++ ) if ( aiPlace[i] >= 0 && aiPlace[i] < SeriesCount ) uPlaces |= 1u << aiPlace[i];
+    if ( uPlaces != ( 1u << SeriesCount ) - 1 ) for ( int i = 0; i < SeriesCount; i++ ) aiPlace[i] = i;
+    if ( !bTogether ) return;
+    bool bFilled = false;
+    for ( int i = 0; i < SeriesCount; i++ )
+        if ( abShow[i] && !abLine[i] ) { if ( bFilled ) abLine[i] = true; bFilled = true; }
+}
+
+static std::string FormatHex( unsigned c )
+{
+    char buf[16];
+    snprintf( buf, sizeof( buf ), "#%02X%02X%02X", c & 0xFF, ( c >> 8 ) & 0xFF, ( c >> 16 ) & 0xFF );
+    return buf;
+}
+
 void VisualSettings::Load( const IniFile &ini )
 {
+    // The saved palettes: Name<i> and Colors<i> (hex, space-separated)
+    vPalettes.clear();
+    const int iPalettes = std::clamp( ini.GetInt( "Palettes", "Count", 0 ), 0, 1000 );
+    for ( int i = 0; i < iPalettes; i++ )
+    {
+        Palette pal;
+        pal.sName = Util::Utf8ToWide( ini.GetString( "Palettes", "Name" + std::to_string( i ) ) );
+        std::string sColors = ini.GetString( "Palettes", "Colors" + std::to_string( i ) );
+        for ( size_t iPos = 0; iPos < sColors.size() && (int)pal.vColors.size() < MaxColors; )
+        {
+            size_t iEnd = sColors.find( ' ', iPos );
+            if ( iEnd == std::string::npos ) iEnd = sColors.size();
+            if ( iEnd > iPos ) pal.vColors.push_back( ParseRGB( sColors.substr( iPos, iEnd - iPos ), 0 ) );
+            iPos = iEnd + 1;
+        }
+        if ( !pal.sName.empty() && !pal.vColors.empty() ) vPalettes.push_back( pal );
+    }
     eKeysShown = static_cast< KeysShown >( std::clamp( ini.GetInt( "Visual", "KeysShown", eKeysShown ), 0, 4 ) );
     bAlwaysShowControls = ini.GetBool( "Visual", "AlwaysShowControls", bAlwaysShowControls );
     if ( ini.Has( "Visual", "Stats" ) ) uStats = (unsigned)ini.GetInt( "Visual", "Stats", (int)uStats ) & AllStats;
@@ -232,14 +289,52 @@ void VisualSettings::Load( const IniFile &ini )
     bLoopColors = ini.GetBool( "Visual", "LoopColors", bLoopColors );
     bEdo31Keys = ini.GetBool( "Visual", "Edo31Keys", bEdo31Keys );
     bStatsScaled = ini.GetBool( "Visual", "StatsScaled", bStatsScaled );
-    iStatsSize = std::clamp( ini.GetInt( "Visual", "StatsSize", iStatsSize ), StatsSizeMin, StatsSizeMax );
+    // (saved before as a percent of the original's box, at the lines then shown: its size in pixels)
+    const int iOldSize = std::clamp( ini.GetInt( "Visual", "StatsSize", 100 ), 25, 400 );
+    iStatsCX = std::clamp( ini.GetInt( "Visual", "StatsWidth", 156 * iOldSize / 100 ), StatsCXMin, StatsCXMax );
+    iStatsCY = std::clamp( ini.GetInt( "Visual", "StatsHeight", StatsDefaultCY( uStats ) * iOldSize / 100 ), StatsCYMin, StatsCYMax );
     iStatsCorner = ini.GetInt( "Visual", "StatsCorner", iStatsCorner ) & 3;
+    if ( ini.Has( "Visual", "StatsFont" ) ) sStatsFont = Util::Utf8ToWide( ini.GetString( "Visual", "StatsFont" ) );
+    if ( sStatsFont.empty() || sStatsFont.size() >= LF_FACESIZE ) sStatsFont = L"Tahoma";
+    bStatsBackground = ini.GetBool( "Visual", "StatsBackground", bStatsBackground );
+    bStatsShadow = ini.GetBool( "Visual", "StatsShadow", bStatsShadow );
+    bStatsShadowMirror = ini.GetBool( "Visual", "StatsShadowMirror", bStatsShadowMirror );
+    bGraph = ini.GetBool( "Visual", "Graph", bGraph );
+    for ( int i = 0; i < GraphSettings::SeriesCount; i++ )
+    {
+        const std::string sName = GraphNames[i];
+        graph.abShow[i] = ini.GetBool( "Graphs", "Show" + sName, graph.abShow[i] );
+        graph.abLine[i] = ini.GetBool( "Graphs", "Line" + sName, graph.abLine[i] );
+        graph.abRight[i] = ini.GetBool( "Graphs", "Right" + sName, graph.abRight[i] );
+        graph.aiPlace[i] = ini.GetInt( "Graphs", "Place" + sName, graph.aiPlace[i] );
+        graph.aColor[i] = ParseRGB( ini.GetString( "Graphs", "Color" + sName ), graph.aColor[i] );
+    }
+    graph.bTogether = ini.GetBool( "Graphs", "Together", graph.bTogether );
+    graph.bZero = ini.GetBool( "Graphs", "Zero", graph.bZero );
+    graph.bMiddle = ini.GetBool( "Graphs", "Middle", graph.bMiddle );
+    graph.iCorner = ini.GetInt( "Graphs", "Corner", graph.iCorner ) & 3;
+    if ( ini.Has( "Graphs", "Seconds" ) ) graph.iSpanMs = ini.GetInt( "Graphs", "Seconds", 1 ) * 1000;    // (as saved before)
+    graph.iSpanMs = std::clamp( ini.GetInt( "Graphs", "SpanMs", graph.iSpanMs ), 1, 600000 );
+    graph.iCX = std::clamp( ini.GetInt( "Graphs", "Width", graph.iCX ), 60, 3840 );
+    graph.iCY = std::clamp( ini.GetInt( "Graphs", "Height", graph.iCY ), 30, 2160 );
+    graph.iFontPx = std::clamp( ini.GetInt( "Graphs", "FontSize", graph.iFontPx ), 6, 200 );
+    graph.iGrowMs = std::clamp( ini.GetInt( "Graphs", "GrowMs", graph.iGrowMs ), 0, 10000 );
+    graph.iShrinkMs = std::clamp( ini.GetInt( "Graphs", "ShrinkMs", graph.iShrinkMs ), 0, 10000 );
+    graph.Fix();
     bHideSpeedBoxes = ini.GetBool( "Visual", "HideSpeedBoxes", bHideSpeedBoxes );
     fx.LoadConfigValues( ini );
 }
 
 void VisualSettings::Save( IniFile &ini ) const
 {
+    ini.SetInt( "Palettes", "Count", (int)vPalettes.size() );
+    for ( size_t i = 0; i < vPalettes.size(); i++ )
+    {
+        std::string sColors;
+        for ( unsigned c : vPalettes[i].vColors ) sColors += ( sColors.empty() ? "" : " " ) + FormatHex( c );
+        ini.Set( "Palettes", "Name" + std::to_string( i ), Util::WideToUtf8( vPalettes[i].sName ) );
+        ini.Set( "Palettes", "Colors" + std::to_string( i ), sColors );
+    }
     ini.SetInt( "Visual", "KeysShown", eKeysShown );
     ini.SetInt( "Visual", "AlwaysShowControls", bAlwaysShowControls );
     ini.SetInt( "Visual", "Stats", (int)uStats );
@@ -262,8 +357,33 @@ void VisualSettings::Save( IniFile &ini ) const
     ini.SetInt( "Visual", "LoopColors", bLoopColors );
     ini.SetInt( "Visual", "Edo31Keys", bEdo31Keys );
     ini.SetInt( "Visual", "StatsScaled", bStatsScaled );
-    ini.SetInt( "Visual", "StatsSize", iStatsSize );
+    ini.SetInt( "Visual", "StatsWidth", iStatsCX );
+    ini.SetInt( "Visual", "StatsHeight", iStatsCY );
     ini.SetInt( "Visual", "StatsCorner", iStatsCorner );
+    ini.Set( "Visual", "StatsFont", Util::WideToUtf8( sStatsFont ) );
+    ini.SetInt( "Visual", "StatsBackground", bStatsBackground );
+    ini.SetInt( "Visual", "StatsShadow", bStatsShadow );
+    ini.SetInt( "Visual", "StatsShadowMirror", bStatsShadowMirror );
+    ini.SetInt( "Visual", "Graph", bGraph );
+    for ( int i = 0; i < GraphSettings::SeriesCount; i++ )
+    {
+        const std::string sName = GraphNames[i];
+        ini.SetInt( "Graphs", "Show" + sName, graph.abShow[i] );
+        ini.SetInt( "Graphs", "Line" + sName, graph.abLine[i] );
+        ini.SetInt( "Graphs", "Right" + sName, graph.abRight[i] );
+        ini.SetInt( "Graphs", "Place" + sName, graph.aiPlace[i] );
+        ini.Set( "Graphs", "Color" + sName, FormatRGB( graph.aColor[i] ) );
+    }
+    ini.SetInt( "Graphs", "Together", graph.bTogether );
+    ini.SetInt( "Graphs", "Zero", graph.bZero );
+    ini.SetInt( "Graphs", "Middle", graph.bMiddle );
+    ini.SetInt( "Graphs", "Corner", graph.iCorner );
+    ini.SetInt( "Graphs", "SpanMs", graph.iSpanMs );
+    ini.SetInt( "Graphs", "Width", graph.iCX );
+    ini.SetInt( "Graphs", "Height", graph.iCY );
+    ini.SetInt( "Graphs", "FontSize", graph.iFontPx );
+    ini.SetInt( "Graphs", "GrowMs", graph.iGrowMs );
+    ini.SetInt( "Graphs", "ShrinkMs", graph.iShrinkMs );
     ini.SetInt( "Visual", "HideSpeedBoxes", bHideSpeedBoxes );
     fx.Save( ini );
 }
@@ -273,9 +393,13 @@ void EffectSettings::LoadDefaultValues()
     bOn = true;
     bFlat = false;
     bFlatBorders = true;
+    abKeyWhite[0] = false;
+    abKeyWhite[1] = true;
+    aiKeyWhite[0] = aiKeyWhite[1] = 30;
     bNoBar = false;
     bHollow = false;
     bShortColor = false;
+    bMergeOutlines = bMergeShort = bMergeShortLong = false;
     iLightOutlines = iLightInsides = 100;
     iRestLight = 0;
     for ( int p = 0; p < PartCount; p++ ) { aDark[p] = 0; aLightUp[p] = 0; aGlow[p] = p == PartBackground || p == PartBar ? 0 : 100; }
@@ -307,7 +431,7 @@ void EffectSettings::LoadDefaultValues()
 bool EffectSettings::Any() const
 {
     if ( !bOn ) return false;
-    if ( bFlat || bNoBar || bHollow || bShortColor || iRestLight || iVignette || eDecay || bHitLine ) return true;
+    if ( bFlat || bNoBar || bHollow || bShortColor || iRestLight || iVignette || eDecay || bHitLine || abKeyWhite[0] || bMergeOutlines ) return true;
     for ( int p = 0; p < PartCount; p++ )
         if ( aDark[p] || aLightUp[p] || ( iBloom && aGlow[p] ) ) return true;
     return false;
@@ -320,9 +444,18 @@ void EffectSettings::LoadConfigValues( const IniFile &ini )
     bOn = ini.GetBool( "Effects", "On", bOn );
     bFlat = ini.GetBool( "Effects", "Flat", bFlat );
     bFlatBorders = ini.GetBool( "Effects", "FlatBorders", bFlatBorders );
+    for ( int i = 0; i < 2; i++ )
+    {
+        const std::string sLook = i ? "FlatKeyWhite" : "KeyWhite";
+        abKeyWhite[i] = ini.GetBool( "Effects", sLook + "On", abKeyWhite[i] );
+        aiKeyWhite[i] = std::clamp( ini.GetInt( "Effects", sLook, aiKeyWhite[i] ), 0, 100 );
+    }
     bNoBar = ini.GetBool( "Effects", "NoBar", bFlat );   // (the flat look once had no bar)
     bHollow = ini.GetBool( "Effects", "Hollow", bHollow );
     bShortColor = ini.GetBool( "Effects", "ShortColor", bShortColor );
+    bMergeOutlines = ini.GetBool( "Effects", "MergeOutlines", bMergeOutlines );
+    bMergeShort = ini.GetBool( "Effects", "MergeShort", bMergeShort );
+    bMergeShortLong = ini.GetBool( "Effects", "MergeShortWithLong", bMergeShortLong );
     // (by default from lighting only outlines, as far as OutlineLight: 100 the main colour, 200 white)
     const bool bOutlines = ini.GetBool( "Effects", "Outlines", false );
     iLightOutlines = std::clamp( ini.GetInt( "Effects", "LightOutlines", bOutlines ? 100 + ini.GetInt( "Effects", "OutlineLight", 100 ) : 100 ), 0, 300 );
@@ -373,9 +506,18 @@ void EffectSettings::Save( IniFile &ini ) const
     ini.SetInt( "Effects", "On", bOn );
     ini.SetInt( "Effects", "Flat", bFlat );
     ini.SetInt( "Effects", "FlatBorders", bFlatBorders );
+    for ( int i = 0; i < 2; i++ )
+    {
+        const std::string sLook = i ? "FlatKeyWhite" : "KeyWhite";
+        ini.SetInt( "Effects", sLook + "On", abKeyWhite[i] );
+        ini.SetInt( "Effects", sLook, aiKeyWhite[i] );
+    }
     ini.SetInt( "Effects", "NoBar", bNoBar );
     ini.SetInt( "Effects", "Hollow", bHollow );
     ini.SetInt( "Effects", "ShortColor", bShortColor );
+    ini.SetInt( "Effects", "MergeOutlines", bMergeOutlines );
+    ini.SetInt( "Effects", "MergeShort", bMergeShort );
+    ini.SetInt( "Effects", "MergeShortWithLong", bMergeShortLong );
     ini.SetInt( "Effects", "LightOutlines", iLightOutlines );
     ini.SetInt( "Effects", "LightInsides", iLightInsides );
     ini.SetInt( "Effects", "RestLight", iRestLight );

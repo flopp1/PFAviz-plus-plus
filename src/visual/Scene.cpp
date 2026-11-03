@@ -322,6 +322,22 @@ void Scene::DrawHitLine( Renderer *pRenderer, const FrameGlobals &g, const HitLi
     const float y1 = g.fNotesY + g.fNotesCY + g.fHitLineCY, y0 = y1 - h.fCore;
     const float fStep = h.fSoft / 3.0f;
     static const float aFade[4] = { 1.0f, 4.0f / 9.0f, 1.0f / 9.0f, 0.0f };
+    // The rects, queued as quads and drawn together when this returns (the same triangles DrawRect's
+    // would be, in the same order)
+    struct Quads
+    {
+        Renderer *pRenderer;
+        std::vector< Renderer::SCREEN_VERTEX > &v;
+        ~Quads() { pRenderer->DrawQuads( v.data(), v.size() / 4 ); }
+    };
+    static thread_local std::vector< Renderer::SCREEN_VERTEX > vQuads;
+    vQuads.clear();
+    const Quads quads = { pRenderer, vQuads };
+    auto Rect = [&]( float x, float y, float cx, float cy, D3DCOLOR c1, D3DCOLOR c2, D3DCOLOR c3, D3DCOLOR c4 ) {
+        Renderer::SCREEN_VERTEX a[6];
+        Renderer::RectVertices( x, y, cx, cy, c1, c2, c3, c4, a );
+        vQuads.insert( vQuads.end(), { a[0], a[1], a[2], a[5] } );
+    };
     // One stretch of the line, from its left side's colour and strength to its right side's
     auto Band = [&]( float x, float cx, D3DCOLOR cL, float fL, D3DCOLOR cR, float fR )
     {
@@ -332,15 +348,15 @@ void Scene::DrawHitLine( Renderer *pRenderer, const FrameGlobals &g, const HitLi
         if ( h.fCore > 0.0f )
         {
             const D3DCOLOR a = At( cL, fL, 1.0f ), b = At( cR, fR, 1.0f );
-            pRenderer->DrawRect( x, y0, cx, h.fCore, a, b, b, a );
+            Rect( x, y0, cx, h.fCore, a, b, b, a );
         }
         if ( fStep > 0.0f )
             for ( int i = 0; i < 3; i++ )
             {
                 const D3DCOLOR aIn = At( cL, fL, aFade[i] ), aOut = At( cL, fL, aFade[i + 1] );
                 const D3DCOLOR bIn = At( cR, fR, aFade[i] ), bOut = At( cR, fR, aFade[i + 1] );
-                pRenderer->DrawRect( x, y0 - fStep * ( i + 1 ), cx, fStep, aOut, bOut, bIn, aIn );
-                pRenderer->DrawRect( x, y1 + fStep * i, cx, fStep, aIn, bIn, bOut, aOut );
+                Rect( x, y0 - fStep * ( i + 1 ), cx, fStep, aOut, bOut, bIn, aIn );
+                Rect( x, y1 + fStep * i, cx, fStep, aIn, bIn, bOut, aOut );
             }
         if ( h.pGlow && h.fCore > 0.0f && h.fGlow > 0.0f )
             h.pGlow->push_back( { x, y0, cx, h.fCore, Effects::Bright( fL >= fR ? cL : cR, h.fGlow * std::max( fL, fR ) ) & 0x00FFFFFF } );
@@ -364,13 +380,14 @@ void Scene::DrawHitLine( Renderer *pRenderer, const FrameGlobals &g, const HitLi
             vCuts.push_back( nk.x + nk.cx );
         }
     if ( vCuts.empty() ) return;
-    auto LineAt = [&]( float x, D3DCOLOR &c, float &f )
+    // (a column over x wins over the key k found so far)
+    auto Wins = [&]( const Column &col, float x, int k ) {
+        return col.x0 <= x && x < col.x1 &&
+               ( k < 0 || h.afKey[col.k] > h.afKey[k] || ( h.afKey[col.k] == h.afKey[k] && KeyLayer( g, col.k ) > KeyLayer( g, k ) ) );
+    };
+    // The line at x over key k (-1: none)
+    auto LineOver = [&]( float x, int k, D3DCOLOR &c, float &f )
     {
-        int k = -1;
-        for ( const Column &col : vKeys )
-            if ( col.x0 <= x && x < col.x1 &&
-                 ( k < 0 || h.afKey[col.k] > h.afKey[k] || ( h.afKey[col.k] == h.afKey[k] && KeyLayer( g, col.k ) > KeyLayer( g, k ) ) ) )
-                k = col.k;
         c = 0;
         f = 0.0f;
         if ( h.bAcross && x >= fLeft && x < fRight )
@@ -397,27 +414,39 @@ void Scene::DrawHitLine( Renderer *pRenderer, const FrameGlobals &g, const HitLi
         auto X = [&]( int i ) { return std::min( fLeft + i * fPitch, fRight ); };
         vS.resize( n );
         vT.resize( n );
+        // Each sample's key, by each key marking the samples in its column (not every sample looking
+        // through every key): they are within a pitch of its ends (the last one, clamped inside the right
+        // edge, within that of its own)
+        static thread_local std::vector< int > vKeyAt;
+        vKeyAt.assign( n, -1 );
+        auto SampleX = [&]( int i ) { return std::min( X( i ), fRight - 0.5f ); };
+        for ( const Column &col : vKeys )
+        {
+            const int iFrom = std::max( 0, (int)std::floor( ( col.x0 - fLeft ) / fPitch ) - 1 );
+            const int iTo = std::min( n - 1, (int)std::ceil( ( col.x1 - fLeft ) / fPitch ) + 1 );
+            for ( int i = iFrom; i <= iTo; i++ )
+                if ( Wins( col, SampleX( i ), vKeyAt[i] ) ) vKeyAt[i] = col.k;
+        }
         for ( int i = 0; i < n; i++ )
         {
             D3DCOLOR c;
             float f;
-            LineAt( std::min( X( i ), fRight - 0.5f ), c, f );
+            LineOver( SampleX( i ), vKeyAt[i], c, f );
             vS[i] = { ( c >> 16 & 0xFF ) * f, ( c >> 8 & 0xFF ) * f, ( c & 0xFF ) * f, f };
         }
         for ( int iPass = 0; iPass < 2; iPass++ )
         {
-            // (past the ends: the line across goes on as it is; keys only, nothing)
+            // (past the ends: the line across goes on as it is; keys only, nothing. A running sum, in
+            // doubles, where these sums are exact: no drift)
+            auto At = [&]( int j ) -> Sample { return !h.bAcross && ( j < 0 || j >= n ) ? Sample{} : vS[std::clamp( j, 0, n - 1 )]; };
+            double ar[4] = {};
+            for ( int j = -r; j <= r; j++ ) { const Sample s = At( j ); ar[0] += s.r; ar[1] += s.g; ar[2] += s.b; ar[3] += s.f; }
+            const float fW = 1.0f / ( 2 * r + 1 );
             for ( int i = 0; i < n; i++ )
             {
-                Sample sum = {};
-                for ( int j = i - r; j <= i + r; j++ )
-                {
-                    if ( !h.bAcross && ( j < 0 || j >= n ) ) continue;
-                    const Sample &s = vS[std::clamp( j, 0, n - 1 )];
-                    sum.r += s.r; sum.g += s.g; sum.b += s.b; sum.f += s.f;
-                }
-                const float fW = 1.0f / ( 2 * r + 1 );
-                vT[i] = { sum.r * fW, sum.g * fW, sum.b * fW, sum.f * fW };
+                vT[i] = { (float)ar[0] * fW, (float)ar[1] * fW, (float)ar[2] * fW, (float)ar[3] * fW };
+                const Sample a = At( i + r + 1 ), b = At( i - r );
+                ar[0] += a.r - b.r; ar[1] += a.g - b.g; ar[2] += a.b - b.b; ar[3] += a.f - b.f;
             }
             vS.swap( vT );
         }
@@ -442,13 +471,24 @@ void Scene::DrawHitLine( Renderer *pRenderer, const FrameGlobals &g, const HitLi
     // one light show no edge between them
     std::sort( vCuts.begin(), vCuts.end() );
     vCuts.erase( std::unique( vCuts.begin(), vCuts.end() ), vCuts.end() );
+    // (each piece's key, by each key marking the pieces between its own cuts)
+    static thread_local std::vector< int > vPieceKey;
+    vPieceKey.assign( vCuts.size(), -1 );
+    auto Mid = [&]( size_t e ) { return ( vCuts[e] + vCuts[e + 1] ) / 2.0f; };
+    for ( const Column &col : vKeys )
+    {
+        const size_t eFrom = std::lower_bound( vCuts.begin(), vCuts.end(), col.x0 ) - vCuts.begin();
+        const size_t eTo = std::lower_bound( vCuts.begin(), vCuts.end(), col.x1 ) - vCuts.begin();
+        for ( size_t e = eFrom; e < eTo && e + 1 < vCuts.size(); e++ )
+            if ( Wins( col, Mid( e ), vPieceKey[e] ) ) vPieceKey[e] = col.k;
+    }
     float fFrom = 0.0f, fRun = 0.0f;
     D3DCOLOR cRun = 0;
     for ( size_t e = 0; e + 1 < vCuts.size(); e++ )
     {
         D3DCOLOR c;
         float f;
-        LineAt( ( vCuts[e] + vCuts[e + 1] ) / 2.0f, c, f );
+        LineOver( Mid( e ), vPieceKey[e], c, f );
         if ( f == fRun && c == cRun ) continue;
         if ( fRun > 0.0f ) Band( fFrom, vCuts[e] - fFrom, cRun, fRun, cRun, fRun );
         fFrom = vCuts[e];
@@ -477,7 +517,7 @@ static D3DCOLOR MixRGB( D3DCOLOR a, D3DCOLOR b, float t )
 
 // The flat look: plain keys from the notes' bottom down (under a flat red bar, unless it is off), without any depth. Unpressed
 // keys are one colour each (white; black; 31-EDO: the half keys light grey, the full sharps grey);
-// a pressed key is its note's colour, lighter towards its top.
+// a pressed key is its note's colour, lighter towards its top (KeyLook::fTopWhite).
 static void DrawKeysFlat( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c, const ChannelSettings *const pKeyColor[256],
                           const KeyLook *pLook )
 {
@@ -503,7 +543,7 @@ static void DrawKeysFlat( Renderer *pRenderer, const FrameGlobals &g, const Scen
     auto Face = [&]( int i, float x, float y, float cx, float cy, D3DCOLOR cUnlit ) {
         if ( const ChannelSettings *pLit = Lit( i ) )
         {
-            const D3DCOLOR cBottom = pLit->iPrimaryRGB, cTop = MixRGB( cBottom, 0x00FFFFFF, 0.3f );
+            const D3DCOLOR cBottom = pLit->iPrimaryRGB, cTop = MixRGB( cBottom, 0x00FFFFFF, pLook ? std::max( 0.0f, pLook->fTopWhite ) : 0.3f );
             pRenderer->DrawRect( x, y, cx, cy, cTop, cTop, cBottom, cBottom );
         }
         else
@@ -593,6 +633,7 @@ void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneCol
     float fSharpCY = fTopCY * 0.67f;
 
     const ChannelSettings &csKBB = c.csKBBackground, &csKBS = c.csKBSharp;
+    const bool bWhiten = pLook && pLook->fTopWhite >= 0.0f;
 
     // Draw the white keys
     float fCurX = g.fNotesX + fStartX;
@@ -625,8 +666,10 @@ void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneCol
             else
             {
                 const ChannelSettings &csKBWhite = *pLit;
+                // (whitening: towards white at the top instead of darker)
+                const D3DCOLOR cTop = bWhiten ? MixRGB( csKBWhite.iPrimaryRGB, 0x00FFFFFF, pLook->fTopWhite ) : csKBWhite.iDarkRGB;
                 pRenderer->DrawRect( fCurX + fKeyGap1 , fCurY, g.fWhiteCX - fKeyGap, fTopCY + fNearCY - 2.0f,
-                    csKBWhite.iDarkRGB, csKBWhite.iDarkRGB, csKBWhite.iPrimaryRGB, csKBWhite.iPrimaryRGB );
+                    cTop, cTop, csKBWhite.iPrimaryRGB, csKBWhite.iPrimaryRGB );
                 pRenderer->DrawRect( fCurX + fKeyGap1 , fCurY + fTopCY + fNearCY - 2.0f, g.fWhiteCX - fKeyGap, 2.0f, csKBWhite.iDarkRGB );
 
                 if ( i == g.iMiddleC )
@@ -695,11 +738,13 @@ void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneCol
                                  x + cx, fCurY - fExtend, x + cx, fCurY + fSharpCY,
                                  csKBSharp.iPrimaryRGB, csKBSharp.iPrimaryRGB, csKBSharp.iDarkRGB, csKBSharp.iDarkRGB );
             pRenderer->DrawRect( fSharpTopX1, fTop, fSharpTopX2 - fSharpTopX1, fFaceCY, csKBSharp.iDarkRGB );
+            // (whitening: the face's top band, from white-ish at its top)
+            const D3DCOLOR cTop = bWhiten ? MixRGB( csKBSharp.iPrimaryRGB, 0x00FFFFFF, pLook->fTopWhite ) : csKBSharp.iPrimaryRGB;
             pRenderer->DrawSkew( fSharpTopX1, fTop,
                                  fSharpTopX2, fTop,
                                  fSharpTopX2, fTop + fFaceCY * 0.35f,
                                  fSharpTopX1, fTop + fFaceCY * 0.25f,
-                                 csKBSharp.iPrimaryRGB, csKBSharp.iPrimaryRGB, csKBSharp.iPrimaryRGB, csKBSharp.iPrimaryRGB );
+                                 cTop, cTop, csKBSharp.iPrimaryRGB, csKBSharp.iPrimaryRGB );
             pRenderer->DrawSkew( fSharpTopX1, fTop + fFaceCY * 0.25f,
                                  fSharpTopX2, fTop + fFaceCY * 0.35f,
                                  fSharpTopX2, fTop + fFaceCY * 0.75f,
@@ -896,7 +941,7 @@ const RefMetaEvent *MeterTracker::GetPrevious( eventvec_t::const_iterator &itCur
 long long MeterTracker::GetCurrentTick( long long llStartTime ) const
 {
     int iDivision = m_Info.iDivision;
-    if ( !( iDivision & 0x8000 ) && m_iMicroSecsPerBeat > 0 )
+    if ( !IsSmpteDivision( iDivision ) && m_iMicroSecsPerBeat > 0 )
     {
         if ( llStartTime >= m_llLastTempoTime )
             return m_iLastTempoTick + ( ( iDivision * ( llStartTime - m_llLastTempoTime ) ) / m_iMicroSecsPerBeat );
@@ -909,7 +954,7 @@ long long MeterTracker::GetCurrentTick( long long llStartTime ) const
 long long MeterTracker::GetTickTime( long long iTick, long long iLastTempoTick, long long llLastTempoTime, long long iMicroSecsPerBeat ) const
 {
     int iDivision = m_Info.iDivision;
-    if ( !( iDivision & 0x8000 ) )
+    if ( !IsSmpteDivision( iDivision ) )
         return llLastTempoTime + ( iMicroSecsPerBeat * ( iTick - iLastTempoTick ) ) / iDivision;
     return -1;
 }
@@ -919,7 +964,7 @@ long long MeterTracker::GetBeat( long long iTick, long long iBeatType, long long
 {
     int iDivision = m_Info.iDivision;
     long long iTickOffset = iTick - iLastSignatureTick;
-    if ( !( iDivision & 0x8000 ) )
+    if ( !IsSmpteDivision( iDivision ) )
     {
         if ( iTickOffset > 0 )
             return ( iTickOffset * iBeatType - 1 ) / ( iDivision * 4LL ) + 1;
@@ -932,7 +977,7 @@ long long MeterTracker::GetBeat( long long iTick, long long iBeatType, long long
 long long MeterTracker::GetBeatTick( long long iTick, long long iBeatType, long long iLastSignatureTick ) const
 {
     int iDivision = m_Info.iDivision;
-    if ( !( iDivision & 0x8000 ) && iBeatType > 0 )
+    if ( !IsSmpteDivision( iDivision ) && iBeatType > 0 )
         return iLastSignatureTick + ( GetBeat( iTick, iBeatType, iLastSignatureTick ) * iDivision * 4 ) / iBeatType;
     return -1;
 }
@@ -941,7 +986,7 @@ long long MeterTracker::GetMetTick( long long iTick, long long iClocksPerMet, lo
 {
     int iDivision = m_Info.iDivision;
     long long iTickOffset = iTick - iLastSignatureTick;
-    if ( !( iDivision & 0x8000 ) && iClocksPerMet > 0 )
+    if ( !IsSmpteDivision( iDivision ) && iClocksPerMet > 0 )
     {
         long long iMet = 0;
         if ( iTickOffset > 0 )
@@ -957,7 +1002,7 @@ long long MeterTracker::GetMetTick( long long iTick, long long iClocksPerMet, lo
 void MeterTracker::DrawMeasureLines( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c, long long iStartTick ) const
 {
     int iDivision = m_Info.iDivision;
-    if ( ( iDivision & 0x8000 ) || !g.bLines ) return;
+    if ( IsSmpteDivision( iDivision ) || !g.bLines ) return;
 
     // Copy time state vars
     long long iCurrTick = iStartTick - 1;

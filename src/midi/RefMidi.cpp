@@ -381,7 +381,7 @@ long long RefMidi::TickToMicroSecs( long long llTick ) const
                                 []( long long t, const TempoSeg &s ) { return t < s.llTick; } );
     const TempoSeg &s = ( it == m_vTempo.begin() ) ? m_vTempo.front() : *( it - 1 );
     int iDivision = m_Info.iDivision;
-    if ( iDivision & 0x8000 )
+    if ( IsSmpteDivision( iDivision ) )
     {
         // SMPTE: frames per second * 100 (29.97 kept exact) times ticks per frame
         int iFramesPerSec100 = -( ( iDivision | static_cast< int >( 0xFFFF0000 ) ) >> 8 ) * 100;

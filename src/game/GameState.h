@@ -185,22 +185,37 @@ private:
     // The stats box: its line count (0: not drawn) and its text, with the lines the settings show
     // The stats box for the lines in uStats (VisualSettings::Stat bits)
     static int StatusLines( unsigned uStats );
-    // Where the box goes in an iWidth x iHeight picture: fixed pixels, or scaled with the height
-    // (Visual tab), with its line spacing, padding and font, in the configured corner (iBottomY: where
+    // Where the box goes in an iWidth x iHeight picture: its size set in pixels, or as at 1080p scaled
+    // with the height (Visual tab), with its line spacing, padding and font from its height over the lines, in the configured corner (iBottomY: where
     // a bottom one ends)
     struct StatsBox
     {
         RECT rc;
         int iLineCY, iPadX, iPadY, iShadowX, iShadowY;
         int iFontCY;                    // 0: the Small font (fixed pixels); else Renderer::Stats at this height
+                                        // (in VisualSettings::sStatsFont)
     };
-    static StatsBox StatsLayout( int iWidth, int iHeight, int iLines, int iBottomY );
+    // iTextCX: the widest line's text (StatsTextCX); the box is at least as wide, with its padding
+    // The time the notes drawn reach to: the frame's start plus its span (with Clean::KeepBottom, past it
+    // by at least the row the start's rounding up adds at the top)
+    long long ViewEnd( long long llStartTime ) const;
+    static StatsBox StatsLayout( int iWidth, int iHeight, int iLines, int iBottomY, int iTextCX = 0 );
+    // The box for the lines in uStats, as wide as its font needs for them (pRenderer: to measure)
+    static StatsBox FitStats( Renderer *pRenderer, int iWidth, int iHeight, unsigned uStats, int iBottomY );
+    static void DrawStatsBackground( Renderer *pRenderer, const StatsBox &box );     // (unless it is off)
     // The bottom corners' iBottomY: the top of the keyboard's red bar, or the picture's bottom without it
     int StatsBottom( const FrameGlobals &g, int iHeight ) const;
     // llPastEnd: how long the live view has stood at the song's end, so the NPS falls to 0 there too
     // fDark: the text's colours times this (the effects' dark room)
     void RenderStatus( Renderer *pRenderer, const StatsBox &box, long long llTime, double dFPS, unsigned uStats, long long llPastEnd = 0, float fDark = 1.0f );
     void RenderMessage( LPRECT prcMsg, const wchar_t *sMsg );
+    // The graphs (VisualSettings::bGraph) in an iWidth x iHeight picture, at llTime (llPastEnd as
+    // RenderStatus's); pStats: the stats box drawn, if any (the graphs go next to it in one corner);
+    // iBottomY as StatsLayout's. Each graph's top and bottom follow its values shown, eased by song time
+    // (GraphScale: kept from frame to frame)
+    struct GraphScale { double adTop[3] = {}, adBottom[3] = {}; long long llLast = LLONG_MIN; };
+    void RenderGraph( Renderer *pRenderer, int iWidth, int iHeight, int iBottomY, long long llTime, long long llPastEnd,
+                      const StatsBox *pStats, float fDark, GraphScale &scale );
 
     // Song
     std::shared_ptr< const Song > m_pSong;
@@ -266,6 +281,7 @@ private:
     std::vector< unsigned > m_vPalette;     // the track colours (and bLoopColors, last) the song was coloured from (empty: not seen yet)
     Effects::Look m_Look;
     Effects::KeyLights m_KeyLights;
+    GraphScale m_GraphScale;
     bool m_bHiddenChanged = false;  // the draw view needs the new hidden channels
     // The background image, loaded when its file setting changes (shared with the video renderer)
     std::shared_ptr< const Image > m_pBkgImage;

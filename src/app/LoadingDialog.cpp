@@ -1,6 +1,7 @@
 #include "app/LoadingDialog.h"
 
 #include <commctrl.h>
+#include <algorithm>
 #include <cstdio>
 #include <memory>
 
@@ -22,6 +23,7 @@ namespace
         std::wstring sError;
         long long llStart = 0;
         long long allStageStart[LoadProgress::StageCount] = {};
+        long long allStageEnd[LoadProgress::StageCount] = {};   // when the stage was first seen done
         HANDLE hThread = nullptr;
         bool bFinished = false;
         bool bRenderOnly = false;
@@ -31,12 +33,99 @@ namespace
     HWND g_hWndDlg = nullptr;
     HFONT g_hFixedFont = nullptr;
 
+    // Of several MIDI files in an archive, the one the user picks (the loader asks, the window's thread shows)
+    struct ChooseMidi { const std::vector< Archive::Entry > *pEntries; int iChosen; };
+
+    // A size in the largest unit it is at least 1 of
+    std::wstring SizeText( int64_t llBytes )
+    {
+        static const wchar_t *const aUnit[] = { L"bytes", L"KB", L"MB", L"GB", L"TB" };
+        double d = (double)llBytes;
+        int i = 0;
+        while ( d >= 1024.0 && i < 4 ) { d /= 1024.0; i++; }
+        wchar_t s[32];
+        if ( i == 0 ) swprintf( s, 32, L"%lld bytes", (long long)llBytes );
+        else swprintf( s, 32, L"%.1f %ls", d, aUnit[i] );
+        return s;
+    }
+
+    // The list fills the dialog; the buttons keep to its bottom right
+    VOID LayOutChooser( HWND hWnd )
+    {
+        RECT rc, rcOk, rcList;
+        GetClientRect( hWnd, &rc );
+        HWND hList = GetDlgItem( hWnd, IDC_CHOOSEMIDI_LIST ), hOk = GetDlgItem( hWnd, IDOK ), hCancel = GetDlgItem( hWnd, IDCANCEL );
+        GetWindowRect( hOk, &rcOk );
+        GetWindowRect( hList, &rcList );
+        MapWindowPoints( nullptr, hWnd, ( LPPOINT )&rcList, 2 );
+        const int cxButton = rcOk.right - rcOk.left, cyButton = rcOk.bottom - rcOk.top, iMargin = rcList.left, iGap = iMargin / 2 + 1;
+        const int yButtons = rc.bottom - iMargin - cyButton;
+        SetWindowPos( hList, nullptr, iMargin, rcList.top, rc.right - iMargin * 2, yButtons - iMargin - rcList.top, SWP_NOZORDER );
+        SetWindowPos( hCancel, nullptr, rc.right - iMargin - cxButton, yButtons, 0, 0, SWP_NOZORDER | SWP_NOSIZE );
+        SetWindowPos( hOk, nullptr, rc.right - iMargin - cxButton * 2 - iGap, yButtons, 0, 0, SWP_NOZORDER | SWP_NOSIZE );
+        InvalidateRect( hWnd, nullptr, TRUE );
+    }
+
+    INT_PTR CALLBACK ChooseMidiProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
+    {
+        static SIZE szMin;      // the dialog's own size: it is not made smaller
+        switch ( msg )
+        {
+            case WM_INITDIALOG:
+            {
+                SetWindowLongPtrW( hWnd, GWLP_USERDATA, lParam );
+                RECT rcWnd;
+                GetWindowRect( hWnd, &rcWnd );
+                szMin = { rcWnd.right - rcWnd.left, rcWnd.bottom - rcWnd.top };
+                const ChooseMidi &c = *( const ChooseMidi * )lParam;
+                HWND hList = GetDlgItem( hWnd, IDC_CHOOSEMIDI_LIST );
+                // (as wide as the longest name scrolls sideways)
+                HDC hdc = GetDC( hList );
+                HGDIOBJ hOld = SelectObject( hdc, ( HFONT )SendMessageW( hList, WM_GETFONT, 0, 0 ) );
+                int iExtent = 0;
+                for ( const Archive::Entry &e : *c.pEntries )
+                {
+                    const std::wstring s = e.llSize >= 0 ? e.sName + L"   (" + SizeText( e.llSize ) + L")" : e.sName;
+                    SendMessageW( hList, LB_ADDSTRING, 0, ( LPARAM )s.c_str() );
+                    SIZE sz;
+                    if ( GetTextExtentPoint32W( hdc, s.c_str(), (int)s.size(), &sz ) ) iExtent = std::max< int >( iExtent, sz.cx + 8 );
+                }
+                SelectObject( hdc, hOld );
+                ReleaseDC( hList, hdc );
+                SendMessageW( hList, LB_SETHORIZONTALEXTENT, iExtent, 0 );
+                SendMessageW( hList, LB_SETCURSEL, 0, 0 );
+                return TRUE;
+            }
+            case WM_SIZE:
+                LayOutChooser( hWnd );
+                return TRUE;
+            case WM_GETMINMAXINFO:
+                if ( szMin.cx ) { ( ( MINMAXINFO * )lParam )->ptMinTrackSize = { szMin.cx, szMin.cy }; return TRUE; }
+                break;
+            case WM_COMMAND:
+            {
+                ChooseMidi &c = *( ChooseMidi * )GetWindowLongPtrW( hWnd, GWLP_USERDATA );
+                const bool bPick = LOWORD( wParam ) == IDOK || ( LOWORD( wParam ) == IDC_CHOOSEMIDI_LIST && HIWORD( wParam ) == LBN_DBLCLK );
+                if ( bPick ) c.iChosen = (int)SendDlgItemMessageW( hWnd, IDC_CHOOSEMIDI_LIST, LB_GETCURSEL, 0, 0 );
+                if ( bPick || LOWORD( wParam ) == IDCANCEL ) EndDialog( hWnd, 0 );
+                return TRUE;
+            }
+        }
+        return FALSE;
+    }
+
     DWORD WINAPI LoadThread( LPVOID p )
     {
         LoadJob *pJob = static_cast< LoadJob * >( p );
+        pJob->progress.fnChoose = []( const std::vector< Archive::Entry > &v ) {
+            ChooseMidi c = { &v, -1 };
+            SendMessageW( g_hWnd, WM_APP_CHOOSEMIDI, 0, ( LPARAM )&c );
+            return c.iChosen;
+        };
         const PerformanceSettings &cPerf = Config::GetConfig().GetPerformanceSettings();
         pJob->progress.bLzVisual = cPerf.bCompactVisual;
-        pJob->progress.bNoteStats = ( Config::GetConfig().GetVisualSettings().uStats & VisualSettings::NoteStats ) != 0;
+        pJob->progress.bNoteStats = ( Config::GetConfig().GetVisualSettings().uStats & VisualSettings::NoteStats ) != 0 ||
+                                    Config::GetConfig().GetVisualSettings().bGraph;
         pJob->progress.bFirstPairingOnly = cPerf.bIgnoreWeird;
         SetLzCacheBytes( (size_t)cPerf.iBlockCacheMB << 20 );
         pJob->song = Loader::LoadFile( pJob->sFile, cPerf.iWorkerThreads, pJob->progress, pJob->stats, pJob->sError );
@@ -72,8 +161,14 @@ namespace
             dOverall += aWeight[i] * dFrac;
             SendDlgItemMessageW( g_hWndDlg, IDC_LOAD_BAR0 + i, PBM_SETPOS, (WPARAM)( dFrac * 1000 ), 0 );
 
+            // A stage done: how long it took (one too quick to be seen running started when the one before ended)
+            if ( iStage > i && !g_pJob->allStageEnd[i] )
+            {
+                g_pJob->allStageEnd[i] = llNow;
+                if ( !g_pJob->allStageStart[i] ) g_pJob->allStageStart[i] = i > 0 && g_pJob->allStageEnd[i - 1] ? g_pJob->allStageEnd[i - 1] : g_pJob->llStart;
+            }
             wchar_t sTime[64] = L"";
-            if ( iStage > i && g_pJob->allStageStart[i] ) swprintf( sTime, 64, L"done" );
+            if ( iStage > i ) swprintf( sTime, 64, L"done, %.1f s", ( g_pJob->allStageEnd[i] - g_pJob->allStageStart[i] ) / 1e6 );
             else if ( iStage == i && g_pJob->allStageStart[i] ) swprintf( sTime, 64, L"%.1f s", ( llNow - g_pJob->allStageStart[i] ) / 1e6 );
             SetText( IDC_LOAD_TIME0 + i, sTime );
         }
@@ -218,6 +313,11 @@ bool StartLoad( const std::wstring &sFileIn, bool bRenderOnly )
         return false;
     }
     return true;
+}
+
+void ChooseMidiEntry( LPARAM lParam )
+{
+    DialogBoxParamW( g_hInstance, MAKEINTRESOURCEW( IDD_CHOOSEMIDI ), g_hWndDlg ? g_hWndDlg : g_hWnd, ChooseMidiProc, lParam );
 }
 
 static std::wstring g_sOpenedFile;

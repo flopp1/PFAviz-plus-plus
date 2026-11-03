@@ -1,7 +1,9 @@
 #include "render/Text.h"
 
 #include <d3dx9core.h>
+#include <d3dx9math.h>
 #include <algorithm>
+#include <cstdlib>
 #include <list>
 #include <string>
 #include <unordered_map>
@@ -31,7 +33,7 @@ namespace
         ~D3DXText()
         {
             for ( auto f : m_pFonts ) if ( f ) f->Release();
-            if ( m_pStats ) m_pStats->Release();
+            for ( auto f : m_apCustom ) if ( f ) f->Release();
             if ( m_pSprite ) m_pSprite->Release();
         }
 
@@ -55,39 +57,133 @@ namespace
 
         void OnLostDevice() override
         {
+            ForgetGlyphs( -1 );
             m_pSprite->OnLostDevice();
             for ( auto f : m_pFonts ) f->OnLostDevice();
-            if ( m_pStats ) m_pStats->OnLostDevice();
+            for ( auto f : m_apCustom ) if ( f ) f->OnLostDevice();
         }
         void OnResetDevice() override
         {
             m_pSprite->OnResetDevice();
             for ( auto f : m_pFonts ) f->OnResetDevice();
-            if ( m_pStats ) m_pStats->OnResetDevice();
+            for ( auto f : m_apCustom ) if ( f ) f->OnResetDevice();
         }
         HRESULT Begin() override { return m_pSprite->Begin( D3DXSPRITE_ALPHABLEND | D3DXSPRITE_SORT_TEXTURE ); }
         HRESULT DrawText( int iFont, const WCHAR *sText, INT iChars, LPRECT rcPos, DWORD dwFormat, DWORD dwColor ) override
         {
-            LPD3DXFONT pFont = iFont == 5 ? m_pStats : m_pFonts[iFont];
+            LPD3DXFONT pFont = iFont >= CustomFirst ? m_apCustom[iFont - CustomFirst] : m_pFonts[iFont];
             if ( !pFont ) return E_FAIL;
+            if ( FastText( iFont, pFont, sText, iChars, rcPos, dwFormat, dwColor ) ) return S_OK;
             return pFont->DrawTextW( m_pSprite, sText, iChars, rcPos, dwFormat, dwColor ) ? S_OK : E_FAIL;
         }
         HRESULT End() override { return m_pSprite->End(); }
         bool IsD3DX() const override { return true; }
-        void SetStatsHeight( int iHeight ) override
+        void SetCustomFont( int iFont, int iHeight, const std::wstring &sFace ) override
         {
-            if ( m_pStats && iHeight == m_iStatsHeight ) return;
-            if ( m_pStats ) { m_pStats->Release(); m_pStats = nullptr; }
-            m_iStatsHeight = iHeight;
+            const int i = iFont - CustomFirst;
+            if ( m_apCustom[i] && iHeight == m_aiCustomHeight[i] && sFace == m_asCustomFace[i] ) return;
+            if ( m_apCustom[i] ) { m_apCustom[i]->Release(); m_apCustom[i] = nullptr; }
+            ForgetGlyphs( iFont );
+            m_aiCustomHeight[i] = iHeight;
+            m_asCustomFace[i] = sFace;
             m_pCreateFont( m_pDevice, iHeight, 0, FW_NORMAL, 1, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, PROOF_QUALITY,
-                           DEFAULT_PITCH | FF_DONTCARE, L"Tahoma", &m_pStats );
+                           DEFAULT_PITCH | FF_DONTCARE, sFace.c_str(), &m_apCustom[i] );
         }
 
     private:
+        // A single line of plain characters (the stats and graph lines, every frame) is drawn here from
+        // the font's own glyph textures, as its DrawText would place them, without its per-call layout
+        // (Uniscribe: microseconds a call). Anything else (another character, a tab or line break, a
+        // format but left or right on one line) goes to DrawText. The original's fonts come out as DrawText's;
+        // a large custom one's line can start a pixel from where DrawText would put it.
+        static const int GlyphCount = 96;   // ' ' to '~', and U+00D7 (the multiplication sign)
+        static int GlyphSlot( WCHAR c ) { return c >= 0x20 && c < 0x7F ? c - 0x20 : c == 0xD7 ? 95 : -1; }
+        struct Glyph
+        {
+            IDirect3DTexture9 *pTex;    // (the font's own; not held)
+            RECT rcBox;                 // in the texture
+            POINT ptOffset;             // the box's place from the pen at the line's top (D3DX's "cell increment")
+            int iAdvance;
+            signed char cState;         // 0: not looked up, 1: drawable, -1: not (DrawText instead)
+        };
+        Glyph m_aaGlyphs[5 + CustomCount][GlyphCount] = {};
+        void ForgetGlyphs( int iFont )
+        {
+            for ( int f = 0; f < 5 + CustomCount; f++ )
+                if ( iFont < 0 || f == iFont ) for ( Glyph &g : m_aaGlyphs[f] ) g.cState = 0;
+        }
+
+        const Glyph *GetGlyph( int iFont, LPD3DXFONT pFont, WCHAR c )
+        {
+            const int iSlot = GlyphSlot( c );
+            if ( iSlot < 0 ) return nullptr;
+            Glyph &g = m_aaGlyphs[iFont][iSlot];
+            if ( g.cState == 0 )
+            {
+                g.cState = -1;
+                HDC hDC = pFont->GetDC();
+                WORD wIndex = 0xFFFF;
+                ABC abc;
+                if ( GetGlyphIndicesW( hDC, &c, 1, &wIndex, GGI_MARK_NONEXISTING_GLYPHS ) == 1 && wIndex != 0xFFFF &&
+                     GetCharABCWidthsW( hDC, c, c, &abc ) )
+                {
+                    IDirect3DTexture9 *pTex = nullptr;
+                    RECT rcBox;
+                    POINT ptInc;
+                    if ( SUCCEEDED( pFont->GetGlyphData( wIndex, &pTex, &rcBox, &ptInc ) ) )
+                    {
+                        g.pTex = pTex;
+                        if ( pTex ) pTex->Release();     // (the font keeps it)
+                        g.rcBox = rcBox;
+                        g.ptOffset = ptInc;     // (its box's padding included)
+                        g.iAdvance = abc.abcA + (int)abc.abcB + abc.abcC;
+                        g.cState = 1;
+                    }
+                }
+            }
+            return g.cState > 0 ? &g : nullptr;
+        }
+
+        bool FastText( int iFont, LPD3DXFONT pFont, const WCHAR *sText, INT iChars, LPRECT rcPos, DWORD dwFormat, DWORD dwColor )
+        {
+            static const bool bOff = getenv( "PFAVIZ_SLOWTEXT" ) != nullptr;
+            if ( bOff || ( dwFormat & ~( DT_RIGHT | DT_SINGLELINE | DT_NOCLIP | DT_CALCRECT ) ) ) return false;
+            const int n = iChars < 0 ? (int)wcslen( sText ) : iChars;
+            int iWidth = 0;
+            for ( int i = 0; i < n; i++ )
+            {
+                const Glyph *g = GetGlyph( iFont, pFont, sText[i] );
+                if ( !g ) return false;
+                iWidth += g->iAdvance;
+            }
+            if ( dwFormat & DT_CALCRECT )
+            {
+                TEXTMETRICW tm;
+                if ( !GetTextMetricsW( pFont->GetDC(), &tm ) ) return false;
+                if ( dwFormat & DT_RIGHT ) rcPos->left = rcPos->right - iWidth;
+                else rcPos->right = rcPos->left + iWidth;
+                rcPos->bottom = rcPos->top + tm.tmHeight;
+                return true;
+            }
+            int x = ( dwFormat & DT_RIGHT ) ? rcPos->right - iWidth : rcPos->left;
+            for ( int i = 0; i < n; i++ )
+            {
+                const Glyph *g = GetGlyph( iFont, pFont, sText[i] );
+                if ( g->pTex && g->rcBox.right > g->rcBox.left )
+                {
+                    const D3DXVECTOR3 v( (float)( x + g->ptOffset.x ), (float)( rcPos->top + g->ptOffset.y ), 0.0f );
+                    m_pSprite->Draw( g->pTex, &g->rcBox, nullptr, &v, dwColor );
+                }
+                x += g->iAdvance;
+            }
+            return true;
+        }
+
         LPD3DXSPRITE m_pSprite = nullptr;
         LPD3DXFONT m_pFonts[5] = {};
-        LPD3DXFONT m_pStats = nullptr;
-        int m_iStatsHeight = 0;
+        LPD3DXFONT m_apCustom[CustomCount] = {};
+        int m_aiCustomHeight[CustomCount] = {};
+        std::wstring m_asCustomFace[CustomCount];
         IDirect3DDevice9 *m_pDevice = nullptr;
         PFN_D3DXCreateFontW m_pCreateFont = nullptr;
     };
@@ -106,7 +202,7 @@ namespace
         {
             ClearCache();
             for ( auto f : m_hFonts ) if ( f ) DeleteObject( f );
-            if ( m_hStats ) DeleteObject( m_hStats );
+            for ( auto f : m_ahCustom ) if ( f ) DeleteObject( f );
             if ( m_hDC ) DeleteDC( m_hDC );
             if ( m_hDIB ) DeleteObject( m_hDIB );
         }
@@ -127,19 +223,21 @@ namespace
         HRESULT Begin() override { return S_OK; }
         HRESULT End() override { return S_OK; }
         bool IsD3DX() const override { return false; }
-        void SetStatsHeight( int iHeight ) override
+        void SetCustomFont( int iFont, int iHeight, const std::wstring &sFace ) override
         {
-            if ( m_hStats && iHeight == m_iStatsHeight ) return;
-            if ( m_hStats ) { ClearCache(); DeleteObject( m_hStats ); }     // its strings were cached by index
-            m_iStatsHeight = iHeight;
-            m_hStats = CreateFontW( iHeight, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
-                                    CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, L"Tahoma" );
+            const int i = iFont - CustomFirst;
+            if ( m_ahCustom[i] && iHeight == m_aiCustomHeight[i] && sFace == m_asCustomFace[i] ) return;
+            if ( m_ahCustom[i] ) { ClearCache(); DeleteObject( m_ahCustom[i] ); }     // its strings were cached by index
+            m_aiCustomHeight[i] = iHeight;
+            m_asCustomFace[i] = sFace;
+            m_ahCustom[i] = CreateFontW( iHeight, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                                         CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH | FF_DONTCARE, sFace.c_str() );
         }
 
         HRESULT DrawText( int iFont, const WCHAR *sText, INT iChars, LPRECT rcPos, DWORD dwFormat, DWORD dwColor ) override
         {
             std::wstring sStr = iChars < 0 ? std::wstring( sText ) : std::wstring( sText, iChars );
-            HFONT hFont = iFont == 5 ? m_hStats : m_hFonts[iFont];
+            HFONT hFont = iFont >= CustomFirst ? m_ahCustom[iFont - CustomFirst] : m_hFonts[iFont];
             if ( !hFont ) return E_FAIL;
             SelectObject( m_hDC, hFont );
             if ( dwFormat & DT_CALCRECT )
@@ -313,8 +411,9 @@ namespace
         DWORD *m_pBits = nullptr;
         int m_iDibW = 0, m_iDibH = 0;
         HFONT m_hFonts[5] = {};
-        HFONT m_hStats = nullptr;
-        int m_iStatsHeight = 0;
+        HFONT m_ahCustom[CustomCount] = {};
+        int m_aiCustomHeight[CustomCount] = {};
+        std::wstring m_asCustomFace[CustomCount];
         std::unordered_map< std::wstring, Entry > m_mCache;
         std::list< std::wstring > m_lLru;
         std::vector< FreeTex > m_vFree;     // textures of strings that left the cache

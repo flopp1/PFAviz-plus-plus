@@ -177,6 +177,7 @@ private:
 
     std::vector< Owner > m_aOwners[256];
     std::vector< Renderer::SCREEN_VERTEX > m_aVerts[256];   // the owners' rects as quads (Renderer::DrawQuads), in owner order; only grows
+    std::vector< Renderer::EDGE_VERTEX > m_aEdgeVerts[256];  // merged outlines: the rects with their IDs and outline colours (instead)
     std::vector< Renderer::NoteInstance > m_aInst[256];     // the same as instances (Renderer::InstancingOn); only grows
     size_t m_aVertCount[256] = {};                          // vertices (instances) in use in m_aVerts (m_aInst)
     std::vector< uint32_t > m_aVertStart[256];              // first vertex (instance) of each owner (+ end)

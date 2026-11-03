@@ -10,7 +10,7 @@ PlaybackDecoder::PlaybackDecoder( const Song &song ) : m_Song( song ), m_Stream(
     for ( const RefMetaEvent &m : song.vMeta )
         if ( m.cType == RefMetaEvent::TimeSignature && m.iDataLen == 4 )
             m_vSignatures.push_back( { m.llTick, m.aData[0], 1LL << std::min< int >( m.aData[1], 30 ) } );
-    m_bMetronome = !( song.info.iDivision & 0x8000 ) && song.info.iDivision > 0;
+    m_bMetronome = !IsSmpteDivision( song.info.iDivision ) && song.info.iDivision > 0;
     ResetSendState();
 }
 
