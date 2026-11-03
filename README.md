@@ -13,6 +13,9 @@ A performance rewrite of [Piano From Above](https://github.com/brian-pantano/Pia
 - Notes transposed past key 127 (a common black MIDI artefact) are read as stock Piano From Above reads them and dropped, instead of throwing the rest of their track out of step; velocities and controller values past 127 are clamped.
 - **Weird notes end at their own note-off.** When more than 10 notes stack up on one channel and key in a track, the original pairs the next note-off with the latest unpaired note of that key on *any* channel; a note taken from another channel's stack is then paired again by its own channel's note-off. The original draws it to that later note-off but stops drawing it (and unlights its key) at the first one, so it seems to end early, often the moment it reaches the keyboard. Here it lasts to its later note-off, which in *Night of Nights* is its own channel's for 1,146 of its 1,174 such notes (a note-off on another channel cannot end it). Songs with them also load with one pairing pass instead of two (*Night of Nights*, from an SSD: loading 76 s, pairing 53 s).
 - **End weird notes at their first note-off** (Performance tab, off by default): those notes keep their first pairing instead, so they are drawn short.
+- Archives and compressed files open the MIDI file inside; an archive holding several asks which one to open, with their sizes.
+- A file's time division is read as SMPTE only for real frame rates (24, 25, 29.97 and 30 fps), so files with a very fine PPQN (such as 61440) are no longer squeezed to time 0.
+- Closing or switching songs no longer freezes the window, however large the song: the old one is freed on a thread of its own.
 
 **Drawing**
 - Each frame finds, per key, only the notes that own a pixel row, so drawing cost depends on the window size, not the note count. There is no note limit.
@@ -21,6 +24,7 @@ A performance rewrite of [Piano From Above](https://github.com/brian-pantano/Pia
 - Optional **GPU instancing for notes** (Performance tab, off by default): each note goes to the GPU as one 32-byte instance instead of two quads (160 bytes), and a vertex shader builds its rects. It is not pixel-exact: over the test harness's 90,000 frames, 171 differ from the original, each by one colour level (out of 255) along one or two pixel columns of a note's gradient; note edges are never off. With a long note span it saves about a quarter of the frame time (rftmis at 3 s: 0.49 → 0.36 ms median); at short spans it is about even.
 - **Hidden channels** get their own drawing data, built in the background ("Applying hidden channels..." until ready), so hiding most of a black MIDI's tracks makes it faster.
 - **128 keys** by default ("Show all 88 keys" is still there).
+- **Keep short notes on screen** (Visual > Clean drawing): a note too short to fill a pixel row still shows from the top edge until it reaches the keyboard (the original can drop such notes at either end).
 - The **note speed slider** is logarithmic and covers the whole range: 10 at the left, 0.06 (the default) in the middle, 0.005 at the right.
 
 **Playback**
@@ -45,16 +49,22 @@ A performance rewrite of [Piano From Above](https://github.com/brian-pantano/Pia
   - Synth: messages sent (handed to the output), skipped and collapsed per second, the sender's lag and the skipping threshold.
   - Playback pipeline, to see what holds playback back: messages decoded per second, how busy the decoder (with "×N" while N threads decode) and sender threads are, how full the ring between them is (average and peak) and the output's cost per message. A busy decoder with an empty ring is the decoder's limit; a full ring with a busy sender is the output's, and a rising send cost means the synth is pushing back.
   - Frame time, split into logic, notes, the rest of the scene and Present.
+- The box's corner, font, size (width × height in pixels, or as at 1080p scaled with the picture), translucent background and text shadow are set in Visual. Its height shared by its lines sets the font size; it widens itself so the text never overlaps.
+- **Graphs** (View > Graphs, Ctrl+G; set in Visual > Graphs...): notes per second, polyphony and tempo over the last moments (a millisecond to ten minutes), each in its own box or all in one. Each is filled or a line, in its own colour, with its text at the left or the right, in the order you choose from top to bottom. Each scale follows the highest value shown, easing up and down at speeds you set, and its bottom sits at zero or at the lowest value shown.
 
 **Effects** (Preferences > Effects, off until set; one box turns them all off)
 - Everything is drawn by its light, from 0 (unlit) to 1 (fully lit): a playing note and the key it presses rise to 1 and can fall along a curve while held; a key let go fades out. Every note can also have a resting light.
 - For each part (notes, short notes, keys, red bar, background): how dark it is unlit, how much it is lightened when lit, and how much it glows (bloom). How much of a note's light reaches its outline and its inside, so neither swamps the other.
 - Flat look (plain keys, flat notes), hollow notes (outlines only), no red bar, and a vignette.
+- Pressed keys can whiten towards their top, set for the normal and the flat look apart.
+- **Merged outlines**: touching notes of one track and channel share one outline, around them all; short notes can stay apart, merge among themselves, or merge with the long notes too.
+- **Auto exposure** follows how much of the keyboard is lit, turning the light up in sparse parts and down in dense ones, and a **soft limit** caps the glow added to a pixel so dense parts do not wash out to white.
 - **Hit line**: a line in the red bar's place, right on the keys, drawn over everything. It can run across the keyboard or show only over the keys being played, take the notes' colours, fade with its own time and curve after a key is let go, spread sideways, and glow.
 
 **Interface**
 - **Dark mode** (View > Interface: Light, Dark or Follow Windows), dialogs and menus included.
-- Colours of the background, the red bar and the tracks are set in Preferences > Visual; the colour dialog takes hex codes (`#RRGGBB` or `#RGB`), as do colour settings in the config file. A changed track palette recolours the open song at once.
+- Colours of the background, the red bar and the tracks are set in Preferences > Visual; the colour dialog takes hex codes (`#RRGGBB` or `#RGB`), as do colour settings in the config file. A changed track palette recolours the open song at once. Track palettes can be saved under a name and picked again.
+- The loading popup shows how long each stage took.
 
 **Video rendering** (Performance tab, "Render video...")
 - Renders the open song from start to end to an MP4, off-screen at any resolution up to 8192 × 8192 and 1–240 fps, with x264 (CPU) or a hardware encoder (NVIDIA NVENC, AMD AMF or Intel QSV; H.264 or HEVC), a quality setting (CRF, CQ or QP; default 20) and a speed preset.
@@ -69,7 +79,7 @@ A performance rewrite of [Piano From Above](https://github.com/brian-pantano/Pia
 
 ## Usage
 
-Open a song with File > Play Song, or pass it on the command line:
+Open a song with File > Play Song, by dropping it on the window, or by passing it on the command line:
 
 ```
 PFAviz++.exe "song.mid"
