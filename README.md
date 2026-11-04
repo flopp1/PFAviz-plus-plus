@@ -7,13 +7,17 @@ A performance rewrite of [Piano From Above](https://github.com/brian-pantano/Pia
 **Loading**
 - Files load on a background thread with a progress and statistics popup: per-stage times, throughput, memory in use and its peak.
 - The loader is memory-mapped and multi-threaded. A 100 M-note file loads in about 1.9 s on a 6-core CPU; files that do not fit in memory are read once, at the disk's sequential speed.
-- Events are stored LZ4-compressed (0.2–0.4 bytes per event on black MIDIs), and notes that can never show are dropped: a 1.1 billion-note, 6.3 GB file takes about 270 MB once loaded.
-- Peak memory while loading stays close to what the song takes once loaded. The event stream is built a window at a time, and the count pass already works out which notes no note-off will pair and when long notes end, so pairing finishes those at once instead of holding back every later note of their key. *Night of Nights* (17.7 GB, 2.3 billion notes): peak 10.4 → 4.4 GB, 3.9 GB once loaded; *Destruction 321 SE*: 2.7 → 1.5 GB.
+- Events are stored LZ4-compressed (liblz4's HC: 0.2–0.4 bytes per event on black MIDIs), and notes that can never show are dropped: a 1.1 billion-note, 6.3 GB file takes about 270 MB once loaded.
+- Peak memory while loading stays close to what the song takes once loaded. The event stream is built a window at a time, and the count pass already works out which notes no note-off will pair and when long notes end, so pairing finishes those at once instead of holding back every later note of their key. *Night of Nights* (17.7 GB, 2.3 billion notes): peak 10.4 → 4.4 GB, 3.9 GB once loaded; *Destruction 321 SE*: 2.7 → 1.5 GB. The notes' ticks are kept as compact records per track and merged a window at a time, so songs with billions of distinct ticks fit too: *nut3* (1 billion ticks) peaks at 3.5 GB instead of 21.5 GB.
 - **Compact visual store** (Performance tab, on by default) keeps the notes LZ4-compressed in groups of 2048 per key, decoding only the groups a frame draws: 20–36 % less memory for the notes (*Night of Nights*: 2,260 → 1,635 MB), with the same pixels. Frames read from it while scrubbing (a jump every frame) cost 0–25 % more CPU, still under about 6 ms on *Night of Nights* and *Destruction 321 SE*.
 - Notes transposed past key 127 (a common black MIDI artefact) are read as stock Piano From Above reads them and dropped, instead of throwing the rest of their track out of step; velocities and controller values past 127 are clamped.
 - **Weird notes end at their own note-off.** When more than 10 notes stack up on one channel and key in a track, the original pairs the next note-off with the latest unpaired note of that key on *any* channel; a note taken from another channel's stack is then paired again by its own channel's note-off. The original draws it to that later note-off but stops drawing it (and unlights its key) at the first one, so it seems to end early, often the moment it reaches the keyboard. Here it lasts to its later note-off, which in *Night of Nights* is its own channel's for 1,146 of its 1,174 such notes (a note-off on another channel cannot end it). Songs with them also load with one pairing pass instead of two (*Night of Nights*, from an SSD: loading 76 s, pairing 53 s).
 - **End weird notes at their first note-off** (Performance tab, off by default): those notes keep their first pairing instead, so they are drawn short.
+- **Layered compressed files: notes without a note-off last until the song's end** (Performance tab, on by default). Layered black MIDIs (a MIDI compressed in two or more layers, such as `.mid.xz.xz`) often leave the note-offs out to fit more notes, and expect the player to end them at the end of the file. Other songs are drawn as the original draws them, which never draws such notes.
 - Archives and compressed files open the MIDI file inside; an archive holding several asks which one to open, with their sizes.
+- **Deduplicate repeated tracks** (Performance tab, off by default): identical tracks are loaded once and drawn and counted as many times as they appear, in plain files and archives alike. Layered compressed files (a MIDI cut into pieces, each compressed, repeated and compressed again, several layers deep, so that a few MB expand to terabytes) are read as their distinct pieces, so files of trillions of notes load in a minute or two: *NoiseMidi* (94 trillion notes) in about 2 minutes. "Assume the rest of a layer repeats when its size fits" (on by default) skips decoding the rest of a layer once its pattern repeats; it is exact unless a different piece happens to have the same size. Duplicates are played once, which can sound quieter on a synth that stacks identical notes.
+- 7z (LZMA2) and xz files compressed on several threads decompress on the loading threads (Performance tab), instead of on one.
+- Tempo events of 0 (damaged files) are ignored instead of stopping time.
 - A file's time division is read as SMPTE only for real frame rates (24, 25, 29.97 and 30 fps), so files with a very fine PPQN (such as 61440) are no longer squeezed to time 0.
 - Closing or switching songs no longer freezes the window, however large the song: the old one is freed on a thread of its own.
 
@@ -28,7 +32,7 @@ A performance rewrite of [Piano From Above](https://github.com/brian-pantano/Pia
 - The **note speed slider** is logarithmic and covers the whole range: 10 at the left, 0.06 (the default) in the middle, 0.005 at the right.
 
 **Playback**
-- Audio runs on its own decoder and sender threads, off a microsecond clock, independent of the frame rate. KDMAPI (OmniMIDI) is used when available, WinMM otherwise.
+- Audio runs on its own decoder and sender threads, off a microsecond clock, independent of the frame rate. KDMAPI is used when a synth that provides it is installed (OmniMIDI and others), WinMM otherwise.
 - Every event is sent by default. Optional limits (Performance tab), for synths that fall behind:
   - **Skip quiet notes while the synth lags**: above a lag you choose, quiet note-ons go first, rising to every note-on at 4 times that lag.
   - **Always skip notes quieter than velocity N** (default 20), with their note-offs.
@@ -62,7 +66,8 @@ A performance rewrite of [Piano From Above](https://github.com/brian-pantano/Pia
 - **Hit line**: a line in the red bar's place, right on the keys, drawn over everything. It can run across the keyboard or show only over the keys being played, take the notes' colours, fade with its own time and curve after a key is let go, spread sideways, and glow.
 
 **Interface**
-- **Dark mode** (View > Interface: Light, Dark or Follow Windows), dialogs and menus included.
+- **Dark mode** (Preferences, Visual tab: Light, Dark or Follow Windows), dialogs and menus included.
+- Preferences fit the screen: the tall tabs are laid out in two columns, and a tab that still does not fit (a large display scaling, a small screen) scrolls, so OK and Apply stay in reach.
 - Colours of the background, the red bar and the tracks are set in Preferences > Visual; the colour dialog takes hex codes (`#RRGGBB` or `#RGB`), as do colour settings in the config file. A changed track palette recolours the open song at once. Track palettes can be saved under a name and picked again.
 - The loading popup shows how long each stage took.
 
@@ -75,7 +80,7 @@ A performance rewrite of [Piano From Above](https://github.com/brian-pantano/Pia
 ## Requirements
 
 - Windows 10 or later, 64-bit, with a Direct3D 9Ex graphics driver.
-- Optional: [OmniMIDI](https://github.com/KeppySoftware/OmniMIDI) (KDMAPI) for fast synth output; `d3dx9_43.dll` (DirectX End-User Runtime) for the original's exact text rendering, otherwise a GDI fallback is used; [ffmpeg](https://ffmpeg.org/download.html) for video rendering.
+- Optional: a KDMAPI synth, such as [OmniMIDI](https://github.com/KeppySoftware/OmniMIDI), for fast synth output; `d3dx9_43.dll` (DirectX End-User Runtime) for the original's exact text rendering, otherwise a GDI fallback is used; [ffmpeg](https://ffmpeg.org/download.html) for video rendering.
 
 ## Usage
 
@@ -87,7 +92,7 @@ PFAviz++.exe "song.mid"
 
 The window's exact size can be typed in under Visual > Window size, from 640 × 469 up to its monitor's size; the window then moves, if it has to, to lie wholly on that monitor.
 
-Settings are kept in `%APPDATA%\PFAviz++\config.ini`.
+Settings are kept in `%APPDATA%\PFAviz++\config.ini`. Several versions can share it, even running at once: each saves only the settings it changed and keeps the ones it does not know, and every setting is also kept in `config.all.ini` beside it, so one an older version dropped comes back with the next newer one.
 
 Environment variables for timed test runs: `PFAVIZ_MUTE=1`, `PFAVIZ_UNCAPPED=1`, `PFAVIZ_NOTESPEED=x`, `PFAVIZ_MAXIMIZE=1`, `PFAVIZ_FRAMELOG=file` (frame times every half second), `PFAVIZ_GDITEXT=1` (the GDI text fallback even with D3DX installed), `PFAVIZ_EXIT_AFTER=seconds` (closes the window without saving the configuration) and `PFAVIZ_RENDER=out.mp4` (renders the song with the saved video settings, then closes; with `PFAVIZ_ENCODER=n`, the n-th encoder of the list instead, `PFAVIZ_CAPTUREDEPTH=n` frames in flight, `PFAVIZ_BGRXPIPE=1` BGRX frames converted by ffmpeg).
 
