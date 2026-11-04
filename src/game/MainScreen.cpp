@@ -160,14 +160,34 @@ void MainScreen::SetChannelColors( const unsigned *aColor, int iColors )
     bool bLoop = Config::GetConfig().GetVisualSettings().bLoopColors;
     m_uTracksGen++;
     size_t iPos = 0, n = (size_t)std::max( 1, iColors );
-    for ( size_t i = 0; i < vTracks.size(); i++ )
+    // Deduplicated (Song::vLogicalTracks): every track of the file counts, and a track takes the colours
+    // of the place of its last copy (the one drawn), as it would without deduplication
+    const std::vector< uint32_t > &vLogical = m_pSong->vLogicalTracks;
+    std::vector< size_t > vLast;
+    if ( !vLogical.empty() )
+    {
+        vLast.assign( vTracks.size(), SIZE_MAX );
+        for ( size_t p = 0; p < vLogical.size(); p++ ) vLast[vLogical[p]] = p;
+    }
+    for ( size_t p = 0, iEnd = vLogical.empty() ? vTracks.size() : vLogical.size(); p < iEnd; p++ )
+    {
+        size_t i = vLogical.empty() ? p : vLogical[p];
         for ( int j = 0; j < 16; j++ )
             if ( vTracks[i].aNoteCount[j] > 0 )
             {
-                if ( iPos < n || bLoop ) ColorChannel( (int)i, j, aColor[iPos % n] );
-                else ColorChannel( (int)i, j, 0, true );
+                if ( vLogical.empty() || vLast[i] == p )
+                {
+                    if ( iPos < n || bLoop ) ColorChannel( (int)i, j, aColor[iPos % n] );
+                    else ColorChannel( (int)i, j, 0, true );
+                }
+                else if ( iPos >= n && !bLoop )
+                {
+                    ChannelSettings cs;     // (a copy not drawn still draws its random colour, so the ones after are as without deduplication)
+                    cs.SetColor();
+                }
                 iPos++;
             }
+    }
 }
 
 GameState::GameError MainScreen::MsgProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )

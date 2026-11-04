@@ -261,7 +261,10 @@ struct PerformanceSettings
     int iBlockCacheMB;
     bool bLodCache;             // the fast renderer's LOD cache (DESIGN.md 8.11)
     bool bIgnoreWeird;          // keep each note's first pairing (Song::bFirstPairingOnly); off: weird notes end at their later off
+    bool bEndOpenNotes;         // layered compressed files: notes without a note-off last until the song's end (Song::bEndOpenNotes); on by default
     bool bGpuInstancing;        // notes drawn by Renderer::DrawNoteInstances (not pixel-exact), off by default
+    bool bDedup;                // identical tracks, and repeats in layered compressed files, loaded once (song/Dedup.h); off by default
+    bool bDedupAssume;          // with it: the rest of a layer taken as repeats of its first tile when its size fits (on by default)
     bool bShowLoadStats;
 };
 
@@ -391,6 +394,8 @@ public:
     void SetExportSettings( const ExportSettings &s ) { m_ExportSettings = s; }
 
 private:
+    IniFile Settings() const;               // this program's settings as keys
+    void RememberSaved();                   // m_pMine and m_sSaved from the settings now
     Config();
     Config( const Config & ) = delete;
     Config &operator=( const Config & ) = delete;
@@ -399,7 +404,8 @@ private:
     mutable std::mutex m_mxVisual;
     std::atomic< unsigned > m_uVisualGen{ 0 };
     std::mutex m_mxAudio;
-    std::string m_sSaved;                   // the config file as last saved (SaveConfigValues)
+    std::string m_sSaved;                   // this program's settings as last loaded or saved (SaveConfigValues)
+    IniFile *m_pMine = nullptr;             // the same, as keys: what it changes is what differs from these
     AudioSettings m_AudioSettings;
     VideoSettings m_VideoSettings;
     ControlsSettings m_ControlsSettings;

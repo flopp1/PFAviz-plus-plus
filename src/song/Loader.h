@@ -28,6 +28,7 @@ struct LoadProgress
     std::atomic< uint64_t > llFileSize{ 0 }, llBytesResident{ 0 };
     std::atomic< uint64_t > llTracksFound{ 0 }, llTracksDone{ 0 }, llEvents{ 0 }, llNotes{ 0 };
     std::atomic< bool > bCancel{ false };
+    std::atomic< bool > bOutOfMemory{ false };  // the load was stopped (bCancel) with the computer nearly out of memory
     Archive::Chooser fnChoose;                  // of several MIDI files in an archive, the one to read (song/Archive.h)
     std::atomic< bool > bWaitingOnDisk{ false };
     std::atomic< long long > llCountEndUs{ 0 }; // Timer::NowMicroSecs() when the count pass finished
@@ -37,6 +38,9 @@ struct LoadProgress
     bool bLzVisual = false;             // the Performance tab's "Compact visual store" (LZ groups)
     bool bNoteStats = true;             // the extra statistics (Song::noteStats)
     bool bFirstPairingOnly = false;     // the Performance tab's "End weird notes at their first note-off" (Song::bFirstPairingOnly)
+    bool bEndOpenNotes = false;         // and its "Layered compressed files: notes without a note-off last until the song's end" (Song::bEndOpenNotes)
+    bool bDedup = false;                // the Performance tab's "Deduplicate repeated tracks" (song/Dedup.h)
+    bool bDedupAssume = true;           // and its "assume the rest of a layer repeats"
     int iFusedRead = -1;                // tools only: 1 forces the fused single read (DESIGN.md 4.2a), 0 the two-pass read
 };
 
@@ -47,8 +51,10 @@ struct LoadStats
     uint64_t llFileSize = 0;
     bool bSeekPenalty = false, bSequentialRead = false, bFusedRead = false;
     uint64_t llFusedBytes = 0;          // fused read: the packed per-track streams (freed after the build)
+    uint64_t llGroupBytes = 0;          // the per-track group records (freed after the build)
     int iThreads = 0;
     uint64_t llOutOfRange = 0;          // channel events dropped for a key, controller or program past 127
+    uint64_t llKeptTracks = 0;          // deduplication: the tracks loaded, when fewer than llTracks
     uint64_t llTracks = 0, llMalformedTracks = 0, llEvents = 0, llNotes = 0, llUniqueTicks = 0, llGroups = 0, llPayloadBytes = 0;
     bool bBitmapMerge = false;
     size_t aMem[7] = {}; // stream (compressed), stream index, tick table, time table, unused, metadata, notes

@@ -138,9 +138,12 @@ KeyStore::LzNote KeyStore::LzGet( size_t i ) const
 void KeyStore::LzDecode( uint64_t g, LzNote *pOut, std::vector< uint8_t > &vRaw ) const
 {
     const LzGroup &lg = m_vLzGroups[g];
-    if ( vRaw.size() < lg.uRaw + Lz4::Slack ) vRaw.resize( lg.uRaw + Lz4::Slack );
-    if ( lg.uSize == lg.uRaw ) memcpy( vRaw.data(), m_vLzData.data() + lg.llOffset, lg.uRaw );
-    else Lz4::Decompress( m_vLzData.data() + lg.llOffset, lg.uSize, vRaw.data(), lg.uRaw );
+    const uint32_t uRaw = lg.Raw();
+    if ( vRaw.size() < uRaw + Lz4::Slack ) vRaw.resize( uRaw + Lz4::Slack );
+    if ( lg.uSize == uRaw ) memcpy( vRaw.data(), m_vLzData.data() + lg.llOffset, uRaw );
+    else Lz4::Decompress( m_vLzData.data() + lg.llOffset, lg.uSize, vRaw.data(), uRaw );
+    const bool bFromMax = lg.EndFromMax();
+    const uint64_t llMaxEnd = bFromMax ? GroupMaxEnd( g ) : 0;
     size_t n = std::min< size_t >( size_t( 1 ) << GroupShift, m_n - ( g << GroupShift ) );
     const uint8_t *q = vRaw.data();
     uint64_t llStart = lg.llStartBase;
@@ -154,7 +157,8 @@ void KeyStore::LzDecode( uint64_t g, LzNote *pOut, std::vector< uint8_t > &vRaw 
         v.llStartU = llStart;
         v.uSlot = (uint32_t)llSlot;
         v.uRank = (uint32_t)ReadVarint( q );
-        v.llEndU = llStart + ReadVarint( q );
+        uint64_t x = ReadVarint( q );
+        v.llEndU = bFromMax ? llMaxEnd - x : llStart + x;
     }
 }
 
@@ -192,6 +196,14 @@ void KeyStore::GetRange( size_t i, size_t n, NoteView *pOut ) const
     }
 }
 
+uint64_t KeyStore::GroupMaxEnd( uint64_t g ) const
+{
+    // A group is 32 blocks from a multiple of 32: one node of the tree (the root when it has fewer leaves)
+    const unsigned uShift = GroupShift - BlockShift;
+    size_t k = ( m_iLeaves + ( (size_t)g << uShift ) ) >> uShift;
+    return m_vTreeEnd[std::max< size_t >( k, 1 )];
+}
+
 void KeyStore::ToLz()
 {
     if ( !m_bCompact || m_bLz ) return;
@@ -201,6 +213,8 @@ void KeyStore::ToLz()
     size_t iGroups = ( m_n + ( size_t( 1 ) << GroupShift ) - 1 ) >> GroupShift;
     std::vector< LzGroup > vGroups( iGroups );
     std::vector< uint8_t > vData, vRaw( ( size_t( 1 ) << GroupShift ) * 40 ), vPacked( Lz4::Bound( vRaw.size() ) );
+    std::vector< NoteView > vGroupNotes( size_t( 1 ) << GroupShift );
+    auto VarintSize = []( uint64_t v ) { size_t k = 1; while ( v >= 0x80 ) { v >>= 7; k++; } return k; };
     NoteView n;
     for ( size_t g = 0; g < iGroups; g++ )
     {
@@ -209,24 +223,35 @@ void KeyStore::ToLz()
         uint64_t llPrev = StartU( i0 );
         int64_t llSlot = 0;
         vGroups[g].llStartBase = llPrev;
+        // The last field as the duration or as the group's latest end less the end, whichever is shorter
+        const uint64_t llMaxEnd = GroupMaxEnd( g );
+        uint64_t llDurBytes = 0, llEndBytes = 0;
         for ( size_t i = i0; i < i1; i++ )
         {
             Get( i, n );
-            q = WriteVarint( q, n.llStartU - llPrev );
-            int64_t d = (int64_t)n.uSlot - llSlot;
+            vGroupNotes[i - i0] = n;
+            llDurBytes += VarintSize( n.llEndU - n.llStartU );
+            llEndBytes += VarintSize( llMaxEnd - n.llEndU );
+        }
+        const bool bFromMax = llEndBytes < llDurBytes;
+        for ( size_t i = i0; i < i1; i++ )
+        {
+            const NoteView &v = vGroupNotes[i - i0];
+            q = WriteVarint( q, v.llStartU - llPrev );
+            int64_t d = (int64_t)v.uSlot - llSlot;
             q = WriteVarint( q, (uint64_t)( ( d << 1 ) ^ ( d >> 63 ) ) );
-            q = WriteVarint( q, n.uRank );
-            q = WriteVarint( q, n.llEndU - n.llStartU );
-            llPrev = n.llStartU;
-            llSlot = n.uSlot;
+            q = WriteVarint( q, v.uRank );
+            q = WriteVarint( q, bFromMax ? llMaxEnd - v.llEndU : v.llEndU - v.llStartU );
+            llPrev = v.llStartU;
+            llSlot = v.uSlot;
         }
         size_t iRaw = (size_t)( q - vRaw.data() );
-        size_t iSize = Lz4::Compress( vRaw.data(), iRaw, vPacked.data() );
+        size_t iSize = Lz4::CompressHC( vRaw.data(), iRaw, vPacked.data() );
         const uint8_t *pSrc = vPacked.data();
         if ( iSize >= iRaw ) { iSize = iRaw; pSrc = vRaw.data(); }
         vGroups[g].llOffset = vData.size();
         vGroups[g].uSize = (uint32_t)iSize;
-        vGroups[g].uRaw = (uint32_t)iRaw;
+        vGroups[g].uRaw = (uint32_t)iRaw | ( bFromMax ? 0x80000000u : 0 );
         vData.insert( vData.end(), pSrc, pSrc + iSize );
     }
     vData.resize( vData.size() + Lz4::Slack );
@@ -267,13 +292,13 @@ void KeyStore::Get( size_t i, NoteView &n ) const
     if ( m_bCompact )
     {
         const CBlock &c = m_vCBlocks[i >> BlockShift];
-        uint64_t llBit = c.llBit + j * (unsigned)( c.wStart + c.wPal + c.wRank + c.wDur );
+        uint64_t llBit = c.llBit + j * c.Width();
         uint64_t dS = Read( llBit, c.wStart ); llBit += c.wStart;
         uint64_t uPal = Read( llBit, c.wPal ); llBit += c.wPal;
         uint64_t uRank = Read( llBit, c.wRank ); llBit += c.wRank;
-        uint64_t dD = Read( llBit, c.wDur );
+        uint64_t dD = Read( llBit, c.DurBits() );
         n.llStartU = c.llStartBase + dS;
-        n.llEndU = n.llStartU + dD;
+        n.llEndU = c.End( n.llStartU, dD, BlockMaxEnd( i >> BlockShift ) );
         n.uSlot = m_vPalette[c.uPalette + uPal];
         n.uRank = (uint32_t)uRank;
         n.uEndRank = 0;
@@ -336,7 +361,7 @@ uint64_t KeyStore::StartU( size_t i ) const
     if ( m_bCompact )
     {
         const CBlock &c = m_vCBlocks[i >> BlockShift];
-        return c.llStartBase + Read( c.llBit + ( uint64_t )( i & ( BlockSize - 1 ) ) * (unsigned)( c.wStart + c.wPal + c.wRank + c.wDur ), c.wStart );
+        return c.llStartBase + Read( c.llBit + ( uint64_t )( i & ( BlockSize - 1 ) ) * c.Width(), c.wStart );
     }
     const Block &b = m_vBlocks[i >> BlockShift];
     return b.llStartBase + Read( b.llBitStart + ( uint64_t )( i & ( BlockSize - 1 ) ) * b.uStartBits, b.wStart );
@@ -349,8 +374,8 @@ uint64_t KeyStore::EndU( size_t i ) const
     if ( m_bCompact )
     {
         const CBlock &c = m_vCBlocks[i >> BlockShift];
-        uint64_t llBit = c.llBit + j * (unsigned)( c.wStart + c.wPal + c.wRank + c.wDur );
-        return c.llStartBase + Read( llBit, c.wStart ) + Read( llBit + c.wStart + c.wPal + c.wRank, c.wDur );
+        uint64_t llBit = c.llBit + j * c.Width();
+        return c.End( c.llStartBase + Read( llBit, c.wStart ), Read( llBit + c.wStart + c.wPal + c.wRank, c.DurBits() ), BlockMaxEnd( i >> BlockShift ) );
     }
     const Block &b = m_vBlocks[i >> BlockShift];
     return b.llStartBase + Read( b.llBitStart + j * b.uStartBits, b.wStart ) + Read( b.llBitEnd + j * b.uEndBits, b.wDur );
@@ -500,12 +525,13 @@ int64_t KeyStore::ScanDur( size_t lo, size_t hi, uint64_t llDurUs, const PackedM
     {
         // Only the start and the duration of each record
         const CBlock &c = m_vCBlocks[lo >> BlockShift];
-        unsigned uRec = c.wStart + c.wPal + c.wRank + c.wDur, uDurAt = c.wStart + c.wPal + c.wRank;
+        unsigned uRec = c.Width(), uDurAt = c.wStart + c.wPal + c.wRank;
+        const uint64_t llMaxEnd = BlockMaxEnd( lo >> BlockShift );
         uint64_t llLastS = UINT64_MAX, llLastE = UINT64_MAX, tS = 0, tE = 0;
         for ( size_t i = hi; i-- > lo; )
         {
             uint64_t llBit = c.llBit + ( uint64_t )( i & ( BlockSize - 1 ) ) * uRec;
-            uint64_t llS = c.llStartBase + Read( llBit, c.wStart ), llE = llS + Read( llBit + uDurAt, c.wDur );
+            uint64_t llS = c.llStartBase + Read( llBit, c.wStart ), llE = c.End( llS, Read( llBit + uDurAt, c.DurBits() ), llMaxEnd );
             if ( llS != llLastS ) { llLastS = llS; tS = times.Get( llS ); }
             if ( llE != llLastE ) { llLastE = llE; tE = times.Get( llE ); }
             if ( tE - tS >= llDurUs ) return (int64_t)i;
@@ -814,6 +840,8 @@ public:
 
     // Song::bFirstPairingOnly: a note keeps its first pairing (no weird notes)
     void SetFirstPairingOnly( bool b ) { m_bFirstPairingOnly = b; }
+    // Song::bEndOpenNotes: a note no off paired ends at llU, the song's last tick (UINT64_MAX: unpaired)
+    void SetOpenEnd( uint64_t llU ) { m_llOpenEndU = llU; }
 
     void Pair( uint64_t pos, uint64_t llU, uint32_t uOrd, bool bFromSlot )
     {
@@ -1009,11 +1037,13 @@ private:
             uint64_t pos = ( (uint64_t)b << 6 ) + j;
             uint64_t llStart = blk.llStartBase + m_Out.Read( blk.llBitStart + (uint64_t)j * blk.uStartBits, blk.wStart );
             bool bPaired = PairedBit( pos ) && pE;
-            aEnd[j] = bPaired ? pE->EndU( j ) : llStart;
-            aEndRank[j] = bPaired ? RankOf( pos ) : 0;
-            aFlags[j] = ( bPaired ? 0 : 1 ) | ( bPaired && pE->aPairs[j] > 1 ? 2 : 0 );
-            if ( !bPaired ) m_Out.m_vUnpaired.push_back( pos );
-            bUnpaired |= !bPaired;
+            // (no off, with bEndOpenNotes: it ends at the song's end, after its last tick's events)
+            bool bOpen = !bPaired && m_llOpenEndU != UINT64_MAX;
+            aEnd[j] = bPaired ? pE->EndU( j ) : bOpen ? std::max( m_llOpenEndU, llStart ) : llStart;
+            aEndRank[j] = bPaired ? RankOf( pos ) : bOpen ? UINT32_MAX : 0;
+            aFlags[j] = ( bPaired || bOpen ? 0 : 1 ) | ( bPaired && pE->aPairs[j] > 1 ? 2 : 0 );
+            if ( !bPaired && !bOpen ) m_Out.m_vUnpaired.push_back( pos );
+            bUnpaired |= !bPaired && !bOpen;
             bWeird |= ( aFlags[j] & 2 ) != 0;
             llMaxDur = std::max( llMaxDur, aEnd[j] - llStart );
             aEnd[j] -= llStart;
@@ -1050,6 +1080,7 @@ private:
     bool m_bWeird = false;
     bool m_bFirstPairingOnly = false;
     bool m_bEndRanks = true, m_bKeepRanks = true;
+    uint64_t m_llOpenEndU = UINT64_MAX;
 };
 
 //-----------------------------------------------------------------------------
@@ -1138,7 +1169,7 @@ private:
         KeyStore::CBlock c;
         c.llStartBase = m_a[0].llStartU;
         uint32_t aSlots[KeyStore::BlockSize];
-        uint64_t llMaxDS = 0, llMaxDur = 0, llMaxEnd = 0, llMaxDurUs = 0;
+        uint64_t llMaxDS = 0, llMaxDur = 0, llMaxEnd = 0, llMinEnd = UINT64_MAX, llMaxDurUs = 0;
         uint32_t uMaxRank = 0, uMaxDup = 0;
         // (notes of a block mostly share their start and end: each is looked up once in a row)
         uint64_t llStartAt = UINT64_MAX, llEndAt = UINT64_MAX, llStartUs = 0, llEndUs = 0;
@@ -1148,6 +1179,7 @@ private:
             llMaxDS = std::max( llMaxDS, r.llStartU - c.llStartBase );
             llMaxDur = std::max( llMaxDur, r.llEndU - r.llStartU );
             llMaxEnd = std::max( llMaxEnd, r.llEndU );
+            llMinEnd = std::min( llMinEnd, r.llEndU );
             uMaxRank = std::max( uMaxRank, r.uRank );
             uMaxDup = std::max( uMaxDup, r.uDup );
             if ( r.llEndU != r.llStartU )
@@ -1177,8 +1209,11 @@ private:
         c.wStart = (uint8_t)Bits( llMaxDS );
         c.wPal = (uint8_t)Bits( iPal - 1 );
         c.wRank = (uint8_t)Bits( uMaxRank );
-        c.wDur = (uint8_t)Bits( llMaxDur );
-        unsigned w = c.wStart + c.wPal + c.wRank + c.wDur;
+        // Each note's duration, or the block's latest end less its end where narrower (CBlock::EndFromMax)
+        unsigned wEnd = Bits( llMaxEnd - llMinEnd ), wDur = Bits( llMaxDur );
+        const bool bFromMax = wEnd < wDur;
+        c.wDur = (uint8_t)( bFromMax ? wEnd | KeyStore::CBlock::EndFromMax : wDur );
+        unsigned w = c.Width();
         c.llBit = m_llBits;
         m_llBits += (uint64_t)m_k * w;
         uint64_t llNeed = ( m_llBits + 63 ) / 64 + 1;
@@ -1197,7 +1232,7 @@ private:
             Write( llBit, c.wStart, r.llStartU - c.llStartBase ); llBit += c.wStart;
             Write( llBit, c.wPal, uPal ); llBit += c.wPal;
             Write( llBit, c.wRank, r.uRank ); llBit += c.wRank;
-            Write( llBit, c.wDur, r.llEndU - r.llStartU ); llBit += c.wDur;
+            Write( llBit, c.DurBits(), bFromMax ? llMaxEnd - r.llEndU : r.llEndU - r.llStartU ); llBit += c.DurBits();
         }
         if ( m_bDups )
         {
@@ -1327,6 +1362,7 @@ public:
 
     bool CanPrePair() const { return true; }
     void SetFirstPairingOnly( bool b ) { m_bFirstPairingOnly = b; }
+    void SetOpenEnd( uint64_t llU ) { m_llOpenEndU = llU; }     // as KeyBuilder's
 
     uint64_t Append( uint64_t llU, uint32_t uSlot, uint32_t uRank )
     {
@@ -1522,6 +1558,7 @@ private:
             const Rec *p = Page( b );
             for ( unsigned j = 0; j < n; j++ )
                 if ( ( llPaired >> j ) & 1 ) Feed( p[j].uStart, p[j].uEnd, p[j].uSlot, p[j].uRank, pos + j );
+                else if ( m_llOpenEndU != UINT64_MAX ) Feed( p[j].uStart, std::max< uint64_t >( m_llOpenEndU, p[j].uStart ), p[j].uSlot, p[j].uRank, pos + j );
                 else m_llUnpaired++;
             return;
         }
@@ -1535,6 +1572,7 @@ private:
             uint64_t llEnd = k.pEnd ? k.pEnd[j] : llStart + Read( llEndBit, k.wDur );
             llEndBit += k.wDur;
             if ( ( llPaired >> j ) & 1 ) Feed( llStart, llEnd, uSlot, uRank, pos + j );
+            else if ( m_llOpenEndU != UINT64_MAX ) Feed( llStart, std::max( m_llOpenEndU, llStart ), uSlot, uRank, pos + j );
             else m_llUnpaired++;
         }
         m_dqPacked.pop_front();
@@ -1580,6 +1618,7 @@ private:
     std::unordered_set< uint64_t > m_setEarly;  // paired early before m_bBase, the off still to come
     bool m_bFirstPairingOnly = false;
     uint64_t m_llUnpaired = 0, m_llFirstPairedU = UINT64_MAX;
+    uint64_t m_llOpenEndU = UINT64_MAX;
 };
 
 namespace
@@ -1773,8 +1812,9 @@ namespace
     {
     public:
         StatsRecorder( const PackedMonotone &times, long long llBinUs ) : m_pTimes( &times ), m_llBinUs( (uint64_t)llBinUs ) {}
-        void On( uint64_t u ) { if ( u >= m_uNext ) Move( u ); m_llOns++; }
-        void Off( uint64_t u ) { if ( u >= m_uNext ) Move( u ); m_llOffs++; }
+        // n: how many notes the event is (the copies of its track, Song::vTrackCopies)
+        void On( uint64_t u, uint64_t n ) { if ( u >= m_uNext ) Move( u ); m_llOns += n; }
+        void Off( uint64_t u, uint64_t n ) { if ( u >= m_uNext ) Move( u ); m_llOffs += n; }
         void Flush()
         {
             if ( !m_llOns && !m_llOffs ) return;
@@ -2221,7 +2261,7 @@ private:
 
     void On( uint32_t uTrack, unsigned ch, unsigned key, uint64_t u, uint32_t uOrd )
     {
-        if ( m_pStats ) m_pStats->On( u );
+        if ( m_pStats ) m_pStats->On( u, m_Song.TrackCopies( uTrack ) );
         KB &kb = *m_vBuilders[key];
         uint64_t pos = kb.Append( u, uTrack * 16 + ch, uOrd );
         Light &l = LightOf( uTrack, key );
@@ -2237,10 +2277,23 @@ private:
         // live in its slot until its track ends, a long one until its off, and every later note of the
         // key would wait for it
         uint64_t llKnown = l.uKnownLo | ( (uint64_t)l.cKnownHi << 32 );
-        bool bMatch = llKnown != NoKnown && m_Song.vKnownId[llKnown] == ( llPrefix | l.uOns ), bKnown = bMatch;
-        uint64_t llKnownEnd = bKnown ? m_Song.vKnownEnd[llKnown] : UINT64_MAX;
+        bool bMatch = false, bLastOfEntry = true;
+        uint64_t llKnownEnd = UINT64_MAX;
+        if ( llKnown != NoKnown )
+        {
+            // (an entry may be a run of unpaired notes, Song::KnownRun)
+            uint64_t id = llPrefix | l.uOns, llFirst = m_Song.vKnownId[llKnown], e = m_Song.vKnownEnd[llKnown];
+            uint64_t llLen = e >= Song::KnownRun ? UINT64_MAX - e + 1 : 1;
+            if ( id >= llFirst && id - llFirst < llLen )
+            {
+                bMatch = true;
+                llKnownEnd = e >= Song::KnownRun ? UINT64_MAX : e;
+                bLastOfEntry = id - llFirst + 1 == llLen;
+            }
+        }
+        bool bKnown = bMatch;
         if ( bKnown && llKnownEnd != UINT64_MAX && !kb.CanPrePair() ) bKnown = false;
-        if ( bMatch ) SetKnown( l, llKnown + 1, llPrefix );
+        if ( bMatch && bLastOfEntry ) SetKnown( l, llKnown + 1, llPrefix );
         l.uOns++;
         if ( !( l.cFlags & Heavy ) )
         {
@@ -2297,7 +2350,7 @@ private:
         if ( !( l.cFlags & Heavy ) )
         {
             if ( !l.cCount || l.cCh != (int)ch ) return;
-            if ( m_pStats ) m_pStats->Off( u );    // releases a held note (NoteStats)
+            if ( m_pStats ) m_pStats->Off( u, m_Song.TrackCopies( uTrack ) );    // releases a held note (NoteStats)
             m_vBuilders[key]->Pair( l.uSlot, u, uOrd, true );
             l.cCount = 0;
             return;
@@ -2305,7 +2358,7 @@ private:
         KeyState &s = m_vPool[l.uSlot];
         uint32_t uCount = Count( s, ch );
         if ( !uCount ) return;
-        if ( m_pStats ) m_pStats->Off( u );
+        if ( m_pStats ) m_pStats->Off( u, m_Song.TrackCopies( uTrack ) );
         KB &kb = *m_vBuilders[key];
         if ( uCount <= 10 )
             kb.Pair( Slots( s, ch )[uCount - 1], u, uOrd, true );
@@ -2532,11 +2585,13 @@ bool PairAll( const Song &song, VisualStore &vs, int iThreads, std::atomic< uint
             vStream[k].reset( new StreamCompactor( vCompact[k], es.times, (size_t)song.aKeyNoteCounts[k], pHidden ) );
             vStreamKeys[k].reset( new StreamKey( *vStream[k], song.aKeyNoteCounts[k] ) );
             vStreamKeys[k]->SetFirstPairingOnly( song.bFirstPairingOnly );
+            vStreamKeys[k]->SetOpenEnd( song.bEndOpenNotes && U ? U - 1 : UINT64_MAX );
         }
         else
         {
             vBuilders[k].reset( new KeyBuilder( vs.aKeys[k], es.times, song.aKeyNoteCounts[k], bEndRanks, !bStopOnWeird ) );
             vBuilders[k]->SetFirstPairingOnly( song.bFirstPairingOnly );
+            vBuilders[k]->SetOpenEnd( song.bEndOpenNotes && U ? U - 1 : UINT64_MAX );
         }
     }
 
@@ -2580,10 +2635,18 @@ bool PairAll( const Song &song, VisualStore &vs, int iThreads, std::atomic< uint
         std::vector< int64_t > vDelta( iBins, 0 );
         for ( const StatsRecorder &r : vRec )
             r.ForEach( [&]( uint64_t b, uint64_t llOns, uint64_t llOffs ) {
-                ns.vOns[b] = (uint32_t)std::min< uint64_t >( (uint64_t)ns.vOns[b] + llOns, UINT32_MAX );
+                ns.vOns[b] += llOns;
                 vDelta[b] += (int64_t)llOns - (int64_t)llOffs;
             } );
         vRec.clear();
+        // Notes without an off that end at the song's end (Song::bEndOpenNotes): every note has ended by
+        // the last bin
+        if ( song.bEndOpenNotes )
+        {
+            int64_t llHeld = 0;
+            for ( int64_t d : vDelta ) llHeld += d;
+            vDelta[iBins - 1] -= llHeld;
+        }
         ns.vPoly.resize( iBins );
         ns.vCum.resize( ( ( iBins - 1 ) >> NoteStats::CumShift ) + 1 );
         int64_t llPoly = 0;
@@ -2593,7 +2656,7 @@ bool PairAll( const Song &song, VisualStore &vs, int iThreads, std::atomic< uint
             if ( !( b & ( ( size_t( 1 ) << NoteStats::CumShift ) - 1 ) ) ) ns.vCum[b >> NoteStats::CumShift] = llCum;
             llCum += ns.vOns[b];
             llPoly += vDelta[b];
-            ns.vPoly[b] = (uint32_t)std::min< int64_t >( std::max< int64_t >( llPoly, 0 ), UINT32_MAX );
+            ns.vPoly[b] = (uint64_t)std::max< int64_t >( llPoly, 0 );
         }
     }
 

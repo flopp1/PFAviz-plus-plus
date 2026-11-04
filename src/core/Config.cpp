@@ -49,12 +49,47 @@ void Config::LoadDefaultValues()
     m_ViewSettings.LoadDefaultValues();
 }
 
+// Several versions may share the config, even at once: an older one knows fewer settings, and one that
+// rewrote the file from its own would lose the others'. So a save starts from the file as it is, and
+// puts over it only the settings this program changed (others keep what another program saved, and
+// the ones it does not know). Versions that rewrite it whole came out before this: every setting is
+// also kept in config.all.ini, which they never touch, and loading reads that under config.ini (so
+// what they changed counts, and what they dropped comes back).
+namespace
+{
+    const wchar_t *const ConfigFile = L"\\config.ini", *const ConfigAllFile = L"\\config.all.ini";
+    const std::set< std::string > WholeSections = { "Palettes" };   // lists: a count and its items
+
+    bool LoadShared( const std::wstring &sFolder, IniFile &ini )
+    {
+        IniFile file;
+        bool bAll = ini.Load( sFolder + ConfigAllFile ), bFile = file.Load( sFolder + ConfigFile );
+        ini.Overlay( file );
+        return bAll || bFile;
+    }
+}
+
+IniFile Config::Settings() const
+{
+    IniFile ini;
+    ini.SetInt( "General", "ConfigVersion", 3 );
+    m_VisualSettings.Save( ini );
+    m_AudioSettings.Save( ini );
+    m_VideoSettings.Save( ini );
+    m_ControlsSettings.Save( ini );
+    m_PerformanceSettings.Save( ini );
+    m_ExportSettings.Save( ini );
+    m_PlaybackSettings.Save( ini );
+    m_ViewSettings.Save( ini );
+    return ini;
+}
+
 void Config::LoadConfigValues()
 {
     std::wstring sFolder = GetFolder();
     if ( sFolder.empty() ) return;
     IniFile ini;
-    if ( !ini.Load( sFolder + L"\\config.ini" ) ) return;
+    if ( !LoadShared( sFolder, ini ) ) { RememberSaved(); return; }
     m_VisualSettings.Load( ini );
     m_AudioSettings.Load( ini );
     m_VideoSettings.Load( ini );
@@ -70,25 +105,32 @@ void Config::LoadConfigValues()
         m_VisualSettings.eKeysShown = VisualSettings::All128;
     // Version 2 configs saved LodCache=0 while the cache did not exist yet; it is on by default now
     if ( ini.GetInt( "General", "ConfigVersion", 1 ) < 3 ) m_PerformanceSettings.bLodCache = true;
+    RememberSaved();
+}
+
+void Config::RememberSaved()
+{
+    if ( !m_pMine ) m_pMine = new IniFile;
+    *m_pMine = Settings();
+    m_sSaved = m_pMine->Text();
 }
 
 bool Config::SaveConfigValues( bool bIfChanged )
 {
     std::wstring sFolder = GetFolder();
     if ( sFolder.empty() ) return false;
-    IniFile ini;
-    ini.SetInt( "General", "ConfigVersion", 3 );
-    m_VisualSettings.Save( ini );
-    m_AudioSettings.Save( ini );
-    m_VideoSettings.Save( ini );
-    m_ControlsSettings.Save( ini );
-    m_PerformanceSettings.Save( ini );
-    m_ExportSettings.Save( ini );
-    m_PlaybackSettings.Save( ini );
-    m_ViewSettings.Save( ini );
-    std::string sText = ini.Text();
+    IniFile mine = Settings();
+    std::string sText = mine.Text();
     if ( bIfChanged && sText == m_sSaved ) return true;
-    if ( !ini.Save( sFolder + L"\\config.ini" ) ) return false;
+    // The shared settings as they are now, this program's changes over them
+    IniFile ini;
+    LoadShared( sFolder, ini );
+    if ( !m_pMine ) RememberSaved();
+    ini.MergeChanges( mine, *m_pMine, WholeSections );
+    ini.Set( "General", "ConfigVersion", mine.GetString( "General", "ConfigVersion" ) );
+    if ( !ini.Save( sFolder + ConfigFile ) ) return false;
+    ini.Save( sFolder + ConfigAllFile );
+    *m_pMine = mine;
     m_sSaved = sText;
     return true;
 }
@@ -762,6 +804,9 @@ void PerformanceSettings::LoadDefaultValues()
     iMinVelocity = 20;
     bCollapseStacks = false;
     bIgnoreWeird = false;
+    bEndOpenNotes = true;
+    bDedup = false;
+    bDedupAssume = true;
     bSendLimit = false;
     iMaxSendsPerSec = 2000000;
     bCompactVisual = true;
@@ -786,6 +831,9 @@ void PerformanceSettings::Load( const IniFile &ini )
     iMinVelocity = std::clamp( ini.GetInt( "Performance", "MinVelocity", iMinVelocity ), 1, 128 );
     bCollapseStacks = ini.GetBool( "Performance", "CollapseStacks", bCollapseStacks );
     bIgnoreWeird = ini.GetBool( "Performance", "IgnoreWeirdNotes", bIgnoreWeird );
+    bEndOpenNotes = ini.GetBool( "Performance", "EndOpenNotes", bEndOpenNotes );
+    bDedup = ini.GetBool( "Performance", "Dedup", bDedup );
+    bDedupAssume = ini.GetBool( "Performance", "DedupAssume", bDedupAssume );
     bSendLimit = ini.GetBool( "Performance", "SendLimit", bSendLimit );
     iMaxSendsPerSec = std::clamp( ini.GetInt( "Performance", "MaxSendsPerSec", iMaxSendsPerSec ), 1000, 1000000000 );
     bCompactVisual = ini.GetBool( "Performance", "CompactVisual", bCompactVisual );
@@ -809,6 +857,9 @@ void PerformanceSettings::Save( IniFile &ini ) const
     ini.SetInt( "Performance", "MinVelocity", iMinVelocity );
     ini.SetInt( "Performance", "CollapseStacks", bCollapseStacks );
     ini.SetInt( "Performance", "IgnoreWeirdNotes", bIgnoreWeird );
+    ini.SetInt( "Performance", "EndOpenNotes", bEndOpenNotes );
+    ini.SetInt( "Performance", "Dedup", bDedup );
+    ini.SetInt( "Performance", "DedupAssume", bDedupAssume );
     ini.SetInt( "Performance", "SendLimit", bSendLimit );
     ini.SetInt( "Performance", "MaxSendsPerSec", iMaxSendsPerSec );
     ini.SetInt( "Performance", "CompactVisual", bCompactVisual );

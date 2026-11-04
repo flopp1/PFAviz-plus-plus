@@ -91,7 +91,8 @@ void Song::BuildSendCounts( int iThreads )
         if ( u0 >= u1 ) return;
         Part &part = vParts[k];
         uint64_t aCount[2][128] = {};
-        uint64_t llCC = 0;                                  // controller events in the bin
+        uint64_t llCC = 0;                                  // controller events in the bin (times their tracks' copies)
+        int64_t llPrevTrack = -1;                           // the group's track (EventStream::Walk)
         std::vector< size_t > vSeen( 4096, SIZE_MAX );     // per channel and key: the last tick with a note-on
         size_t b = part.bFirst = (size_t)( es.times.Get( u0 ) / B );
         auto Flush = [&]() {
@@ -120,6 +121,8 @@ void Song::BuildSendCounts( int iThreads )
             r.Need();
             uint64_t hdr = EventStream::ReadVar( r.p );
             bool bCount = u >= u0;
+            const uint32_t uTrack = (uint32_t)( llPrevTrack + 1 + (int64_t)( hdr >> 1 ) );
+            const uint64_t llCopies = TrackCopies( uTrack );
             unsigned h;
             do
             {
@@ -134,7 +137,7 @@ void Song::BuildSendCounts( int iThreads )
                         uint32_t uMsg = ( 0x70u + ( op << 4 ) ) | ( h & 0x0F ) | ( (uint32_t)r.p[0] << 8 );
                         if ( aDataBytes[op] == 2 ) uMsg |= (uint32_t)r.p[1] << 16;
                         part.vChase.push_back( { llTime, uMsg } );
-                        if ( op == 4 ) llCC++;
+                        if ( op == 4 ) llCC += llCopies;
                     }
                     r.p += aDataBytes[op];
                     continue;
@@ -178,7 +181,8 @@ void Song::BuildSendCounts( int iThreads )
                     if ( r.p >= r.end ) break;
                 }
             } while ( !( h & 0x10 ) );
-            if ( hdr & 1 ) u++;
+            if ( hdr & 1 ) { u++; llPrevTrack = -1; }
+            else llPrevTrack = uTrack;
         }
         Flush();
     } );

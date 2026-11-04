@@ -59,8 +59,10 @@ public:
             if ( !VirtualAlloc( reinterpret_cast< uint8_t * >( m_p ) + m_iCommitted, iTarget - m_iCommitted, MEM_COMMIT, PAGE_READWRITE ) ) throw std::bad_alloc();
             m_iCommitted = iTarget;
         }
-        else if ( iBytes < m_iCommitted )
+        else if ( iBytes < m_iCommitted && !bAhead )
         {
+            // (growing into the room committed ahead keeps it: giving it back here made every growth
+            // decommit and recommit an eighth of the arena, hours for a store of several GB)
             size_t iFrom = std::max( iBytes, m_iDropped );
             if ( iFrom < m_iCommitted ) VirtualFree( reinterpret_cast< uint8_t * >( m_p ) + iFrom, m_iCommitted - iFrom, MEM_DECOMMIT );
             m_iCommitted = iBytes;

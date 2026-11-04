@@ -151,12 +151,26 @@ private:
         uint64_t llStartBase = 0;
         uint32_t uPalette = 0;      // first entry in m_vPalette
         uint8_t wStart = 0, wPal = 0, wRank = 0, wDur = 0;
+        // wDur's flag: the field is the block's latest end (BlockMaxEnd) less the note's end, not its
+        // duration, where that is narrower (notes that end together: 0 bits however long they are)
+        static const uint8_t EndFromMax = 0x80;
+        unsigned DurBits() const { return wDur & 0x7F; }
+        unsigned Width() const { return wStart + wPal + wRank + DurBits(); }
+        uint64_t End( uint64_t llStart, uint64_t v, uint64_t llMaxEnd ) const { return ( wDur & EndFromMax ) ? llMaxEnd - v : llStart + v; }
     };
 
     // LZ groups: 1024 notes (16 blocks); varints per note: start - previous start, zigzag slot
     // delta, ordinal, duration
     static const unsigned GroupShift = 11;
-    struct LzGroup { uint64_t llOffset; uint32_t uSize, uRaw; uint64_t llStartBase; };
+    // uRaw's top bit (LzEndFromMax): the last field is the group's latest end less the note's end, not
+    // its duration (as CBlock::EndFromMax), where that is shorter
+    struct LzGroup
+    {
+        uint64_t llOffset; uint32_t uSize, uRaw; uint64_t llStartBase;
+        uint32_t Raw() const { return uRaw & 0x7FFFFFFF; }
+        bool EndFromMax() const { return ( uRaw >> 31 ) != 0; }
+    };
+    uint64_t GroupMaxEnd( uint64_t g ) const;    // the latest end of LZ group g (its 32 blocks' tree node)
     LzNote LzGet( size_t i ) const;
     // fn( pNotes ) on group g decoded in the key's cache (its notes from position g << GroupShift), under
     // the cache's lock: a scan of many of a group's notes for one lookup

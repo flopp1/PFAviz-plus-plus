@@ -80,6 +80,10 @@ done
 rm -rf "$OUT"
 mkdir -p "$OUT/include" "$OUT/lib" "$OUT/licenses"
 cp "$PFX/include/archive.h" "$PFX/include/archive_entry.h" "$OUT/include/"
+# (the codecs' own headers too: layered deduplication cuts and decodes their streams itself, song/Dedup.cpp)
+cp "$PFX/include/lzma.h" "$PFX/include/zstd.h" "$PFX/include/zstd_errors.h" "$PFX/include/lz4frame.h" "$PFX/include/lz4.h" \
+   "$PFX/include/zlib.h" "$PFX/include/zconf.h" "$PFX/include/bzlib.h" "$OUT/include/"
+cp -r "$PFX/include/lzma" "$OUT/include/"
 for l in archive bz2 lz4 lzma zs zstd; do cp "$PFX/lib/lib$l.a" "$OUT/lib/"; done
 cp "$SRC/libarchive-3.8.9/COPYING" "$OUT/licenses/libarchive.txt"
 cp "$SRC/zlib-1.3.2/LICENSE" "$OUT/licenses/zlib.txt"

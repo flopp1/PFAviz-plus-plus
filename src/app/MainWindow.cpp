@@ -219,9 +219,6 @@ LRESULT WINAPI WndProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
                 case ID_VIEW_ALWAYSONTOP:
                     cView.ToggleOnTop( true );
                     return 0;
-                case ID_VIEW_THEMELIGHT: case ID_VIEW_THEMEDARK: case ID_VIEW_THEMESYSTEM:
-                    cView.SetTheme( iId - ID_VIEW_THEMELIGHT, true );
-                    return 0;
                 case ID_VIEW_FULLSCREEN:
                     cView.ToggleFullScreen( true );
                     return 0;
@@ -1133,7 +1130,6 @@ VOID ShowGraphs( BOOL bShow )
 VOID SetInterfaceTheme( INT eTheme )
 {
     DarkMode::SetTheme( eTheme );
-    CheckMenuRadioItem( GetMainMenu(), ID_VIEW_THEMELIGHT, ID_VIEW_THEMESYSTEM, ID_VIEW_THEMELIGHT + eTheme, MF_BYCOMMAND );
     // The toolbar's icons for the theme; the playback bar drawn again (its sliders' backgrounds are
     // copies of it)
     if ( !g_hWndBar ) return;

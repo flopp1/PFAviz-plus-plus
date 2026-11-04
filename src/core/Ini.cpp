@@ -103,6 +103,33 @@ void IniFile::Set( const std::string &sSection, const std::string &sKey, const s
     m_mData[sSection][sKey] = sValue;
 }
 
+void IniFile::Overlay( const IniFile &o )
+{
+    for ( const auto &sec : o.m_mData )
+        for ( const auto &kv : sec.second ) m_mData[sec.first][kv.first] = kv.second;
+}
+
+void IniFile::MergeChanges( const IniFile &mine, const IniFile &before, const std::set< std::string > &whole )
+{
+    static const std::map< std::string, std::string > None;
+    for ( const auto &sec : mine.m_mData )
+    {
+        auto itBefore = before.m_mData.find( sec.first );
+        const std::map< std::string, std::string > &mBefore = itBefore == before.m_mData.end() ? None : itBefore->second;
+        std::map< std::string, std::string > &mHere = m_mData[sec.first];
+        if ( whole.count( sec.first ) )
+        {
+            if ( sec.second != mBefore || mHere.empty() ) mHere = sec.second;
+            continue;
+        }
+        for ( const auto &kv : sec.second )
+        {
+            auto it = mBefore.find( kv.first );
+            if ( it == mBefore.end() || it->second != kv.second || !mHere.count( kv.first ) ) mHere[kv.first] = kv.second;
+        }
+    }
+}
+
 void IniFile::SetInt( const std::string &sSection, const std::string &sKey, long long iValue )
 {
     Set( sSection, sKey, std::to_string( iValue ) );

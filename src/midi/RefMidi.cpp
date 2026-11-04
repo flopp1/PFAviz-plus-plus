@@ -292,7 +292,8 @@ bool RefMidi::ParseTrack( const unsigned char *p, const unsigned char *pEnd, int
             p += llLen;
             AddInfo( llTick );
             if ( cType == 0x2F ) break;
-            if ( ( cType == RefMetaEvent::SetTempo && llLen == 3 ) || ( cType == RefMetaEvent::TimeSignature && llLen == 4 ) )
+            // A tempo of 0 (a damaged file: time would stop there) is dropped, as one of the wrong length
+            if ( ( cType == RefMetaEvent::SetTempo && llLen == 3 && ( pMeta[0] | pMeta[1] | pMeta[2] ) ) || ( cType == RefMetaEvent::TimeSignature && llLen == 4 ) )
             {
                 RefMetaEvent m;
                 m.llTick = llTick;

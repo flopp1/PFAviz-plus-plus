@@ -28,10 +28,17 @@ namespace Archive
         virtual bool NextChunk( char aType[4], uint64_t &llLen ) = 0;
         // Up to n bytes of the current chunk's data; 0: none left (or the file ended early, or an error)
         virtual size_t ReadData( uint8_t *p, size_t n ) = 0;
+        // Bytes read as chunk data that begin the next chunk's header (a 12-byte MThd, Loader.cpp)
+        virtual void PutBack( const uint8_t *p, size_t n ) = 0;
         // Progress, in bytes of the outermost file
         virtual uint64_t Done() const = 0;
         virtual uint64_t Total() const = 0;
         virtual std::wstring Summary() const = 0;   // what was unpacked, for the load statistics
+        // Deduplication (song/Dedup.h): every track of the file in order, as the ordinal of the MTrk chunk
+        // handed out that it is a copy of (copies not handed out); null: each MTrk handed out once, in order
+        virtual const std::vector< uint32_t > *Logical() const { return nullptr; }
+        // How many layers of compression (and archives) were around the MIDI: 2 or more is a layered file
+        virtual int Layers() const { return 1; }
         std::wstring sError;
     };
 
@@ -42,7 +49,8 @@ namespace Archive
     // Opens the MIDI inside sPath. In an archive only files named .mid or .midi (also compressed, as
     // .mid.xz) count, and none is an error; of several, fnChoose picks (none given: the first). A
     // compressed archive (a .tar.xz) cannot be listed without decompressing all of it, so there the
-    // first is taken. Null: sError says why.
+    // first is taken. iThreads: decoding on several threads where the file allows (an xz of several
+    // blocks, a 7z of LZMA2 compressed on several threads). Null: sError says why.
     std::unique_ptr< Reader > Open( const std::wstring &sPath, const std::atomic< bool > *pCancel, std::wstring &sError,
-                                    const Chooser &fnChoose = nullptr );
+                                    const Chooser &fnChoose = nullptr, int iThreads = 1 );
 }

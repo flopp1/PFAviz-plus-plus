@@ -127,6 +127,9 @@ namespace
         pJob->progress.bNoteStats = ( Config::GetConfig().GetVisualSettings().uStats & VisualSettings::NoteStats ) != 0 ||
                                     Config::GetConfig().GetVisualSettings().bGraph;
         pJob->progress.bFirstPairingOnly = cPerf.bIgnoreWeird;
+        pJob->progress.bEndOpenNotes = cPerf.bEndOpenNotes;
+        pJob->progress.bDedup = cPerf.bDedup;
+        pJob->progress.bDedupAssume = cPerf.bDedupAssume;
         SetLzCacheBytes( (size_t)cPerf.iBlockCacheMB << 20 );
         pJob->song = Loader::LoadFile( pJob->sFile, cPerf.iWorkerThreads, pJob->progress, pJob->stats, pJob->sError );
         if ( pJob->song && !pJob->progress.bCancel )
@@ -331,7 +334,7 @@ void FinishLoad( LPARAM lParam )
     pJob->bFinished = true;
 
     const PerformanceSettings &cPerf = Config::GetConfig().GetPerformanceSettings();
-    bool bCancelled = pJob->progress.bCancel;
+    bool bCancelled = pJob->progress.bCancel && !pJob->progress.bOutOfMemory;    // (stopped for memory: its error is shown)
     bool bOk = !bCancelled && pJob->song && pJob->sError.empty();
 
     if ( bOk )

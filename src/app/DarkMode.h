@@ -1,4 +1,4 @@
-// The interface's dark theme (View > Interface): title bars, menus, the playback bar and every dialog
+// The interface's dark theme (Preferences, Visual: the theme): title bars, menus, the playback bar and every dialog
 // drawn dark. Install once at the start: it watches the windows the UI thread makes, so the app's
 // dialogs (and their property pages) are darkened as they open. SetTheme switches, redrawing the
 // open windows. Windows' own dark mode is used where it has one (title bars, pop-up menus, push

@@ -304,11 +304,10 @@ bool MidiOutputs::KdmapiRenderingTime( float &fPercent )
 std::wstring MidiOutputs::KdmapiStatus()
 {
     Kdmapi &k = Kdmapi::Get();
-    if ( !k.hMod ) return L"Not available: OmniMIDI.dll was not found in System32 or next to PFAviz++.exe.";
-    if ( !k.bAvailable ) return L"Not available: OmniMIDI.dll was found but does not report KDMAPI as available.";
-    std::wstring s = L"Available";
-    s += L". It is used instead of the device above when \"Prefer KDMAPI\" is checked in the Performance tab.";
-    return s;
+    // (a KDMAPI synth installs its OmniMIDI.dll, the name the interface began with)
+    if ( !k.hMod ) return L"Not available: no KDMAPI synth was found (its OmniMIDI.dll, in System32 or next to PFAviz++.exe).";
+    if ( !k.bAvailable ) return L"Not available: a KDMAPI synth was found (OmniMIDI.dll) but does not report KDMAPI as available.";
+    return L"Available.";
 }
 
 std::unique_ptr< MidiOutput > MidiOutputs::OpenKdmapi()

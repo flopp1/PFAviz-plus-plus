@@ -233,20 +233,20 @@ inline int ChaseItem( uint32_t uMsg )
 //     track, channel and key (an off with nothing held is ignored; notes still held when their track
 //     ends stay counted).
 // Built by the pairing pass from the events it already routes (VisualStore.cpp), when asked for.
-// Per-bin counts saturate at 2^32 - 1.
+// 64-bit counts: a track standing for many copies (Song::vTrackCopies) can put trillions in a bin.
 struct NoteStats
 {
     static const size_t MaxBins = size_t( 1 ) << 22;
     static const size_t CumShift = 10;          // a running total every 1024 bins
     long long llBinUs = 1000;
-    std::vector< uint32_t > vOns, vPoly;
+    std::vector< uint64_t > vOns, vPoly;
     std::vector< uint64_t > vCum;               // NoteOns before bin i << CumShift
 
     bool Empty() const { return vOns.empty(); }
     uint64_t Passed( long long llTime ) const;      // NoteOns up to llTime (to the end of its bin)
     uint64_t NPS( long long llTime ) const;         // NoteOns in the second up to llTime
     uint64_t Polyphony( long long llTime ) const;
-    size_t MemoryBytes() const { return ( vOns.capacity() + vPoly.capacity() ) * 4 + vCum.capacity() * 8; }
+    size_t MemoryBytes() const { return ( vOns.capacity() + vPoly.capacity() + vCum.capacity() ) * 8; }
 };
 
 // Note-ons (velocity > 0) per velocity in each bin of llBinUs of song time, for the send budget's
@@ -308,15 +308,22 @@ struct Song
     uint32_t aKeyNoteCounts[256] = {};      // NoteOns (velocity > 0) per key, for later phases
     // NoteOns whose pairing the count pass already knows (PairSim in Loader.cpp): the ones no off will
     // pair, and long notes paired once. Ascending ids, track << 48 | key << 40 | the note's ordinal
-    // among its track's NoteOns of that key; vKnownEnd: the end's unique tick, UINT64_MAX for
+    // among its track's NoteOns of that key; vKnownEnd: the end's unique tick, UINT64_MAX - (n - 1) for
+    // n unpaired ones from that id on (KnownRun: one entry for a run of them; UINT64_MAX for one),
     // unpaired. The pairing pass makes these final at their NoteOn instead of at their off or their
     // track's end. Freed after it.
     std::vector< uint64_t > vKnownId, vKnownEnd;
+    static const uint64_t KnownRun = UINT64_MAX - ( uint64_t( 1 ) << 40 );     // vKnownEnd from here on: unpaired runs
     EventStream stream;
     std::vector< ChaseEvent > vChase;       // every CC, program change, pitch bend and channel pressure (BuildSendCounts)
     std::vector< ChaseEvent > vParamChase;  // of them, CC 6, 38, 98-101 and 121: the RPN and NRPN values (DESIGN.md 7.7)
     uint8_t aChaseUsed[16][ChaseItems] = {};    // the items vChase sets, per channel
     uint32_t uChaseItems = 0;               // how many
+    // Deduplication (song/Dedup.h): how many tracks of the file each track stands for (empty: one each),
+    // and every track of the file in order as the track that stands for it (empty: the tracks as they are)
+    std::vector< uint64_t > vTrackCopies;
+    std::vector< uint32_t > vLogicalTracks;
+    uint64_t TrackCopies( size_t t ) const { return t < vTrackCopies.size() ? vTrackCopies[t] : 1; }
     VisualStore visual;                     // notes per key, paired (built by BuildVisualStore)
     NoteStats noteStats;                    // for the overlay's extra statistics (built with visual, when asked for)
     VelocityBins aSendOns[2];               // [0] every note-on, [1] as collapsed (BuildSendCounts)
@@ -324,6 +331,10 @@ struct Song
     // "End weird notes at their first note-off": a note re-paired by a later off keeps its first pairing
     // (DESIGN.md 6.3); by default it ends at the later off instead
     bool bFirstPairingOnly = false;
+    // A NoteOn no off pairs ends at the song's last tick (layered black MIDIs leave the offs out, to fit
+    // more notes, and are played that way); off: it is never drawn or lit, as in the original. Only for
+    // a layered compressed file (the Performance tab's option: Loader)
+    bool bEndOpenNotes = false;
     size_t MemoryBytes() const;
     void BuildSendCounts( int iThreads );   // aSendOns and vChase, in one pass over the stream
 };

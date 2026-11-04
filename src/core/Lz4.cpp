@@ -1,7 +1,13 @@
 #include "core/Lz4.h"
 
 #include <algorithm>
+#include <cstdlib>
 #include <cstring>
+#include <memory>
+
+// liblz4's HC compressor (vendor/archive, linked for the archives; its lz4hc.h is not installed)
+extern "C" int LZ4_sizeofStateHC( void );
+extern "C" int LZ4_compress_HC_extStateHC( void *state, const char *src, char *dst, int srcSize, int dstCapacity, int compressionLevel );
 
 namespace
 {
@@ -131,4 +137,15 @@ bool Lz4::Decompress( const uint8_t *src, size_t iSize, uint8_t *dst, size_t iRa
         op = mEnd;
     }
     return op == oend;
+}
+
+size_t Lz4::CompressHC( const uint8_t *src, size_t n, uint8_t *dst, int iLevel )
+{
+    // Its state (about 256 KB) once per thread
+    struct Free { void operator()( void *p ) const { free( p ); } };
+    thread_local std::unique_ptr< void, Free > pState( malloc( (size_t)LZ4_sizeofStateHC() ) );
+    if ( !pState || n > 0x7E000000 ) return Compress( src, n, dst );
+    if ( iLevel <= 0 ) return Compress( src, n, dst );
+    int r = LZ4_compress_HC_extStateHC( pState.get(), (const char *)src, (char *)dst, (int)n, (int)Bound( n ), iLevel );
+    return r > 0 ? (size_t)r : Compress( src, n, dst );
 }

@@ -168,6 +168,8 @@
 #define IDC_PERF_VELFLOOR               1089
 #define IDC_PERF_MINVEL                 1090
 #define IDC_PERF_INSTANCING             1091
+#define IDC_PERF_DEDUP                  1592
+#define IDC_PERF_DEDUPASSUME            1593
 #define IDC_STARTPAUSED                 1096
 #define IDC_NSARROWS                    1100
 #define IDC_NSARROWSSPIN                1101
@@ -212,9 +214,6 @@
 #define IDC_VIDP_STATUS                 1323
 #define ID_VIDEO_RENDER                 40200
 #define ID_FILE_RENDERSONG              40201
-#define ID_VIEW_THEMELIGHT              40202
-#define ID_VIEW_THEMEDARK               40203
-#define ID_VIEW_THEMESYSTEM             40204
 
 // Effects tab
 #define IDC_FX_FLAT                     1500
@@ -279,3 +278,6 @@
 #define IDC_LOAD_STATS                  1242
 #define IDC_LOAD_COPY                   1243
 #define IDC_LOAD_OVERALLLABEL           1244
+#define IDC_THEME                       1250
+#define IDC_GRAPHON                     1251
+#define IDC_PERF_ENDOPEN                1252

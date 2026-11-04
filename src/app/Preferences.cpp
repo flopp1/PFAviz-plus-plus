@@ -1,6 +1,7 @@
 // Port of the original ConfigProcs.cpp property pages. Visual gains "Show all 128 keys" (the
 // default) and full 0-127 key ranges; "Set Using Piano" is gone. Audio replaces the MIDI input list
-// with the KDMAPI status. Controls keeps only its General group. Performance is new.
+// with the KDMAPI status and its options. Controls keeps only its General group. Performance is new.
+// The tall pages are laid out in two columns, and a page cut short to fit the screen scrolls.
 #include "app/Preferences.h"
 
 #include <algorithm>
@@ -8,8 +9,10 @@
 #include <commctrl.h>
 #include <commdlg.h>
 #include <cstdio>
+#include <cstdlib>
 #include <cwctype>
 #include <thread>
+#include <vector>
 
 #include "app/DarkMode.h"
 #include "app/MainWindow.h"
@@ -24,6 +27,30 @@ namespace
     VOID Changed( HWND hWnd )
     {
         SendMessageW( GetParent( hWnd ), PSM_CHANGED, ( WPARAM )hWnd, 0 );
+    }
+
+    // A control's WM_COMMAND that is the user changing a setting: a check box or radio button
+    // clicked, a list's choice, text typed. Not text the code puts in a field (only the focused one
+    // is being typed in; an up-down's arrows: PageProc), a focus change, or a push button: one that
+    // changes something calls Changed itself, one that opens a dialog only when it was changed there
+    bool UserChange( WPARAM wParam, LPARAM lParam )
+    {
+        HWND hCtl = ( HWND )lParam;
+        wchar_t sClass[32];
+        if ( !hCtl || !GetClassNameW( hCtl, sClass, 32 ) ) return false;
+        const WORD wCode = HIWORD( wParam );
+        const bool bTyping = GetFocus() == hCtl || IsChild( hCtl, GetFocus() );
+        // (the codes are each class's own: CBN_SELCHANGE and LBN_SELCHANGE are both 1)
+        if ( _wcsicmp( sClass, L"Button" ) == 0 )
+        {
+            LONG lType = GetWindowLongW( hCtl, GWL_STYLE ) & BS_TYPEMASK;
+            return wCode == BN_CLICKED && ( lType == BS_CHECKBOX || lType == BS_AUTOCHECKBOX || lType == BS_3STATE ||
+                                            lType == BS_AUTO3STATE || lType == BS_RADIOBUTTON || lType == BS_AUTORADIOBUTTON );
+        }
+        if ( _wcsicmp( sClass, L"ComboBox" ) == 0 ) return wCode == CBN_SELCHANGE || ( wCode == CBN_EDITCHANGE && bTyping );
+        if ( _wcsicmp( sClass, L"ListBox" ) == 0 ) return wCode == LBN_SELCHANGE;
+        if ( _wcsicmp( sClass, L"Edit" ) == 0 ) return wCode == EN_CHANGE && bTyping;
+        return false;
     }
 
     //-------------------------------------------------------------------------
@@ -46,6 +73,16 @@ namespace
         unsigned char aOrder[VisualSettings::StatCount] = {};
     };
     StatsChoice g_Stats;
+
+    bool SameGraph( const VisualSettings::GraphSettings &a, const VisualSettings::GraphSettings &b )
+    {
+        const int n = VisualSettings::GraphSettings::SeriesCount;
+        return std::equal( a.abShow, a.abShow + n, b.abShow ) && std::equal( a.abLine, a.abLine + n, b.abLine ) &&
+               std::equal( a.abRight, a.abRight + n, b.abRight ) && std::equal( a.aColor, a.aColor + n, b.aColor ) &&
+               std::equal( a.aiPlace, a.aiPlace + n, b.aiPlace ) && a.bTogether == b.bTogether && a.bZero == b.bZero &&
+               a.bMiddle == b.bMiddle && a.iCorner == b.iCorner && a.iSpanMs == b.iSpanMs && a.iCX == b.iCX && a.iCY == b.iCY &&
+               a.iFontPx == b.iFontPx && a.iGrowMs == b.iGrowMs && a.iShrinkMs == b.iShrinkMs;
+    }
 
     // The graphs' settings, chosen in the Graphs dialog and saved with the Visual page
     VisualSettings::GraphSettings g_Graph;
@@ -418,7 +455,7 @@ namespace
         g_Stats.uStats = cVisual.uStats;
         std::copy( cVisual.aStatOrder, cVisual.aStatOrder + VisualSettings::StatCount, g_Stats.aOrder );
         g_Graph = cVisual.graph;
-        EnableWindow( GetDlgItem( hWnd, IDC_GRAPHBTN ), cVisual.bGraph );     // (graphs off: View > Graphs)
+        CheckDlgButton( hWnd, IDC_GRAPHON, cVisual.bGraph ? BST_CHECKED : BST_UNCHECKED );     // (also View > Graphs)
         ShowStatsCount( hWnd );
         for ( int i = 0; i < 5; i++ )
             CheckDlgButton( hWnd, aKeyModeIds[i], i == cVisual.eKeysShown ? BST_CHECKED : BST_UNCHECKED );
@@ -628,6 +665,10 @@ namespace
                     }, ( LPARAM )GetDlgItem( hWnd, IDC_STATSFONT ), 0 );
                     ReleaseDC( hWnd, hdc );
                 }
+                // By DarkMode::Theme
+                for ( const wchar_t *s : { L"Light", L"Dark", L"Follow Windows" } )
+                    SendDlgItemMessageW( hWnd, IDC_THEME, CB_ADDSTRING, 0, ( LPARAM )s );
+                SendDlgItemMessageW( hWnd, IDC_THEME, CB_SETCURSEL, Config::GetConfig().GetViewSettings().GetTheme(), 0 );
                 SetVisualProc( hWnd, Config::GetConfig().GetVisualSettings() );
                 g_vPalettes = Config::GetConfig().GetVisualSettings().vPalettes;
                 ShowPalettes( hWnd, -1 );
@@ -668,7 +709,7 @@ namespace
             case WM_COMMAND:
             {
                 int iId = LOWORD( wParam );
-                Changed( hWnd );
+                if ( UserChange( wParam, lParam ) ) Changed( hWnd );
                 switch ( iId )
                 {
                     case IDC_SHOWCUSTOMKEYS:
@@ -684,18 +725,23 @@ namespace
                     {
                         VisualSettings::GraphSettings c = g_Graph;
                         if ( DialogBoxParamW( GetModuleHandleW( nullptr ), MAKEINTRESOURCEW( IDD_GRAPH ), GetParent( hWnd ), GraphProc,
-                                              ( LPARAM )&c ) == IDOK )
+                                              ( LPARAM )&c ) == IDOK && !SameGraph( c, g_Graph ) )
+                        {
                             g_Graph = c;
+                            Changed( hWnd );
+                        }
                         return TRUE;
                     }
                     case IDC_STATSBOX:
                     {
                         StatsChoice c = g_Stats;
                         if ( DialogBoxParamW( GetModuleHandleW( nullptr ), MAKEINTRESOURCEW( IDD_STATS ), GetParent( hWnd ), StatsProc,
-                                              ( LPARAM )&c ) == IDOK )
+                                              ( LPARAM )&c ) == IDOK &&
+                             ( c.uStats != g_Stats.uStats || !std::equal( c.aOrder, c.aOrder + VisualSettings::StatCount, g_Stats.aOrder ) ) )
                         {
                             g_Stats = c;
                             ShowStatsCount( hWnd );
+                            Changed( hWnd );
                         }
                         return TRUE;
                     }
@@ -723,6 +769,7 @@ namespace
                         if ( it != g_vPalettes.end() ) *it = pal;
                         else it = g_vPalettes.insert( g_vPalettes.end(), pal );
                         ShowPalettes( hWnd, (int)( it - g_vPalettes.begin() ) );
+                        Changed( hWnd );
                         return TRUE;
                     }
                     case IDC_PALETTEDELETE:
@@ -733,6 +780,7 @@ namespace
                         if ( MessageBoxW( GetParent( hWnd ), sAsk.c_str(), L"Delete Palette", MB_YESNO | MB_ICONQUESTION ) != IDYES ) return TRUE;
                         g_vPalettes.erase( g_vPalettes.begin() + i );
                         ShowPalettes( hWnd, -1 );
+                        Changed( hWnd );
                         return TRUE;
                     }
                     case IDC_PALETTENEW:
@@ -741,6 +789,7 @@ namespace
                         def.LoadDefaultValues();
                         ShowColors( hWnd, def.colors, def.iColorCount );
                         ShowPalettes( hWnd, -1 );
+                        Changed( hWnd );
                         return TRUE;
                     }
                     // A colour: the chooser. In the palette, the cell clicked (with the keyboard, the first); one
@@ -766,8 +815,9 @@ namespace
                                     if ( PtInRect( &rcCell, pt ) ) { iCell = i; break; }
                                 }
                         }
-                        COLORREF cr = iCell >= 0 ? g_aPalette[iCell] : ( COLORREF )GetWindowLongPtrW( hWndBtn, GWLP_USERDATA );
+                        COLORREF cr = iCell >= 0 ? g_aPalette[iCell] : ( COLORREF )GetWindowLongPtrW( hWndBtn, GWLP_USERDATA ), crOld = cr;
                         if ( !PickColor( hWnd, cr ) ) return TRUE;
+                        if ( cr != crOld || ( iCell >= 0 && iCell >= PaletteCount( hWnd ) ) ) Changed( hWnd );
                         if ( iCell >= 0 )
                         {
                             g_aPalette[iCell] = cr;
@@ -792,7 +842,7 @@ namespace
                         ofn.nMaxFile = 1024;
                         ofn.lpstrTitle = L"Choose a background image";
                         ofn.Flags = OFN_EXPLORER | OFN_HIDEREADONLY | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-                        if ( GetOpenFileNameW( &ofn ) ) SetDlgItemTextW( hWnd, IDC_BKGIMAGE, sFile );
+                        if ( GetOpenFileNameW( &ofn ) ) { SetDlgItemTextW( hWnd, IDC_BKGIMAGE, sFile ); Changed( hWnd ); }
                         return TRUE;
                     }
                     case IDC_RESTOREDEFAULTS:
@@ -803,6 +853,7 @@ namespace
                         SetVisualProc( hWnd, cVisual );
                         SendMessageW( hWnd, WM_SETREDRAW, TRUE, 0 );
                         InvalidateRect( hWnd, nullptr, FALSE );
+                        Changed( hWnd );
                         return TRUE;
                     }
                 }
@@ -919,6 +970,16 @@ namespace
                         SetMainWindowSize( iWidth, iHeight );
                         SetWindowSizeEdits( hWnd );
                     }
+                    bool bGraph = IsDlgButtonChecked( hWnd, IDC_GRAPHON ) == BST_CHECKED;
+                    if ( bGraph != config.GetVisualSettings().bGraph )
+                    {
+                        VisualSettings c = config.GetVisualSettings();
+                        c.bGraph = bGraph;
+                        config.SetVisualSettings( c );
+                        ShowGraphs( bGraph );
+                    }
+                    int eTheme = (int)SendDlgItemMessageW( hWnd, IDC_THEME, CB_GETCURSEL, 0, 0 );
+                    if ( eTheme >= 0 && eTheme < DarkMode::ThemeCount && eTheme != cView.GetTheme() ) cView.SetTheme( eTheme, true );
                     SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_NOERROR );
                     return TRUE;
                 }
@@ -948,10 +1009,16 @@ namespace
         switch ( msg )
         {
             case WM_INITDIALOG:
+            {
                 SetAudioProc( hWnd );
+                const PerformanceSettings &cPerf = Config::GetConfig().GetPerformanceSettings();
+                CheckDlgButton( hWnd, IDC_PERF_KDMAPI, cPerf.bPreferKDMAPI ? BST_CHECKED : BST_UNCHECKED );
+                CheckDlgButton( hWnd, IDC_PERF_LONGSENDS, cPerf.bKdmapiLongSends ? BST_CHECKED : BST_UNCHECKED );
+                EnableWindow( GetDlgItem( hWnd, IDC_PERF_KDMAPI ), MidiOutputs::KdmapiAvailable() || cPerf.bPreferKDMAPI );
                 return TRUE;
+            }
             case WM_COMMAND:
-                if ( HIWORD( wParam ) == LBN_SELCHANGE ) Changed( hWnd );
+                if ( UserChange( wParam, lParam ) ) Changed( hWnd );
                 break;
             case WM_DEVICECHANGE:
                 Sleep( 200 );
@@ -967,6 +1034,12 @@ namespace
                         cAudio.sDesiredOut = cAudio.vMIDIOutDevices[cAudio.iOutDevice];
                     bool bChanged = cAudio.iOutDevice != config.GetAudioSettings().iOutDevice;
                     config.SetAudioSettings( cAudio );
+                    PerformanceSettings cPerf = config.GetPerformanceSettings();
+                    bool bKdmapi = IsDlgButtonChecked( hWnd, IDC_PERF_KDMAPI ) == BST_CHECKED;
+                    bChanged |= bKdmapi != cPerf.bPreferKDMAPI;
+                    cPerf.bPreferKDMAPI = bKdmapi;
+                    cPerf.bKdmapiLongSends = IsDlgButtonChecked( hWnd, IDC_PERF_LONGSENDS ) == BST_CHECKED;
+                    config.SetPerformanceSettings( cPerf );
                     if ( bChanged ) HandOffMsg( WM_DEVICECHANGE, 0, 0 );
                     SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_NOERROR );
                     return TRUE;
@@ -1127,11 +1200,11 @@ namespace
                 if ( LOWORD( wParam ) == IDC_FX_HITCOLOR && HIWORD( wParam ) == BN_CLICKED )
                 {
                     HWND hWndBtn = ( HWND )lParam;
-                    COLORREF cr = ( COLORREF )GetWindowLongPtrW( hWndBtn, GWLP_USERDATA );
+                    COLORREF cr = ( COLORREF )GetWindowLongPtrW( hWndBtn, GWLP_USERDATA ), crOld = cr;
                     if ( !PickColor( hWnd, cr ) ) return TRUE;
                     SetWindowLongPtrW( hWndBtn, GWLP_USERDATA, cr );
                     InvalidateRect( hWndBtn, nullptr, FALSE );
-                    Changed( hWnd );
+                    if ( cr != crOld ) Changed( hWnd );
                     return TRUE;
                 }
                 if ( LOWORD( wParam ) == IDC_FX_ON ) EnableFx( hWnd );
@@ -1148,7 +1221,7 @@ namespace
                 if ( LOWORD( wParam ) == IDC_FX_DECAY && HIWORD( wParam ) == CBN_SELCHANGE ) EnableFxDecay( hWnd );
                 if ( LOWORD( wParam ) == IDC_FX_FLAT )
                     EnableFxFlat( hWnd );
-                if ( HIWORD( wParam ) == BN_CLICKED || HIWORD( wParam ) == EN_CHANGE || HIWORD( wParam ) == CBN_SELCHANGE ) Changed( hWnd );
+                if ( UserChange( wParam, lParam ) ) Changed( hWnd );
                 break;
             case WM_NOTIFY:
                 if ( ( ( LPNMHDR )lParam )->code == PSN_APPLY )
@@ -1245,7 +1318,7 @@ namespace
                 return TRUE;
             }
             case WM_COMMAND:
-                if ( HIWORD( wParam ) == EN_CHANGE || HIWORD( wParam ) == BN_CLICKED ) Changed( hWnd );
+                if ( UserChange( wParam, lParam ) ) Changed( hWnd );
                 break;
             case WM_NOTIFY:
             {
@@ -1323,25 +1396,28 @@ namespace
                 CheckDlgButton( hWnd, IDC_PERF_COMPACT, cPerf.bCompactVisual ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_PERF_LOD, cPerf.bLodCache ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_PERF_INSTANCING, cPerf.bGpuInstancing ? BST_CHECKED : BST_UNCHECKED );
+                CheckDlgButton( hWnd, IDC_PERF_DEDUP, cPerf.bDedup ? BST_CHECKED : BST_UNCHECKED );
+                CheckDlgButton( hWnd, IDC_PERF_DEDUPASSUME, cPerf.bDedupAssume ? BST_CHECKED : BST_UNCHECKED );
+                EnableWindow( GetDlgItem( hWnd, IDC_PERF_DEDUPASSUME ), cPerf.bDedup );
                 SetDlgItemInt( hWnd, IDC_PERF_CACHEMB, (UINT)cPerf.iBlockCacheMB, FALSE );
                 CheckDlgButton( hWnd, IDC_PERF_TUNING31, cPerf.bTuning31 ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_PERF_TUNING31BEND, cPerf.bTuning31PitchBend ? BST_CHECKED : BST_UNCHECKED );
                 EnableWindow( GetDlgItem( hWnd, IDC_PERF_TUNING31BEND ), cPerf.bTuning31 );
-                CheckDlgButton( hWnd, IDC_PERF_KDMAPI, cPerf.bPreferKDMAPI ? BST_CHECKED : BST_UNCHECKED );
-                CheckDlgButton( hWnd, IDC_PERF_LONGSENDS, cPerf.bKdmapiLongSends ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_PERF_COLLAPSE, cPerf.bCollapseStacks ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_PERF_VELFLOOR, cPerf.bVelocityFloor ? BST_CHECKED : BST_UNCHECKED );
                 SetDlgItemInt( hWnd, IDC_PERF_MINVEL, (UINT)cPerf.iMinVelocity, FALSE );
                 CheckDlgButton( hWnd, IDC_PERF_IGNOREWEIRD, cPerf.bIgnoreWeird ? BST_CHECKED : BST_UNCHECKED );
+                CheckDlgButton( hWnd, IDC_PERF_ENDOPEN, cPerf.bEndOpenNotes ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_PERF_SENDLIMIT, cPerf.bSendLimit ? BST_CHECKED : BST_UNCHECKED );
                 SetDlgItemInt( hWnd, IDC_PERF_MAXSENDS, (UINT)cPerf.iMaxSendsPerSec, FALSE );
                 CheckDlgButton( hWnd, IDC_LIMITFPS, cVideo.bLimitFPS ? BST_CHECKED : BST_UNCHECKED );
-                EnableWindow( GetDlgItem( hWnd, IDC_PERF_KDMAPI ), MidiOutputs::KdmapiAvailable() || cPerf.bPreferKDMAPI );
                 return TRUE;
             }
             case WM_COMMAND:
             {
                 int iCode = HIWORD( wParam );
+                if ( LOWORD( wParam ) == IDC_PERF_DEDUP && iCode == BN_CLICKED )
+                    EnableWindow( GetDlgItem( hWnd, IDC_PERF_DEDUPASSUME ), IsDlgButtonChecked( hWnd, IDC_PERF_DEDUP ) == BST_CHECKED );
                 if ( LOWORD( wParam ) == IDC_PERF_TUNING31 && iCode == BN_CLICKED )
                     EnableWindow( GetDlgItem( hWnd, IDC_PERF_TUNING31BEND ), IsDlgButtonChecked( hWnd, IDC_PERF_TUNING31 ) == BST_CHECKED );
                 if ( LOWORD( wParam ) == IDC_PERF_VIDEO )
@@ -1349,7 +1425,7 @@ namespace
                     if ( iCode == BN_CLICKED ) DoVideoExport( GetParent( hWnd ) );
                     return TRUE;
                 }
-                if ( iCode == BN_CLICKED || iCode == CBN_SELCHANGE || iCode == EN_CHANGE ) Changed( hWnd );
+                if ( UserChange( wParam, lParam ) ) Changed( hWnd );
                 break;
             }
             case WM_NOTIFY:
@@ -1358,7 +1434,6 @@ namespace
                     Config &config = Config::GetConfig();
                     PerformanceSettings cPerf = config.GetPerformanceSettings();
                     VideoSettings cVideo = config.GetVideoSettings();
-                    bool bOldKdmapi = cPerf.bPreferKDMAPI;
 
                     int iThreads = 0, iPlayThreads = 0;
                     if ( !ReadThreads( hWnd, IDC_PERF_THREADS, L"a thread count for loading and drawing", iThreads ) ) return TRUE;
@@ -1405,28 +1480,183 @@ namespace
                     cPerf.bVelocityFloor = IsDlgButtonChecked( hWnd, IDC_PERF_VELFLOOR ) == BST_CHECKED;
                     cPerf.iMinVelocity = (int)uMinVel;
                     cPerf.bIgnoreWeird = IsDlgButtonChecked( hWnd, IDC_PERF_IGNOREWEIRD ) == BST_CHECKED;
+                    cPerf.bEndOpenNotes = IsDlgButtonChecked( hWnd, IDC_PERF_ENDOPEN ) == BST_CHECKED;
                     cPerf.bSendLimit = IsDlgButtonChecked( hWnd, IDC_PERF_SENDLIMIT ) == BST_CHECKED;
                     cPerf.iMaxSendsPerSec = (int)uSends;
                     cPerf.bShowLoadStats = IsDlgButtonChecked( hWnd, IDC_PERF_LOADSTATS ) == BST_CHECKED;
                     cPerf.bCompactVisual = IsDlgButtonChecked( hWnd, IDC_PERF_COMPACT ) == BST_CHECKED;
                     cPerf.bLodCache = IsDlgButtonChecked( hWnd, IDC_PERF_LOD ) == BST_CHECKED;
                     cPerf.bGpuInstancing = IsDlgButtonChecked( hWnd, IDC_PERF_INSTANCING ) == BST_CHECKED;
+                    cPerf.bDedup = IsDlgButtonChecked( hWnd, IDC_PERF_DEDUP ) == BST_CHECKED;
+                    cPerf.bDedupAssume = IsDlgButtonChecked( hWnd, IDC_PERF_DEDUPASSUME ) == BST_CHECKED;
                     cPerf.iBlockCacheMB = (int)uCache;
                     cPerf.bTuning31 = IsDlgButtonChecked( hWnd, IDC_PERF_TUNING31 ) == BST_CHECKED;
                     cPerf.bTuning31PitchBend = IsDlgButtonChecked( hWnd, IDC_PERF_TUNING31BEND ) == BST_CHECKED;
-                    cPerf.bPreferKDMAPI = IsDlgButtonChecked( hWnd, IDC_PERF_KDMAPI ) == BST_CHECKED;
-                    cPerf.bKdmapiLongSends = IsDlgButtonChecked( hWnd, IDC_PERF_LONGSENDS ) == BST_CHECKED;
                     cVideo.bLimitFPS = IsDlgButtonChecked( hWnd, IDC_LIMITFPS ) == BST_CHECKED;
 
                     config.SetPerformanceSettings( cPerf );
                     config.SetVideoSettings( cVideo );
-                    if ( bOldKdmapi != cPerf.bPreferKDMAPI ) HandOffMsg( WM_DEVICECHANGE, 0, 0 );
                     SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_NOERROR );
                     return TRUE;
                 }
                 break;
         }
         return FALSE;
+    }
+    //-------------------------------------------------------------------------
+    // Fitting the screen: with a large scaling or a small screen the sheet can be taller (or wider)
+    // than the work area, its OK and Apply out of reach. Each page is made from a copy of its
+    // template, cut to what fits around the sheet's frame, tabs and buttons; a page cut short scrolls.
+    //-------------------------------------------------------------------------
+
+    const int MaxPages = 8;
+    DLGPROC g_aPageProcs[MaxPages];
+    SIZE g_aPageFull[MaxPages];             // the templates' sizes, in dialog units
+    DWORD g_aPageBars[MaxPages];            // the scroll bars of a page cut short (the sheet drops them from its template)
+
+    // The largest page that fits the work area of the owner's monitor, in dialog units
+    SIZE PageFit( HWND hWndOwner )
+    {
+        MONITORINFO mi = { sizeof( mi ) };
+        GetMonitorInfoW( MonitorFromWindow( hWndOwner, MONITOR_DEFAULTTONEAREST ), &mi );
+        int iWorkW = mi.rcWork.right - mi.rcWork.left, iWorkH = mi.rcWork.bottom - mi.rcWork.top;
+        // (PFAVIZ_PREFSAREA=WxH: a smaller work area, for testing)
+        if ( const wchar_t *s = _wgetenv( L"PFAVIZ_PREFSAREA" ) ) swscanf( s, L"%dx%d", &iWorkW, &iWorkH );
+        // The pages' font gives the dialog units: 4 across its average character, 8 down its height
+        HDC hdc = GetDC( nullptr );
+        HFONT hFont = CreateFontW( -MulDiv( 8, GetDeviceCaps( hdc, LOGPIXELSY ), 72 ), 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, 0, 0, 0, 0, L"MS Shell Dlg 2" );
+        HGDIOBJ hOld = SelectObject( hdc, hFont );
+        TEXTMETRICW tm = {};
+        GetTextMetricsW( hdc, &tm );
+        SIZE sz = {};
+        GetTextExtentPoint32W( hdc, L"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz", 52, &sz );
+        SelectObject( hdc, hOld );
+        DeleteObject( hFont );
+        ReleaseDC( nullptr, hdc );
+        int iUnitX = std::max( 1, (int)( ( sz.cx / 26 + 1 ) / 2 ) ), iUnitY = std::max( 1, (int)tm.tmHeight );
+        // Around a page: the frame, and the caption, the tabs and the buttons (about 50 units)
+        int iFrame = 2 * ( GetSystemMetrics( SM_CXFRAME ) + GetSystemMetrics( SM_CXPADDEDBORDER ) );
+        SIZE fit;
+        fit.cx = std::max( 160, MulDiv( iWorkW - iFrame, 4, iUnitX ) - 16 );
+        fit.cy = std::max( 80, MulDiv( iWorkH - iFrame - GetSystemMetrics( SM_CYCAPTION ), 8, iUnitY ) - 50 );
+        return fit;
+    }
+
+    // A page cut short: scrolled by its scroll bars, the wheel, and to a field that takes the focus
+    void ScrollPage( HWND hWnd, int iBar, int iPos )
+    {
+        SCROLLINFO si = { sizeof( si ), SIF_ALL };
+        if ( !GetScrollInfo( hWnd, iBar, &si ) ) return;
+        iPos = std::max( si.nMin, std::min( iPos, si.nMax - (int)si.nPage + 1 ) );
+        if ( iPos == si.nPos ) return;
+        int d = si.nPos - iPos;
+        si.fMask = SIF_POS;
+        si.nPos = iPos;
+        SetScrollInfo( hWnd, iBar, &si, TRUE );
+        ScrollWindowEx( hWnd, iBar == SB_HORZ ? d : 0, iBar == SB_VERT ? d : 0, nullptr, nullptr, nullptr, nullptr, SW_SCROLLCHILDREN | SW_INVALIDATE | SW_ERASE );
+    }
+    void PageScrollRanges( HWND hWnd, int iPage )
+    {
+        RECT rcFull = { 0, 0, g_aPageFull[iPage].cx, g_aPageFull[iPage].cy }, rc;
+        MapDialogRect( hWnd, &rcFull );
+        GetClientRect( hWnd, &rc );
+        LONG lStyle = GetWindowLongW( hWnd, GWL_STYLE );
+        for ( int iBar : { SB_HORZ, SB_VERT } )
+        {
+            if ( !( lStyle & ( iBar == SB_HORZ ? WS_HSCROLL : WS_VSCROLL ) ) ) continue;
+            SCROLLINFO si = { sizeof( si ), SIF_RANGE | SIF_PAGE | SIF_DISABLENOSCROLL };
+            si.nMax = ( iBar == SB_HORZ ? rcFull.right : rcFull.bottom ) - 1;
+            si.nPage = (UINT)( iBar == SB_HORZ ? rc.right : rc.bottom );
+            SetScrollInfo( hWnd, iBar, &si, TRUE );
+            ScrollPage( hWnd, iBar, GetScrollPos( hWnd, iBar ) );     // (within the new range)
+        }
+    }
+    bool PageScroll( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam, int iPage )
+    {
+        LONG lStyle = GetWindowLongW( hWnd, GWL_STYLE );
+        if ( !( lStyle & ( WS_VSCROLL | WS_HSCROLL ) ) ) return false;
+        switch ( msg )
+        {
+            case WM_VSCROLL: case WM_HSCROLL:
+            {
+                if ( lParam ) return false;     // an up-down or slider control's
+                int iBar = msg == WM_VSCROLL ? SB_VERT : SB_HORZ;
+                SCROLLINFO si = { sizeof( si ), SIF_ALL };
+                GetScrollInfo( hWnd, iBar, &si );
+                int iLine = 16, iPos = si.nPos;
+                switch ( LOWORD( wParam ) )
+                {
+                    case SB_LINEUP: iPos -= iLine; break;
+                    case SB_LINEDOWN: iPos += iLine; break;
+                    case SB_PAGEUP: iPos -= (int)si.nPage; break;
+                    case SB_PAGEDOWN: iPos += (int)si.nPage; break;
+                    case SB_THUMBTRACK: case SB_THUMBPOSITION: iPos = si.nTrackPos; break;
+                    case SB_TOP: iPos = si.nMin; break;
+                    case SB_BOTTOM: iPos = si.nMax; break;
+                }
+                ScrollPage( hWnd, iBar, iPos );
+                return true;
+            }
+            case WM_MOUSEWHEEL:
+            {
+                int iBar = ( lStyle & WS_VSCROLL ) ? SB_VERT : SB_HORZ;
+                ScrollPage( hWnd, iBar, GetScrollPos( hWnd, iBar ) - GET_WHEEL_DELTA_WPARAM( wParam ) * 48 / WHEEL_DELTA );
+                return true;
+            }
+            case WM_SIZE:
+                PageScrollRanges( hWnd, iPage );
+                return false;
+            case WM_COMMAND:
+            {
+                // A field taking the focus (tabbed to, or an error pointing at it) brought into view
+                WORD w = HIWORD( wParam );
+                if ( lParam && ( w == EN_SETFOCUS || w == CBN_SETFOCUS || w == LBN_SETFOCUS || w == BN_SETFOCUS ) )
+                {
+                    RECT rc, rcCtl;
+                    GetClientRect( hWnd, &rc );
+                    GetWindowRect( ( HWND )lParam, &rcCtl );
+                    MapWindowPoints( nullptr, hWnd, ( LPPOINT )&rcCtl, 2 );
+                    if ( lStyle & WS_VSCROLL )
+                    {
+                        int iPos = GetScrollPos( hWnd, SB_VERT );
+                        if ( rcCtl.top < 0 ) ScrollPage( hWnd, SB_VERT, iPos + rcCtl.top - 8 );
+                        else if ( rcCtl.bottom > rc.bottom ) ScrollPage( hWnd, SB_VERT, iPos + rcCtl.bottom - rc.bottom + 8 );
+                    }
+                    if ( lStyle & WS_HSCROLL )
+                    {
+                        int iPos = GetScrollPos( hWnd, SB_HORZ );
+                        if ( rcCtl.left < 0 ) ScrollPage( hWnd, SB_HORZ, iPos + rcCtl.left - 8 );
+                        else if ( rcCtl.right > rc.right ) ScrollPage( hWnd, SB_HORZ, iPos + rcCtl.right - rc.right + 8 );
+                    }
+                }
+                return false;
+            }
+        }
+        return false;
+    }
+
+    // Every page's procedure: its own, behind the scrolling
+    INT_PTR CALLBACK PageProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
+    {
+        if ( msg == WM_INITDIALOG ) SetPropW( hWnd, L"PFAviz.Page", ( HANDLE )( ( ( LPPROPSHEETPAGEW )lParam )->lParam + 1 ) );
+        INT_PTR i = ( INT_PTR )GetPropW( hWnd, L"PFAviz.Page" ) - 1;
+        if ( i < 0 || i >= MaxPages ) return FALSE;
+        if ( msg == WM_NCDESTROY ) RemovePropW( hWnd, L"PFAviz.Page" );
+        if ( PageScroll( hWnd, msg, wParam, lParam, (int)i ) ) return TRUE;
+        // An up-down's arrows change its field's number (UserChange)
+        if ( ( msg == WM_VSCROLL || msg == WM_HSCROLL ) && lParam && LOWORD( wParam ) == SB_THUMBPOSITION )
+        {
+            wchar_t sClass[32];
+            if ( GetClassNameW( ( HWND )lParam, sClass, 32 ) && _wcsicmp( sClass, UPDOWN_CLASSW ) == 0 ) Changed( hWnd );
+        }
+        INT_PTR r = g_aPageProcs[i]( hWnd, msg, wParam, lParam );
+        if ( msg == WM_INITDIALOG && g_aPageBars[i] )
+        {
+            SetWindowLongW( hWnd, GWL_STYLE, GetWindowLongW( hWnd, GWL_STYLE ) | (LONG)g_aPageBars[i] );
+            SetWindowPos( hWnd, nullptr, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED );
+            PageScrollRanges( hWnd, (int)i );
+        }
+        return r;
     }
 }
 
@@ -1436,15 +1666,39 @@ VOID DoPreferences( HWND hWndOwner )
     const DLGPROC aProcs[] = { VisualProc, EffectsProc, AudioProc, ControlsProc, PerformanceProc };
     const wchar_t *const aTitles[] = { L"Visual", L"Effects", L"Audio", L"Controls", L"Performance" };
     const int iPages = 5;
+    static_assert( iPages <= MaxPages, "MaxPages" );
     PROPSHEETPAGEW psp[iPages] = {};
+    std::vector< uint8_t > vTemplates[iPages];
+    const SIZE fit = PageFit( hWndOwner );
     for ( int i = 0; i < iPages; i++ )
     {
         psp[i].dwSize = sizeof( PROPSHEETPAGEW );
         psp[i].dwFlags = PSP_USETITLE;
         psp[i].hInstance = g_hInstance;
         psp[i].pszTemplate = MAKEINTRESOURCEW( aDialogs[i] );
-        psp[i].pfnDlgProc = aProcs[i];
+        psp[i].pfnDlgProc = PageProc;
         psp[i].pszTitle = aTitles[i];
+        psp[i].lParam = i;
+        g_aPageProcs[i] = aProcs[i];
+        // The template's copy (DLGTEMPLATEEX: cx and cy at 22 and 24), cut to fit
+        HRSRC hRes = FindResourceW( g_hInstance, MAKEINTRESOURCEW( aDialogs[i] ), RT_DIALOG );
+        HGLOBAL hGlobal = hRes ? LoadResource( g_hInstance, hRes ) : nullptr;
+        const uint8_t *p = hGlobal ? ( const uint8_t * )LockResource( hGlobal ) : nullptr;
+        DWORD n = hRes ? SizeofResource( g_hInstance, hRes ) : 0;
+        if ( !p || n < 26 || p[2] != 0xFF || p[3] != 0xFF ) continue;
+        vTemplates[i].assign( p, p + n );
+        uint8_t *t = vTemplates[i].data();
+        int16_t cx, cy;
+        memcpy( &cx, t + 22, 2 );
+        memcpy( &cy, t + 24, 2 );
+        g_aPageFull[i] = { cx, cy };
+        g_aPageBars[i] = 0;
+        if ( cx > fit.cx ) { cx = (int16_t)fit.cx; g_aPageBars[i] |= WS_HSCROLL; }
+        if ( cy > fit.cy ) { cy = (int16_t)fit.cy; g_aPageBars[i] |= WS_VSCROLL; }
+        memcpy( t + 22, &cx, 2 );
+        memcpy( t + 24, &cy, 2 );
+        psp[i].dwFlags |= PSP_DLGINDIRECT;
+        psp[i].pResource = ( LPCDLGTEMPLATEW )t;
     }
     PROPSHEETHEADERW psh = {};
     psh.dwSize = sizeof( PROPSHEETHEADERW );

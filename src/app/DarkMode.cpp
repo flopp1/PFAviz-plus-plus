@@ -167,6 +167,29 @@ namespace
         return DefSubclassProc( h, msg, wParam, lParam );
     }
 
+    // Any theme: a check box clicked keeps the focus, so the space bar would go on toggling it. After a
+    // click the space bar is let go, until the focus leaves it (tabbed to, it toggles as usual)
+    LRESULT CALLBACK ClickProc( HWND h, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR )
+    {
+        switch ( msg )
+        {
+            case WM_LBUTTONDOWN: case WM_LBUTTONDBLCLK:
+                SetPropW( h, L"PFAviz.Clicked", ( HANDLE )1 );
+                break;
+            case WM_KILLFOCUS:
+                RemovePropW( h, L"PFAviz.Clicked" );
+                break;
+            case WM_KEYDOWN: case WM_KEYUP: case WM_CHAR:
+                if ( wParam == VK_SPACE && GetPropW( h, L"PFAviz.Clicked" ) ) return 0;
+                break;
+            case WM_NCDESTROY:
+                RemovePropW( h, L"PFAviz.Clicked" );
+                RemoveWindowSubclass( h, ClickProc, 0 );
+                break;
+        }
+        return DefSubclassProc( h, msg, wParam, lParam );
+    }
+
     //-------------------------------------------------------------------------
     // Tabs (the property sheet's): the tab control has no dark theme
     //-------------------------------------------------------------------------
@@ -439,6 +462,8 @@ namespace
             if ( uType == BS_CHECKBOX || uType == BS_AUTOCHECKBOX || uType == BS_3STATE || uType == BS_AUTO3STATE ||
                  uType == BS_RADIOBUTTON || uType == BS_AUTORADIOBUTTON || uType == BS_GROUPBOX )
                 SetWindowSubclass( h, ButtonProc, 0, 0 );
+            if ( uType == BS_CHECKBOX || uType == BS_AUTOCHECKBOX || uType == BS_3STATE || uType == BS_AUTO3STATE )
+                SetWindowSubclass( h, ClickProc, 0, 0 );
         }
         else if ( s == L"Edit" ) SetWindowTheme( h, g_bOn ? L"DarkMode_CFD" : nullptr, nullptr );
         else if ( s == L"ComboBox" )

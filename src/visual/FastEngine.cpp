@@ -455,13 +455,20 @@ void FastEngine::SweepKey( const VisualStore &S, const uint64_t *pCpos, int k, c
 
         size_t lo = ks.LowerBoundStartBelow( F.URow( iBeta ), hi );
         int u = MaxUnpainted( iBeta );
+        // In a bucket every note's bottom is its row, and its top depends only on its length (or, with
+        // rounded edges, its end): one painted that leaves row u unpainted says the same of every note
+        // no longer (ending no later), so only a longer one can reach u (llFloor), or a bucket of notes
+        // that all end at one tick in view (notes without an off) is walked note by note
+        int uFloor = INT_MIN;
+        uint64_t llFloor = 0;
         while ( u != INT_MIN && hi > lo )
         {
             // Clean drawing: a note at least a row tall reaches the bucket's last row whatever its
             // length; one whose top is rounded from its end reaches row u when its end maps at or above u
             bool bAny = ( F.uClean & Clean::MinHeight ) && iBeta - u <= 1;
-            int64_t j = ( F.uClean & Clean::EdgeRound ) ? ks.RightmostEnd( lo, hi, bAny ? 0 : F.URow( u ) )
-                                                        : ks.RightmostDur( lo, hi, bAny ? 0 : (uint64_t)F.vG[iBeta - u], m_Times );
+            uint64_t llAt = u == uFloor ? llFloor : 0;
+            int64_t j = ( F.uClean & Clean::EdgeRound ) ? ks.RightmostEnd( lo, hi, std::max( llAt, bAny ? 0 : F.URow( u ) ) )
+                                                        : ks.RightmostDur( lo, hi, std::max( llAt, bAny ? 0 : (uint64_t)F.vG[iBeta - u] ), m_Times );
             iQueries++;
             if ( j < 0 ) break;
             ks.Get( (size_t)j, n );
@@ -469,7 +476,13 @@ void FastEngine::SweepKey( const VisualStore &S, const uint64_t *pCpos, int k, c
             if ( bVisible && !Hidden( n.uSlot ) )
             {
                 Paint( (uint64_t)j, Time( n.llStartU ), Time( n.llEndU ), n.uSlot, iBeta );
+                int uWas = u;
                 u = MaxUnpainted( iBeta );
+                if ( u == uWas )
+                {
+                    if ( uFloor != u ) { uFloor = u; llFloor = 0; }
+                    llFloor = std::max( llFloor, ( F.uClean & Clean::EdgeRound ) ? n.llEndU + 1 : (uint64_t)( Time( n.llEndU ) - Time( n.llStartU ) ) + 1 );
+                }
             }
             hi = (size_t)j;
         }
@@ -480,12 +493,20 @@ void FastEngine::SweepKey( const VisualStore &S, const uint64_t *pCpos, int k, c
     // upcoming ones too when the window cuts the field at the hit line): a note reaches the lowest
     // unpainted row u only if its end time maps at or above row u + 1. Upcoming notes are always
     // visible; sounding ones must also end after llEth.
+    // Every note ending at or before tick E has its top at or below row floor( c ), c the row of E's time
+    // (Coverage: its top is round( y ) - round( cy ), y - cy being c, so floor( c ) or ceil( c )). So once
+    // a note ending at E leaves row u unpainted with u above floor( c ), only a later end can reach u
+    // (llFloor); otherwise a key whose notes all end at one tick in view (notes without an off, ended
+    // at the song's end) is walked note by note
+    int uFloor = INT_MIN;
+    uint64_t llFloor = 0;
     while ( hi > 0 )
     {
         int u = MaxUnpainted( F.iRowHi );
         if ( u == INT_MIN ) break;
         bool bUpcoming = hi > bd.iB;
         uint64_t llX = bUpcoming ? F.URow( u + 2 ) : std::max( F.URow( u + 2 ), bd.llUEth1 );
+        if ( u == uFloor ) llX = std::max( llX, llFloor );
         int64_t j = ks.RightmostEnd( bUpcoming ? bd.iB : 0, hi, llX );
         iQueries++;
         if ( j < 0 )
@@ -499,6 +520,14 @@ void FastEngine::SweepKey( const VisualStore &S, const uint64_t *pCpos, int k, c
         {
             const Owner &o = Paint( (uint64_t)j, Time( n.llStartU ), Time( n.llEndU ), n.uSlot, INT_MIN );
             if ( !( o.iRowA < o.iRowB ) ) vOwners.pop_back();
+            // (0.001: above the float error of the two roundings, a few ten-thousandths of a row; an end
+            // that close to a row's edge is walked as before)
+            float c = F.fNotesY + F.fNotesCY * ( 1.0f - static_cast< float >( Time( n.llEndU ) - F.R ) / F.llSpan );
+            if ( MaxUnpainted( F.iRowHi ) == u && u < (int)floor( c - 0.001f ) )
+            {
+                if ( uFloor != u ) { uFloor = u; llFloor = 0; }
+                llFloor = std::max( llFloor, n.llEndU + 1 );
+            }
         }
         hi = (size_t)j;
     }
