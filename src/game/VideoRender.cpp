@@ -49,6 +49,7 @@ void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
     // Its own engine, with the hidden channels and the LOD cache ready before each frame is drawn
     FastEngine engine( *m_pSong, cPerf.iWorkerThreads );
     engine.SetLod( cPerf.bLodCache, true );
+    engine.SetTickBased( Config::GetConfig().GetVisualSettings().bTickBased );
     std::vector< uint8_t > vHidden( m_vTrackSettings.size() * 16 );
     bool bAnyHidden = false;
     for ( size_t t = 0; t < m_vTrackSettings.size(); t++ )
@@ -127,14 +128,14 @@ void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
     for ( long long f = 0; f < llFrames && !job.bCancel && !pipe.Failed() && bOk; f++ )
     {
         if ( cap.Ready( false ) && !( bOk = Emit() ) ) break;
-        long long llTime = FrameTime( f );
+        long long llTime = FrameTime( f ), llView = engine.ToView( llTime );
         if ( f == 0 )
         {
-            engine.Jump( llTime, llTime, ViewEnd( llTime ) );
+            engine.Jump( llView, llView, ViewEnd( llView ) );
             meter.Jump( llTime );
         }
-        engine.AdvanceEnd( ViewEnd( llTime ) );
-        if ( f ) engine.Process( llTime );
+        engine.AdvanceEnd( ViewEnd( llView ) );
+        if ( f ) engine.Process( llView );
         meter.Advance( llTime );
         FrameGlobals g = Scene::ComputeGlobals( GetViewInputs( iW, iH, llTime ) );
 

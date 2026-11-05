@@ -28,9 +28,11 @@ VOID ShowGraphs( BOOL bShow );      // View > Graphs checked or not
 VOID SetOnTop( BOOL bOnTop );
 VOID SetInterfaceTheme( INT eTheme );     // DarkMode::Theme
 VOID SetFullScreen( BOOL bFullScreen );
-// The main window's largest size (its monitor's), its size now (the restored size when maximized),
-// and setting it: clamped to MINWIDTH x MINHEIGHT up to the largest, and moved to lie wholly on its
-// monitor (in the work area when it fits there)
+// The view's size (the graphics window: notes and keyboard, without the title, menu and controls
+// bars): its smallest (the window's MINWIDTH x MINHEIGHT) and largest (its monitor's), its size now
+// (the restored size when maximized), and setting it: clamped to those, the window moved to lie
+// wholly on its monitor (in the work area when it fits there)
+SIZE MainWindowMinSize();
 SIZE MainWindowMaxSize();
 SIZE MainWindowSize();
 VOID SetMainWindowSize( int iWidth, int iHeight );

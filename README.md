@@ -29,10 +29,11 @@ A performance rewrite of [Piano From Above](https://github.com/brian-pantano/Pia
 - **Hidden channels** get their own drawing data, built in the background ("Applying hidden channels..." until ready), so hiding most of a black MIDI's tracks makes it faster.
 - **128 keys** by default ("Show all 88 keys" is still there).
 - **Keep short notes on screen** (Visual > Clean drawing): a note too short to fill a pixel row still shows from the top edge until it reaches the keyboard (the original can drop such notes at either end).
+- **Tick-based view** (Visual > Timing, off by default): notes are spaced by their ticks instead of their time, a quarter note always as tall as half a second at 120 BPM, so a tempo change no longer stretches or squeezes the notes; the playhead moves through each beat at the song's own pace. Measure lines follow the same spacing, and key fades and the hit line keep real time.
 - The **note speed slider** is logarithmic and covers the whole range: 10 at the left, 0.06 (the default) in the middle, 0.005 at the right.
 
 **Playback**
-- Audio runs on its own decoder and sender threads, off a microsecond clock, independent of the frame rate. KDMAPI is used when a synth that provides it is installed (OmniMIDI and others), WinMM otherwise.
+- Audio runs on its own decoder and sender threads, off a microsecond clock, independent of the frame rate. KDMAPI is used when a synth that provides it is installed (OmniMIDI and others), WinMM otherwise. The synth is opened once and stays open across songs, so it loads its soundfonts only at the first song (or when the output setting changes); a song that closes leaves its channels reset.
 - Every event is sent by default. Optional limits (Performance tab), for synths that fall behind:
   - **Skip quiet notes while the synth lags**: above a lag you choose, quiet note-ons go first, rising to every note-on at 4 times that lag.
   - **Always skip notes quieter than velocity N** (default 20), with their note-offs.
@@ -45,6 +46,20 @@ A performance rewrite of [Piano From Above](https://github.com/brian-pantano/Pia
   - It resets all controllers, then sends each channel's last value before that point of every controller, program, pitch bend and channel pressure, in the order the song set them, so bank selects still come before their program changes.
   - Volume and pan go back to the GM defaults (100 and 64) on channels with no value yet. So do bank, program, reverb and chorus on channels that only set them later in the song.
   - It looks back only until every value it needs is found, which usually takes microseconds.
+
+**PFA lag simulation** (Visual > Timing, off by default)
+- Plays the song the way the original Piano From Above 1.1.0 would lag on this computer: its frame rate, its freezes and its audio. A model of the original's frame (song/PfaLag.h), counted per millisecond of song from its note statistics and the CPU's caches, with costs measured from stock PFA 1.1.0 itself (its frames logged over eleven black MIDIs, from 2,500 fps down to 49-second frames, with the usual `winmm.dll` patch that sends to KDMAPI):
+  - Its Logic goes through every event since the last frame in order, sending each with `midiOutShortMsg` (about 0.16 µs of its own work, plus the send). Every note-off walks the whole list of sounding notes, reading each one's event object. So what costs is note-offs times the polyphony at that moment, not polyphony alone: 10,000 notes held cost nothing more while they are held, but renewed by new notes, every one that ends walks all 10,000. A walk is about 1.3 ns a note while the sounding notes fit in L2 and 1.6 ns in L3 (up to 0.4 ns more in a frame whose events overflow L3, as they push the notes out), and about 10 ns past L3.
+  - Its Render walks the sounding notes and every event in view twice and draws each note as two rects, with a draw call every 50 notes.
+  - Its clock is the time that passed, so a slow frame leaves more song for the next: once a second of song takes more than a second, each frame is longer than the last, as the original freezes (a frame is capped at ten minutes).
+- Frames run back to back, so a light song runs at the original's 2,000–2,500 fps, and the stats box shows that frame rate ("PFA sim"). The picture shows the last finished frame. The audio plays a frame's events as its Logic gets to them: it crawls through a crash for as long as the crash's walks take, then races through the light song time after it, and then waits while the frame draws. That gives the original's pattern in a freeze: a burst of music, a gap, a new frame.
+- A MIDI message costs 0.05 µs by default (the field takes decimals): stock PFA with the `winmm.dll` patch that sends to KDMAPI, as measured. Without the patch, on Windows 11 builds whose WinMM goes through the new MIDI service, WinMM itself costs 13–28 µs a message for any synth, even Microsoft's GS Wavetable Synth. That also pushes PFA's own data out of the caches between events, so an unpatched PFA lags far more than its send cost alone (type 30 to come close).
+- Mild randomness stands in for the rest of the computer:
+  - Other programs take a wandering 0–60 % share of L2 and L3 (typically 15 %).
+  - Each frame's own work varies by about 8 %, less for long frames.
+  - The send path drifts slowly by about 20 %, each message varies, and an occasional message stalls.
+  - Every 0.3 s or so, a stall of about 1.5 ms (another thread, a page fault).
+- The L2 and L3 sizes default to this computer's; others can be typed in to see how a different CPU would fare. Against the measured runs, 5-second stretches come within about ±10 % of the original's frame rate (median 3–9 % per song). Frames longer than a second come within 0.7–1.3× when given the same song time on most songs (0.65–1.7× at worst: songs differ in ways the note statistics don't show). A whole freeze varies a lot from run to run: each frame plays the song time the last one took, so small differences grow. Over several runs, lagging 10-second stretches take a median 0.75–0.9× the original's time. It needs the note statistics, which are counted at load time while it is on (a song opened before it was turned on is opened again).
 
 **Statistics**
 - Each line of the stats box is chosen in Visual > **Statistics...**; with every line off the box is not drawn. The lines:
@@ -90,11 +105,11 @@ Open a song with File > Play Song, by dropping it on the window, or by passing i
 PFAviz++.exe "song.mid"
 ```
 
-The window's exact size can be typed in under Visual > Window size, from 640 × 469 up to its monitor's size; the window then moves, if it has to, to lie wholly on that monitor.
+The notes and keyboard area's exact size can be typed in under Visual > View size, up to its monitor's size less the title, menu and controls bars (which are added around it); the window then moves, if it has to, to lie wholly on that monitor.
 
 Settings are kept in `%APPDATA%\PFAviz++\config.ini`. Several versions can share it, even running at once: each saves only the settings it changed and keeps the ones it does not know, and every setting is also kept in `config.all.ini` beside it, so one an older version dropped comes back with the next newer one.
 
-Environment variables for timed test runs: `PFAVIZ_MUTE=1`, `PFAVIZ_UNCAPPED=1`, `PFAVIZ_NOTESPEED=x`, `PFAVIZ_MAXIMIZE=1`, `PFAVIZ_FRAMELOG=file` (frame times every half second), `PFAVIZ_GDITEXT=1` (the GDI text fallback even with D3DX installed), `PFAVIZ_EXIT_AFTER=seconds` (closes the window without saving the configuration) and `PFAVIZ_RENDER=out.mp4` (renders the song with the saved video settings, then closes; with `PFAVIZ_ENCODER=n`, the n-th encoder of the list instead, `PFAVIZ_CAPTUREDEPTH=n` frames in flight, `PFAVIZ_BGRXPIPE=1` BGRX frames converted by ffmpeg).
+Environment variables for timed test runs: `PFAVIZ_MUTE=1`, `PFAVIZ_UNCAPPED=1`, `PFAVIZ_NOTESPEED=x`, `PFAVIZ_MAXIMIZE=1`, `PFAVIZ_FRAMELOG=file` (frame times every half second), `PFAVIZ_GDITEXT=1` (the GDI text fallback even with D3DX installed), `PFAVIZ_START=seconds` (starts that far into the song), `PFAVIZ_EXIT_AFTER=seconds` (closes the window without saving the configuration) and `PFAVIZ_RENDER=out.mp4` (renders the song with the saved video settings, then closes; with `PFAVIZ_ENCODER=n`, the n-th encoder of the list instead, `PFAVIZ_CAPTUREDEPTH=n` frames in flight, `PFAVIZ_BGRXPIPE=1` BGRX frames converted by ffmpeg).
 
 ## Building
 

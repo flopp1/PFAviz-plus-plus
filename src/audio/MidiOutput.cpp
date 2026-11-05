@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <atomic>
 #include <climits>
+#include <mutex>
 
 #include "core/Config.h"
 
@@ -335,19 +336,106 @@ std::wstring MidiOutputs::ConfiguredName()
     return std::wstring();
 }
 
+namespace
+{
+    // The configured output stays open from its first use until the program ends or the setting changes:
+    // opening a synth (KDMAPI's InitializeKDMAPIStream, or a WinMM synth driver's midiOutOpen) loads its
+    // soundfonts again, which took seconds on every song. Each screen gets a handle to it instead; one
+    // screen uses it at a time (ChangeState waits for the old screen's audio to be released)
+    struct Shared
+    {
+        std::mutex mx;
+        std::shared_ptr< MidiOutput > pOut;
+        bool bKdmapi = false;
+        int iDevice = -1;
+        std::wstring sDevice;
+    };
+    Shared &TheShared() { static Shared *p = new Shared; return *p; }   // (closed by CloseShared, never by exit)
+
+    class SharedOutput : public MidiOutput
+    {
+    public:
+        explicit SharedOutput( std::shared_ptr< MidiOutput > p ) : m_pOut( std::move( p ) ) {}
+        // Released: the synth is left as a fresh open would find it (sound off, controllers, programs,
+        // banks, volume, pan and the pitch bend range at their defaults) for whatever opens it next
+        ~SharedOutput() override
+        {
+            m_pOut->AllNotesOff();
+            uint32_t a[16 * 14];
+            size_t n = 0;
+            for ( uint32_t ch = 0; ch < 16; ch++ )
+            {
+                auto CC = [&]( uint32_t cc, uint32_t v ) { a[n++] = 0xB0 | ch | ( cc << 8 ) | ( v << 16 ); };
+                CC( 120, 0 );                           // all sound off
+                CC( 121, 0 );                           // reset all controllers (pitch bend, modulation, expression...)
+                CC( 101, 0 ); CC( 100, 0 ); CC( 6, 2 ); CC( 38, 0 );  // pitch bend range: 2 semitones
+                CC( 101, 127 ); CC( 100, 127 );         // RPN null
+                CC( 7, 100 ); CC( 10, 64 );
+                CC( 0, 0 ); CC( 32, 0 );
+                a[n++] = 0xC0 | ch;                     // program 0
+            }
+            m_pOut->SendBatch( a, n );
+            m_pOut->Flush();
+        }
+        void Send( uint32_t uMsg ) override { m_pOut->Send( uMsg ); }
+        void SendBatch( const uint32_t *pMsgs, size_t n ) override { m_pOut->SendBatch( pMsgs, n ); }
+        void Flush() override { m_pOut->Flush(); }
+        bool SendSysEx( const uint8_t *pData, size_t n ) override { return m_pOut->SendSysEx( pData, n ); }
+        void SetVolume( double dVolume ) override { m_pOut->SetVolume( dVolume ); }
+        void ResetPlaybackState() override { m_pOut->ResetPlaybackState(); }
+        const std::wstring &Name() const override { return m_pOut->Name(); }
+        bool IsKdmapi() const override { return m_pOut->IsKdmapi(); }
+
+    private:
+        std::shared_ptr< MidiOutput > m_pOut;
+    };
+
+    std::wstring DeviceName( int iDevice )
+    {
+        MIDIOUTCAPSW moc;
+        return iDevice >= 0 && midiOutGetDevCapsW( iDevice, &moc, sizeof( moc ) ) == MMSYSERR_NOERROR ? std::wstring( moc.szPname ) : std::wstring();
+    }
+}
+
+void MidiOutputs::CloseShared()
+{
+    Shared &s = TheShared();
+    std::lock_guard< std::mutex > lock( s.mx );
+    s.pOut.reset();
+}
+
 std::unique_ptr< MidiOutput > MidiOutputs::OpenConfigured( bool bTuning31, bool bPitchBend )
 {
     Config &config = Config::GetConfig();
-    std::unique_ptr< MidiOutput > output;
-    if ( config.GetPerformanceSettings().bPreferKDMAPI ) output = OpenKdmapi();
-    if ( !output )
+    int iDevice;
     {
-        int iDevice;
+        std::lock_guard< std::mutex > lock( config.AudioMutex() );
+        iDevice = config.GetAudioSettings().iOutDevice;
+    }
+    bool bKdmapi = config.GetPerformanceSettings().bPreferKDMAPI && KdmapiAvailable();
+    std::unique_ptr< MidiOutput > output;
+    {
+        Shared &s = TheShared();
+        std::lock_guard< std::mutex > lock( s.mx );
+        // Kept when it is still the one configured (a WinMM device by its index and name: the list can
+        // change when devices come and go)
+        std::wstring sDevice = bKdmapi ? std::wstring() : DeviceName( iDevice );
+        if ( s.pOut && ( s.bKdmapi != bKdmapi || ( !bKdmapi && ( s.iDevice != iDevice || s.sDevice != sDevice ) ) ) )
+            s.pOut.reset();     // (closed before the new one opens: KDMAPI is one stream)
+        if ( !s.pOut )
         {
-            std::lock_guard< std::mutex > lock( config.AudioMutex() );
-            iDevice = config.GetAudioSettings().iOutDevice;
+            std::unique_ptr< MidiOutput > p;
+            if ( bKdmapi ) p = OpenKdmapi();
+            if ( !p ) { bKdmapi = false; sDevice = DeviceName( iDevice ); p = OpenWinMM( iDevice ); }
+            if ( p )
+            {
+                s.pOut = std::move( p );
+                s.bKdmapi = bKdmapi;
+                s.iDevice = iDevice;
+                s.sDevice = sDevice;
+            }
         }
-        output = OpenWinMM( iDevice );
+        if ( s.pOut ) output = std::make_unique< SharedOutput >( s.pOut );
     }
     if ( !output || !bTuning31 ) return output;
     if ( bPitchBend ) return std::make_unique< PitchBendTunedOutput >( std::move( output ) );

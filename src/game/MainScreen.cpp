@@ -11,6 +11,7 @@
 #include "app/MainWindow.h"
 #include "core/Config.h"
 #include "resource.h"
+#include "song/PfaLag.h"
 
 using std::max;
 using std::min;
@@ -109,6 +110,8 @@ GameState::GameError MainScreen::Init()
         m_pPlayback->Start( m_llStartTime );
     }
     else m_Clock.Set( m_llStartTime );
+    // Developer switch PFAVIZ_START=S: start S seconds into the song
+    if ( const char *sStart = getenv( "PFAVIZ_START" ) ) JumpTo( (long long)( atof( sStart ) * 1e6 ) );
     m_Timer.Start();
     return Success;
 }
@@ -480,12 +483,70 @@ GameState::GameError MainScreen::Logic()
     static const bool bEnvDrawThreads = getenv( "PFAVIZ_DRAWTHREADS" ) != nullptr;
     if ( !bEnvDrawThreads ) m_pEngine->SetThreads( config.GetPerformanceSettings().iWorkerThreads );
     if ( m_pEngine->LodOn() != config.GetPerformanceSettings().bLodCache ) m_pEngine->SetLod( config.GetPerformanceSettings().bLodCache );
+    // The tick-based view changed: the engine starts again where the song is, in the new placing
+    if ( m_pEngine->TickBased() != cVisual.bTickBased )
+    {
+        m_pEngine->SetTickBased( cVisual.bTickBased );
+        long long llView = m_pEngine->ToView( m_llStartTime );
+        m_pEngine->Jump( llView, llView, ViewEnd( llView ) );
+    }
     m_pRenderer->SetInstancing( config.GetPerformanceSettings().bGpuInstancing );
 
     // Time stuff
     long long llMaxTime = GetMaxTime();
     long long llElapsed = m_Timer.GetMicroSecs();
     m_Timer.Start();
+
+    // The PFA lag simulation, on or off
+    {
+        const bool bWant = cVisual.bPfaLag;
+        const bool bReady = bWant && PfaLag::Ready( *m_pSong );
+        if ( bWant && !bReady && !m_bSimWarned )
+        {
+            m_bSimWarned = true;
+            wcscpy_s( m_sBuf, L"PFA lag simulation: open the song again (it needs the note statistics)" );
+            m_tpMessage.Reset( m_pRenderer->GetBufferWidth() / 2.0f, m_pRenderer->GetBufferHeight() * ( 1.0f - KBPercent ) / 2.0f - 35.0f / 2.0f, 0xFFFFFFFF, m_sBuf );
+        }
+        if ( !bWant ) m_bSimWarned = false;
+        if ( bReady != m_bSimOn )
+        {
+            m_bSimOn = bReady;
+            if ( bReady )
+            {
+                m_SimCpu = PfaLag::Cpu::Detect();
+                if ( cVisual.iPfaL2KB > 0 ) m_SimCpu.llL2 = (uint64_t)cVisual.iPfaL2KB << 10;
+                if ( cVisual.iPfaL3KB > 0 ) m_SimCpu.llL3 = (uint64_t)cVisual.iPfaL3KB << 10;
+                DEVMODEW dm = { };
+                dm.dmSize = sizeof( dm );
+                m_dRefreshUs = EnumDisplaySettingsW( nullptr, ENUM_CURRENT_SETTINGS, &dm ) && dm.dmDisplayFrequency > 1 ? 1e6 / dm.dmDisplayFrequency : 1e6 / 60.0;
+                long long llWall = Timer::NowMicroSecs(), t = m_Clock.FreeNow();
+                m_Clock.SetRamp( llWall, llWall, t, t );
+                LARGE_INTEGER qpc;
+                QueryPerformanceCounter( &qpc );
+                m_SimNoise = PfaLag::Noise( (uint64_t)qpc.QuadPart ^ 0x5DEECE66Dull );
+                m_llSimCur = m_llSimShown = t;
+                m_llSimWallStart = llWall;
+                m_llSimWallEnd = 0;
+                m_dSimFrameUs = 0.0;
+                m_iSimFrames = 0;
+            }
+            else
+            {
+                // Played on from what the simulation last drew
+                m_Clock.EndRamp();
+                JumpTo( m_llSimShown );
+            }
+        }
+        else if ( m_bSimOn && config.VisualGen() != m_uSimVisualGen )
+        {
+            // (the cache sizes may have changed)
+            PfaLag::Cpu cpu = PfaLag::Cpu::Detect();
+            m_SimCpu.llL2 = cVisual.iPfaL2KB > 0 ? (uint64_t)cVisual.iPfaL2KB << 10 : cpu.llL2;
+            m_SimCpu.llL3 = cVisual.iPfaL3KB > 0 ? (uint64_t)cVisual.iPfaL3KB << 10 : cpu.llL3;
+        }
+        m_uSimVisualGen = config.VisualGen();
+        if ( m_bSimOn ) SimulateFrame( llMaxTime );
+    }
 
     // The synth's stats every SynthStepUs: the latest values, and rates between the newest sample and
     // the oldest of the ring (half a second back once it is full)
@@ -540,6 +601,13 @@ GameState::GameError MainScreen::Logic()
     if ( m_llFPSTime >= 500000 )
     {
         m_dFPS = m_iFPSCount / ( m_llFPSTime / 1000000.0 );
+        // Simulating PFA: its frame rate (a frame longer than the interval: from how long it has run)
+        if ( m_bSimOn )
+        {
+            double dLong = std::max( m_dSimFrameUs, (double)( Timer::NowMicroSecs() - m_llSimWallStart ) );
+            m_dFPS = m_iSimFrames > 0 ? m_iSimFrames / ( m_llFPSTime / 1000000.0 ) : dLong > 0.0 ? 1e6 / dLong : 0.0;
+            m_iSimFrames = 0;
+        }
         m_llFPSTime = m_iFPSCount = 0;
         for ( int i = 0; i < PartCount; i++ )
         {
@@ -555,6 +623,7 @@ GameState::GameError MainScreen::Logic()
                 fprintf( f, "t=%.2f fps=%.1f other %.2f/%.2f notes %.2f/%.2f scene %.2f/%.2f present %.2f/%.2f owners %zu", m_llStartTime / 1e6, m_dFPS,
                          m_adPartAvgShown[0], m_adPartMaxShown[0], m_adPartAvgShown[1], m_adPartMaxShown[1], m_adPartAvgShown[2], m_adPartMaxShown[2],
                          m_adPartAvgShown[3], m_adPartMaxShown[3], fs.iOwners );
+                if ( m_bSimOn ) fprintf( f, " pfasim frame %.1f ms, at %.2f s", m_dSimFrameUs / 1000.0, m_llSimCur / 1e6 );
                 // The synth sender (and long sends: messages and their average and largest size over the half second)
                 if ( m_pPlayback )
                 {
@@ -583,9 +652,10 @@ GameState::GameError MainScreen::Logic()
     // Figure out start and end times for display: the clock is sampled once per frame
     long long llOldStartTime = m_llStartTime;
     if ( !m_bPaused && m_llStartTime < llMaxTime )
-        m_llStartTime = m_Clock.Now();
+        m_llStartTime = m_bSimOn ? m_llSimShown : m_Clock.Now();
     m_iStartTick = m_pMeter->GetCurrentTick( m_llStartTime );
-    long long llEndTime = ViewEnd( m_llStartTime );
+    const long long llView = m_pEngine->ToView( m_llStartTime );
+    long long llEndTime = ViewEnd( llView );
 
     RenderGlobals();
 
@@ -602,7 +672,7 @@ GameState::GameError MainScreen::Logic()
     // Advance the end position, then the start position (the music plays on the playback threads)
     m_pEngine->AdvanceEnd( llEndTime );
     if ( !m_bPaused )
-        m_pEngine->Process( m_llStartTime );
+        m_pEngine->Process( llView );
 
     if ( m_tpMessage.IsAlive() ) m_tpMessage.Logic( llElapsed );
 
@@ -630,6 +700,58 @@ GameState::GameError MainScreen::Logic()
     return Success;
 }
 
+// The PFA lag simulation's frames up to now: each of the original's frames starts as the last ends
+// (it runs flat out), plays the song time that passed meanwhile while its Logic runs (the clock's
+// ramp, slow where the work is) and then draws it. The last one done is what is shown (m_llSimShown);
+// the one still running holds the clock
+void MainScreen::SimulateFrame( long long llMaxTime )
+{
+    const long long llWall = Timer::NowMicroSecs();
+    if ( m_llSimWallEnd && llWall < m_llSimWallEnd ) return;
+    PfaLag::Params p;
+    p.llSpanUs = m_llTimeSpan;
+    p.bMuted = m_bMute;
+    p.bPaused = m_bPaused;
+    p.dSendUs = Config::GetConfig().GetVisualSettings().iPfaSendNs / 1000.0;
+    static const VideoSettings &cVideo = Config::GetConfig().GetVideoSettings();
+    // A frame runs ten minutes at most (the original's worst measured was 200 s; turning the
+    // simulation off ends one at once)
+    const double dCap = 600e6;
+    // (at most this many per call: after a long stall here, the next starts now)
+    const int MaxFrames = 20000;
+    long long llStart = m_llSimWallEnd ? m_llSimWallEnd : llWall;
+    PfaLag::FrameCost c;
+    for ( int i = 0; ; i++ )
+    {
+        if ( i == MaxFrames ) llStart = llWall;
+        if ( m_llSimWallEnd )
+        {
+            m_llSimShown = m_llSimCur;
+            m_dSimFrameUs = (double)( llStart - m_llSimWallStart );
+            m_iSimFrames++;
+        }
+        long long llTo = std::max( m_Clock.FreeAt( llStart ), m_llSimCur );
+        // (the original stops at the song's end)
+        if ( m_llSimCur >= llMaxTime ) llTo = m_llSimCur;
+        if ( m_llSimWallEnd ) m_SimNoise.Advance( (double)( llStart - m_llSimWallStart ) );
+        c = PfaLag::Cost( *m_pSong, m_SimCpu, p, m_llSimCur, llTo, &m_SimNoise );
+        double dTotal = std::min( c.dLogicUs + c.dRenderUs, dCap );
+        // With Limit FPS, Present waits for the display's next refresh
+        if ( cVideo.bLimitFPS && m_dRefreshUs > 0.0 ) dTotal = std::ceil( dTotal / m_dRefreshUs ) * m_dRefreshUs;
+        m_llSimWallStart = llStart;
+        m_llSimWallEnd = llStart + std::max< long long >( 1, (long long)dTotal );
+        m_llSimCur = llTo;
+        if ( m_llSimWallEnd > llWall || i >= MaxFrames ) break;
+        llStart = m_llSimWallEnd;
+    }
+    // The running frame's Logic sends its song time as it gets to it
+    PlaybackClock::RampKnot aKnots[PfaLag::RampPoints];
+    int n = 0;
+    for ( int i = 0; i < c.nRamp && n < PfaLag::RampPoints; i++ )
+        aKnots[n++] = { m_llSimWallStart + (long long)std::min( c.aRamp[i].dUs, dCap ), c.aRamp[i].llSong };
+    m_Clock.SetRamp( aKnots, n );
+}
+
 long long MainScreen::ViewEnd( long long llStartTime ) const
 {
     // (a row is the span over the notes area's height, which is well over 32 pixels)
@@ -643,11 +765,15 @@ void MainScreen::JumpTo( long long llStartTime, bool bUpdateGUI )
     long long llLastTime = GetMaxTime();
     long long llPrevTime = m_llStartTime;
     m_llStartTime = min( max( llStartTime, llFirstTime ), llLastTime );
-    m_pEngine->Jump( llStartTime, m_llStartTime, ViewEnd( m_llStartTime ) );
+    const long long llView = m_pEngine->ToView( m_llStartTime );
+    m_pEngine->Jump( m_pEngine->ToView( llStartTime ), llView, ViewEnd( llView ) );
 
     // AllNotesOff, PlaySkippedEvents and the clock move happen in the engine
     if ( m_pPlayback ) m_pPlayback->Seek( llStartTime, m_llStartTime, llPrevTime );
     else m_Clock.Set( m_llStartTime );
+    // (the clock's ramp holds at the new time: the simulation starts a frame there)
+    m_llSimCur = m_llSimShown = m_llStartTime;
+    m_llSimWallEnd = 0;
     AdvanceIterators( llStartTime, true );
     m_iStartTick = m_pMeter->GetCurrentTick( m_llStartTime );
 
@@ -694,7 +820,7 @@ void MainScreen::RenderGlobals()
     m_G = Scene::ComputeGlobals( GetViewInputs( m_pRenderer->GetBufferWidth(), m_pRenderer->GetBufferHeight(), m_llStartTime ) );
 }
 
-ViewInputs MainScreen::GetViewInputs( int iWidth, int iHeight, long long llStartTime ) const
+ViewInputs MainScreen::GetViewInputs( int iWidth, int iHeight, long long llSongTime ) const
 {
     static const VisualSettings &cVisual = Config::GetConfig().GetVisualSettings();
     ViewInputs in;
@@ -709,7 +835,8 @@ ViewInputs MainScreen::GetViewInputs( int iWidth, int iHeight, long long llStart
     in.fOffsetY = m_fOffsetY + m_fTempOffsetY;
     in.fZoomX = m_fZoomX * m_fTempZoomX;
     in.bShowKB = m_bShowKB;
-    in.llStartTime = llStartTime;
+    in.llStartTime = m_pEngine->ToView( llSongTime );
+    in.llSongTime = llSongTime;
     in.llTimeSpan = m_llTimeSpan;
     in.uClean = cVisual.uClean;
     in.bLines = !cVisual.bHideLines;
@@ -729,7 +856,7 @@ void MainScreen::DrawFrame( Renderer *pRenderer, const FrameGlobals &g, FastEngi
     if ( !fx.Any() )
     {
         Scene::DrawBackground( pRenderer, g, m_Colors );
-        meter.DrawMeasureLines( pRenderer, g, m_Colors, iTick );
+        meter.DrawMeasureLines( pRenderer, g, m_Colors, iTick, engine.TickBased() );
         if ( pNotesUs ) pNotesUs[0] = Timer::NowMicroSecs();
         engine.DrawNotes( pRenderer, g, m_vTrackSettings );
         if ( pNotesUs ) pNotesUs[1] = Timer::NowMicroSecs();
@@ -771,7 +898,7 @@ void MainScreen::DrawFrame( Renderer *pRenderer, const FrameGlobals &g, FastEngi
     pRenderer->SetBackgroundTint( look.BackgroundDark() );
     Scene::DrawBackground( pRenderer, g, c );
     pRenderer->SetBackgroundTint( 1.0f );
-    meter.DrawMeasureLines( pRenderer, g, c, iTick );
+    meter.DrawMeasureLines( pRenderer, g, c, iTick, engine.TickBased() );
 
     // The notes, by their light
     Effects::NoteLight light;
@@ -794,8 +921,12 @@ void MainScreen::DrawFrame( Renderer *pRenderer, const FrameGlobals &g, FastEngi
         int aSlot[256];
         long long aStart[256];
         engine.GetKeySlots( aSlot, aStart );
-        lights.Update( fx, g.llStartTime, aSlot, aStart );
-        lights.UpdateExposure( fx, g.llStartTime, g.iStartNote, g.iEndNote );
+        // (in song time, so the keys fade alike at every tempo in the tick-based view)
+        if ( engine.TickBased() )
+            for ( int k = 0; k < 256; k++ )
+                if ( aSlot[k] >= 0 ) aStart[k] = engine.FromView( aStart[k] );
+        lights.Update( fx, g.llSongTime, aSlot, aStart );
+        lights.UpdateExposure( fx, g.llSongTime, g.iStartNote, g.iEndNote );
     }
     if ( m_bShowKB )
     {
@@ -1203,7 +1334,7 @@ void MainScreen::RenderStatus( Renderer *pRenderer, const StatsBox &box, long lo
         swprintf( aValue[VS::StatTime], 48, L"\t-%lld:%04.1lf / %lld:%04.1lf",
             -llTime / 60000000, ( -llTime % 60000000 ) / 1000000.0,
             mInfo.llTotalMicroSecs / 60000000, ( mInfo.llTotalMicroSecs % 60000000 ) / 1000000.0 );
-    swprintf( aValue[VS::StatFPS], 48, L"%.1lf", dFPS );
+    swprintf( aValue[VS::StatFPS], 48, L"%.1lf%ls", dFPS, pRenderer == m_pRenderer && m_bSimOn ? L" (PFA sim)" : L"" );
     // Scoring was removed; the line is kept as the original shows it with no input device
     wcscpy( aValue[VS::StatScore], L"N/A" );
     if ( Shown( VS::StatTempo ) ) swprintf( aValue[VS::StatTempo], 48, L"%.2f BPM", 60000000.0 / TempoAt( m_pSong->vMeta, llTime ) );

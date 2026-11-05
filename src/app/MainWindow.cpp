@@ -1158,36 +1158,76 @@ namespace
     }
 }
 
+namespace
+{
+    // What the window adds around the graphics window (notes and keyboard): its frame, title, menu
+    // and the controls bar. A maximized window's rectangle still counts its off-screen frame, so this
+    // holds in any state but minimized, when the last one measured is used
+    SIZE Chrome()
+    {
+        static SIZE szLast = {};
+        if ( IsIconic( g_hWnd ) && ( szLast.cx || szLast.cy ) ) return szLast;
+        RECT rcMain, rcGfx;
+        GetWindowRect( g_hWnd, &rcMain );
+        GetClientRect( g_hWndGfx, &rcGfx );
+        szLast = { std::max< LONG >( 0, ( rcMain.right - rcMain.left ) - rcGfx.right ), std::max< LONG >( 0, ( rcMain.bottom - rcMain.top ) - rcGfx.bottom ) };
+        return szLast;
+    }
+
+    SIZE MinViewSize()
+    {
+        SIZE c = Chrome();
+        return { std::max< LONG >( 1, MINWIDTH - c.cx ), std::max< LONG >( 1, MINHEIGHT - c.cy ) };
+    }
+}
+
+SIZE MainWindowMinSize()
+{
+    return MinViewSize();
+}
+
 SIZE MainWindowMaxSize()
 {
     RECT rc = MainMonitor().rcMonitor;
-    return { std::max< LONG >( rc.right - rc.left, MINWIDTH ), std::max< LONG >( rc.bottom - rc.top, MINHEIGHT ) };
+    SIZE c = Chrome(), szMin = MinViewSize();
+    return { std::max< LONG >( rc.right - rc.left - c.cx, szMin.cx ), std::max< LONG >( rc.bottom - rc.top - c.cy, szMin.cy ) };
 }
 
 SIZE MainWindowSize()
 {
     WINDOWPLACEMENT wp = { sizeof( wp ) };
+    SIZE c = Chrome();
     RECT rc;
     if ( ( IsZoomed( g_hWnd ) || IsIconic( g_hWnd ) ) && GetWindowPlacement( g_hWnd, &wp ) ) rc = wp.rcNormalPosition;
     else GetWindowRect( g_hWnd, &rc );
-    return { rc.right - rc.left, rc.bottom - rc.top };
+    return { rc.right - rc.left - c.cx, rc.bottom - rc.top - c.cy };
 }
 
 VOID SetMainWindowSize( int iWidth, int iHeight )
 {
     if ( IsZoomed( g_hWnd ) || IsIconic( g_hWnd ) ) ShowWindow( g_hWnd, SW_RESTORE );
     MONITORINFO mi = MainMonitor();
-    SIZE szMax = MainWindowMaxSize();
-    iWidth = std::clamp( iWidth, MINWIDTH, (int)szMax.cx );
-    iHeight = std::clamp( iHeight, MINHEIGHT, (int)szMax.cy );
-    const RECT &rcWork = mi.rcWork;
-    const RECT &rcIn = iWidth <= rcWork.right - rcWork.left && iHeight <= rcWork.bottom - rcWork.top ? rcWork : mi.rcMonitor;
-    // Where it is, unless that leaves part of it off the monitor
-    RECT rc;
-    GetWindowRect( g_hWnd, &rc );
-    int iLeft = std::clamp( (int)rc.left, (int)rcIn.left, std::max( (int)rcIn.left, (int)rcIn.right - iWidth ) );
-    int iTop = std::clamp( (int)rc.top, (int)rcIn.top, std::max( (int)rcIn.top, (int)rcIn.bottom - iHeight ) );
-    SetWindowPos( g_hWnd, nullptr, iLeft, iTop, iWidth, iHeight, SWP_NOZORDER | SWP_NOACTIVATE );
+    SIZE szMin = MinViewSize(), szMax = MainWindowMaxSize();
+    iWidth = std::clamp( iWidth, (int)szMin.cx, (int)szMax.cx );
+    iHeight = std::clamp( iHeight, (int)szMin.cy, (int)szMax.cy );
+    // Twice at most: a narrower window can wrap the menu onto another line, which the second pass
+    // makes up for
+    for ( int iPass = 0; iPass < 2; iPass++ )
+    {
+        SIZE c = Chrome();
+        int iOuterW = iWidth + c.cx, iOuterH = iHeight + c.cy;
+        const RECT &rcWork = mi.rcWork;
+        const RECT &rcIn = iOuterW <= rcWork.right - rcWork.left && iOuterH <= rcWork.bottom - rcWork.top ? rcWork : mi.rcMonitor;
+        // Where it is, unless that leaves part of it off the monitor
+        RECT rc;
+        GetWindowRect( g_hWnd, &rc );
+        int iLeft = std::clamp( (int)rc.left, (int)rcIn.left, std::max( (int)rcIn.left, (int)rcIn.right - iOuterW ) );
+        int iTop = std::clamp( (int)rc.top, (int)rcIn.top, std::max( (int)rcIn.top, (int)rcIn.bottom - iOuterH ) );
+        SetWindowPos( g_hWnd, nullptr, iLeft, iTop, iOuterW, iOuterH, SWP_NOZORDER | SWP_NOACTIVATE );
+        RECT rcGfx;
+        GetClientRect( g_hWndGfx, &rcGfx );
+        if ( rcGfx.right == iWidth && rcGfx.bottom == iHeight ) break;
+    }
 }
 
 VOID SetFullScreen( BOOL bFullScreen )

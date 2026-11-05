@@ -57,6 +57,7 @@ struct ViewInputs
     float fOffsetX = 0.0f, fOffsetY = 0.0f, fZoomX = 1.0f;   // already include the temporary move/zoom
     bool bShowKB = true;
     long long llStartTime = 0, llTimeSpan = 3000000;
+    long long llSongTime = 0;         // the song's time (llStartTime is the view's: FastEngine::ToView)
     unsigned uClean = 0;              // Clean flags (0: the original's drawing)
     bool bLines = true;               // the key dividers and measure lines
     bool bEdo31 = false;              // the 256-key view in the 31-EDO layout (Visual tab)
@@ -73,6 +74,7 @@ struct FrameGlobals
     int iAllWhiteKeys;
     float fWhiteCX;
     long long llStartTime, llTimeSpan, llRndStartTime;
+    long long llSongTime = 0;         // ViewInputs::llSongTime
     int iBufferWidth, iBufferHeight;
     unsigned uClean;
     bool bLines;
@@ -162,7 +164,8 @@ public:
     long long GetBeat( long long iTick, long long iBeatType, long long iLastSignatureTick ) const;
     long long GetBeatTick( long long iTick, long long iBeatType, long long iLastSignatureTick ) const;
     long long GetMetTick( long long iTick, long long iClocksPerMet, long long iLastSignatureTick ) const;
-    void DrawMeasureLines( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c, long long iStartTick ) const;
+    // bTickView: in the tick-based view (FastEngine::SetTickBased), where a quarter note is half a second
+    void DrawMeasureLines( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c, long long iStartTick, bool bTickView = false ) const;
 
     long long BeatsPerMeasure() const { return m_iBeatsPerMeasure; }
     long long BeatType() const { return m_iBeatType; }

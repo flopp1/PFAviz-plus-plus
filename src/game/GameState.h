@@ -18,6 +18,7 @@
 #include "midi/RefMidi.h"
 #include "render/Image.h"
 #include "render/Renderer.h"
+#include "song/PfaLag.h"
 #include "visual/Effects.h"
 #include "visual/FastEngine.h"
 #include "visual/Scene.h"
@@ -172,7 +173,8 @@ private:
     long long GetMinTime() const { return m_pSong->info.llFirstNote - 3000000; }
     long long GetMaxTime() const { return m_pSong->info.llTotalMicroSecs + 500000; }
 
-    ViewInputs GetViewInputs( int iWidth, int iHeight, long long llStartTime ) const;
+    // At song time llSongTime (the view's start: FastEngine::ToView, through the window's engine)
+    ViewInputs GetViewInputs( int iWidth, int iHeight, long long llSongTime ) const;
     void RenderGlobals();
     // The scene (background, measure lines, notes, keyboard, border) under the effects (visual/Effects.h),
     // then fnStats( fDark ) for the stats box: inside the effects (fDark: their darkening) when they apply
@@ -270,6 +272,18 @@ private:
 
     // Audio: the clock drives both the visuals (sampled once per frame) and the playback threads
     PlaybackClock m_Clock;
+    // The PFA lag simulation (song/PfaLag.h): the original's frame running (song time m_llSimCur,
+    // from wall time m_llSimWallStart to m_llSimWallEnd), and the time of the last one it drew. Its
+    // frames run back to back, many per frame here when they are short
+    void SimulateFrame( long long llMaxTime );
+    bool m_bSimOn = false, m_bSimWarned = false;
+    PfaLag::Cpu m_SimCpu;
+    PfaLag::Noise m_SimNoise;
+    long long m_llSimWallStart = 0, m_llSimWallEnd = 0, m_llSimCur = 0, m_llSimShown = 0;
+    double m_dSimFrameUs = 0.0;     // the last frame's length
+    int m_iSimFrames = 0;           // its frames done since the frame rate was last computed
+    unsigned m_uSimVisualGen = 0;   // the visual settings the cache sizes were read from
+    double m_dRefreshUs = 0.0;      // the display's refresh period (frames wait for it with Limit FPS)
     std::unique_ptr< PlaybackEngine > m_pPlayback;
     bool m_bWithPlayback = true;        // false: no m_pPlayback (File > Render Song)
 

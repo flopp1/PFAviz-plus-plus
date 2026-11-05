@@ -125,7 +125,7 @@ namespace
         const PerformanceSettings &cPerf = Config::GetConfig().GetPerformanceSettings();
         pJob->progress.bLzVisual = cPerf.bCompactVisual;
         pJob->progress.bNoteStats = ( Config::GetConfig().GetVisualSettings().uStats & VisualSettings::NoteStats ) != 0 ||
-                                    Config::GetConfig().GetVisualSettings().bGraph;
+                                    Config::GetConfig().GetVisualSettings().bGraph || Config::GetConfig().GetVisualSettings().bPfaLag;
         pJob->progress.bFirstPairingOnly = cPerf.bIgnoreWeird;
         pJob->progress.bEndOpenNotes = cPerf.bEndOpenNotes;
         pJob->progress.bDedup = cPerf.bDedup;

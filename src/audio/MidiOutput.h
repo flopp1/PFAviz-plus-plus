@@ -65,7 +65,11 @@ namespace MidiOutputs
     void KdmapiLongCounts( uint64_t &llMessages, uint64_t &llBytes, size_t &iLargest );
     std::unique_ptr< MidiOutput > OpenWinMM( int iDevice );
     // The device chosen in the settings: KDMAPI when preferred and available, else the WinMM device
+    // It stays open between uses (each returns a handle to it, which resets the channels when released),
+    // so a synth loads its soundfonts once, not per song; it closes when the setting changes or at
+    // CloseShared (the game thread's end)
     std::unique_ptr< MidiOutput > OpenConfigured( bool bTuning31 = false, bool bPitchBend = false );
+    void CloseShared();
     // The name OpenConfigured would open now (empty when nothing would open)
     std::wstring ConfiguredName();
 }

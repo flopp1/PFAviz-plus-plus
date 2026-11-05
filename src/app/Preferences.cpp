@@ -21,6 +21,7 @@
 #include "core/Config.h"
 #include "midi/Notes.h"
 #include "resource.h"
+#include "song/PfaLag.h"
 
 namespace
 {
@@ -473,6 +474,25 @@ namespace
         InvalidateRect( GetDlgItem( hWnd, IDC_BARCOLOR ), nullptr, FALSE );
         CheckDlgButton( hWnd, IDC_BKGON, cVisual.bBkgImage ? BST_CHECKED : BST_UNCHECKED );
         CheckDlgButton( hWnd, IDC_HIDELINES, cVisual.bHideLines ? BST_CHECKED : BST_UNCHECKED );
+        CheckDlgButton( hWnd, IDC_TICKBASED, cVisual.bTickBased ? BST_CHECKED : BST_UNCHECKED );
+        CheckDlgButton( hWnd, IDC_PFALAG, cVisual.bPfaLag ? BST_CHECKED : BST_UNCHECKED );
+        {
+            // The cache sizes in KB (empty: this computer's, which the label says)
+            const int aiId[2] = { IDC_PFAL2, IDC_PFAL3 }, aiKB[2] = { cVisual.iPfaL2KB, cVisual.iPfaL3KB };
+            for ( int i = 0; i < 2; i++ )
+                if ( aiKB[i] > 0 ) SetDlgItemInt( hWnd, aiId[i], (UINT)aiKB[i], FALSE );
+                else SetDlgItemTextW( hWnd, aiId[i], L"" );
+            // (left empty, this computer's sizes show greyed in the boxes)
+            PfaLag::Cpu cpu = PfaLag::Cpu::Detect();
+            wchar_t buf[32];
+            swprintf( buf, 32, L"%llu", (unsigned long long)( cpu.llL2 >> 10 ) );
+            SendDlgItemMessageW( hWnd, IDC_PFAL2, EM_SETCUEBANNER, TRUE, ( LPARAM )buf );
+            swprintf( buf, 32, L"%llu", (unsigned long long)( cpu.llL3 >> 10 ) );
+            SendDlgItemMessageW( hWnd, IDC_PFAL3, EM_SETCUEBANNER, TRUE, ( LPARAM )buf );
+            swprintf( buf, 32, L"%g", cVisual.iPfaSendNs / 1000.0 );
+            SetDlgItemTextW( hWnd, IDC_PFASEND, buf );
+            for ( int iId : { IDC_PFAL2, IDC_PFAL3, IDC_PFASEND } ) EnableWindow( GetDlgItem( hWnd, iId ), cVisual.bPfaLag );
+        }
         CheckDlgButton( hWnd, IDC_LOOPCOLORS, cVisual.bLoopColors ? BST_CHECKED : BST_UNCHECKED );
         CheckDlgButton( hWnd, IDC_EDO31KEYS, cVisual.bEdo31Keys ? BST_CHECKED : BST_UNCHECKED );
         CheckDlgButton( hWnd, IDC_STATSSCALED, cVisual.bStatsScaled ? BST_CHECKED : BST_UNCHECKED );
@@ -506,7 +526,7 @@ namespace
         bool bFullScreen = Config::GetConfig().GetViewSettings().GetFullScreen();
         wchar_t buf[96];
         if ( bFullScreen ) swprintf( buf, 96, L"pixels (not in full screen)" );
-        else swprintf( buf, 96, L"pixels (%d x %d to %ld x %ld)", MINWIDTH, MINHEIGHT, szMax.cx, szMax.cy );
+        else swprintf( buf, 96, L"notes and keyboard, up to %ld x %ld", szMax.cx, szMax.cy );
         SetDlgItemTextW( hWnd, IDC_WINSIZEMAX, buf );
         EnableWindow( GetDlgItem( hWnd, IDC_WINWIDTH ), !bFullScreen );
         EnableWindow( GetDlgItem( hWnd, IDC_WINHEIGHT ), !bFullScreen );
@@ -519,7 +539,7 @@ namespace
         UINT u = GetDlgItemInt( hWnd, iId, &bOk, FALSE );
         if ( bOk && (int)u >= iMin && (int)u <= iMax ) { iValue = (int)u; return true; }
         wchar_t buf[128];
-        swprintf( buf, 128, L"Please specify a window %ls between %d and %d pixels", sWhat, iMin, iMax );
+        swprintf( buf, 128, L"Please specify a view %ls (notes and keyboard) between %d and %d pixels", sWhat, iMin, iMax );
         MessageBoxW( hWnd, buf, L"Error", MB_OK | MB_ICONEXCLAMATION );
         PostMessageW( hWnd, WM_NEXTDLGCTL, ( WPARAM )GetDlgItem( hWnd, iId ), TRUE );
         SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_INVALID );
@@ -721,6 +741,12 @@ namespace
                     case IDC_STATSSHADOW:
                         EnableWindow( GetDlgItem( hWnd, IDC_STATSMIRROR ), IsDlgButtonChecked( hWnd, IDC_STATSSHADOW ) == BST_CHECKED );
                         return TRUE;
+                    case IDC_PFALAG:
+                    {
+                        BOOL bOn = IsDlgButtonChecked( hWnd, IDC_PFALAG ) == BST_CHECKED;
+                        for ( int iId : { IDC_PFAL2, IDC_PFAL3, IDC_PFASEND } ) EnableWindow( GetDlgItem( hWnd, iId ), bOn );
+                        return TRUE;
+                    }
                     case IDC_GRAPHBTN:
                     {
                         VisualSettings::GraphSettings c = g_Graph;
@@ -918,9 +944,9 @@ namespace
                     }
                     if ( !cView.GetFullScreen() )
                     {
-                        SIZE szMax = MainWindowMaxSize();
-                        if ( !ReadSize( hWnd, IDC_WINWIDTH, MINWIDTH, (int)szMax.cx, L"width", iWidth ) ) return TRUE;
-                        if ( !ReadSize( hWnd, IDC_WINHEIGHT, MINHEIGHT, (int)szMax.cy, L"height", iHeight ) ) return TRUE;
+                        SIZE szMin = MainWindowMinSize(), szMax = MainWindowMaxSize();
+                        if ( !ReadSize( hWnd, IDC_WINWIDTH, (int)szMin.cx, (int)szMax.cx, L"width", iWidth ) ) return TRUE;
+                        if ( !ReadSize( hWnd, IDC_WINHEIGHT, (int)szMin.cy, (int)szMax.cy, L"height", iHeight ) ) return TRUE;
                     }
 
                     cVisual.eKeysShown = VisualSettings::All128;
@@ -942,6 +968,24 @@ namespace
                     cVisual.sBkgImage = sImage;
                     cVisual.iBkgOpacity = std::min( 100, (int)uOpacity );
                     cVisual.bHideLines = IsDlgButtonChecked( hWnd, IDC_HIDELINES ) == BST_CHECKED;
+                    cVisual.bTickBased = IsDlgButtonChecked( hWnd, IDC_TICKBASED ) == BST_CHECKED;
+                    cVisual.bPfaLag = IsDlgButtonChecked( hWnd, IDC_PFALAG ) == BST_CHECKED;
+                    {
+                        const int aiId[2] = { IDC_PFAL2, IDC_PFAL3 };
+                        int *apKB[2] = { &cVisual.iPfaL2KB, &cVisual.iPfaL3KB };
+                        for ( int i = 0; i < 2; i++ )
+                        {
+                            BOOL bNum = FALSE;
+                            UINT u = GetDlgItemInt( hWnd, aiId[i], &bNum, FALSE );
+                            *apKB[i] = bNum ? (int)std::min< UINT >( u, i ? 1u << 22 : 1u << 20 ) : 0;
+                        }
+                        // (microseconds, with decimals; unreadable: kept)
+                        wchar_t sSend[32] = L"";
+                        GetDlgItemTextW( hWnd, IDC_PFASEND, sSend, 32 );
+                        wchar_t *pEnd = nullptr;
+                        double dSend = wcstod( sSend, &pEnd );
+                        if ( pEnd != sSend && dSend >= 0.0 ) cVisual.iPfaSendNs = (int)( std::min( dSend, 10000.0 ) * 1000.0 + 0.5 );
+                    }
                     cVisual.bLoopColors = IsDlgButtonChecked( hWnd, IDC_LOOPCOLORS ) == BST_CHECKED;
                     cVisual.bEdo31Keys = IsDlgButtonChecked( hWnd, IDC_EDO31KEYS ) == BST_CHECKED;
                     cVisual.bStatsScaled = bStatsScaled;

@@ -86,6 +86,18 @@ public:
 
     const FrameStats &LastStats() const { return m_Stats; }
 
+    // Tick-based view (Visual tab): notes are placed by their tick, not their time, a quarter note
+    // as tall as half a second (120 BPM), so every tempo scrolls the same distance per beat. The
+    // engine then works in view time: AdvanceEnd, Process, Jump, DrawNotes (FrameGlobals) and the key
+    // slots' start times take and give ToView( song time ). Off (or a file timed in SMPTE frames, whose
+    // ticks are time already): view time is song time. A change takes effect at the next Jump, which
+    // the caller makes.
+    void SetTickBased( bool bOn );
+    bool TickBased() const { return m_pTickView != nullptr; }
+    long long ToView( long long llTime ) const;
+    long long FromView( long long llView ) const;       // the other way
+    static const long long TickViewQuarterUs = 500000;
+
 private:
     // A note that owns at least one pixel row, with what drawing it needs. Its rects are drawn only
     // over rows [iRowA, iRowB), the span of the rows it owns (iRowA == INT_MIN: drawn whole).
@@ -115,7 +127,7 @@ private:
         uint64_t URow( int b ) const { return vURow[b - iThetaLo]; }
     };
 
-    long long Time( uint64_t u ) const { return (long long)m_Times.Get( u ); }
+    long long Time( uint64_t u ) const { return (long long)m_pTimes->Get( u ); }
     uint64_t LowerBoundTime( long long t ) const;
     uint64_t UpperBoundTime( long long t ) const;
     void GetBounds( const VisualStore &S, int k, Bounds &b ) const;
@@ -133,7 +145,8 @@ private:
 
     const Song &m_Song;
     const VisualStore &m_Store;
-    const PackedMonotone &m_Times;
+    const PackedMonotone *m_pTimes;                 // view time of each unique tick: the song's times, or m_pTickView
+    std::shared_ptr< const PackedMonotone > m_pTickView;    // the ticks in view time (tick-based view; shared by the song's engines)
     int m_iThreads;
 
     long long m_llJump = LLONG_MIN;

@@ -130,6 +130,10 @@ struct VisualSettings
     int iBkgOpacity;            // percent
     unsigned uClean;            // Clean flags (visual/Scene.h): the original's rounding quirks left out
     bool bHideLines;            // no key dividers or measure lines over the background
+    bool bTickBased;            // notes placed by tick, not time (FastEngine::SetTickBased)
+    bool bPfaLag;               // play as the original PFA would lag on this computer (song/PfaLag.h)
+    int iPfaL2KB, iPfaL3KB;     // its CPU's L2 and L3 caches (0: this computer's)
+    int iPfaSendNs;             // what one MIDI message costs it on average (midiOutShortMsg), nanoseconds (50: the KDMAPI patch)
     bool bHideSpeedBoxes;       // the toolbar as the original's: sliders only, without the exact speed boxes
     bool bLoopColors;           // the track colors repeat (channel n gets colors[n % iColorCount]); off: random after them
     bool bEdo31Keys;            // the 256-key view in the 31-EDO layout (31 keys an octave; Scene.cpp)

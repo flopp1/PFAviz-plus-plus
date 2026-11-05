@@ -68,6 +68,7 @@ static DWORD WINAPI GameThread( LPVOID lpParameter )
 
     GameState::WaitForReleasedAudio();
     delete pGameState;
+    MidiOutputs::CloseShared();     // (the synth stayed open across songs; the last screen's handle is gone)
     delete pRenderer;
     return 0;
 }

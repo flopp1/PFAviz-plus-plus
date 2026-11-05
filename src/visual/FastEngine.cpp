@@ -4,6 +4,7 @@
 #include <cmath>
 #include <cstring>
 #include <functional>
+#include <mutex>
 
 #include "core/ThreadPool.h"
 #include "core/Util.h"
@@ -12,7 +13,7 @@
 using std::floor;
 
 FastEngine::FastEngine( const Song &song, int iThreads )
-    : m_Song( song ), m_Store( song.visual ), m_Times( song.stream.times ), m_iThreads( Parallel::ThreadCount( iThreads ) )
+    : m_Song( song ), m_Store( song.visual ), m_pTimes( &song.stream.times ), m_iThreads( Parallel::ThreadCount( iThreads ) )
 {
     Reset();
 }
@@ -71,6 +72,72 @@ void FastEngine::SetLod( bool bOn, bool bSync )
     if ( !bOn ) { m_LodView = LodCache::View(); m_pLod.reset(); }
 }
 
+namespace
+{
+    // The song's ticks in view time, built once and shared by its engines (the window's and a video
+    // export's) while any uses them
+    std::shared_ptr< const PackedMonotone > TickViewTable( const Song &song, int iThreads )
+    {
+        static std::mutex mx;
+        struct Entry { const Song *pSong; size_t n; std::weak_ptr< const PackedMonotone > p; };
+        static std::vector< Entry > vCache;
+        std::lock_guard< std::mutex > lock( mx );
+        const PackedMonotone &ticks = song.stream.ticks;
+        vCache.erase( std::remove_if( vCache.begin(), vCache.end(), []( const Entry &e ) { return e.p.expired(); } ), vCache.end() );
+        for ( const Entry &e : vCache )
+            if ( e.pSong == &song && e.n == ticks.Size() )
+                if ( auto p = e.p.lock() ) return p;
+        const uint64_t uDiv = (uint64_t)song.info.iDivision;
+        auto p = std::make_shared< PackedMonotone >();
+        p->BuildBlocks( ticks.Size(), [&]( size_t i0, size_t i1, uint64_t *pOut ) {
+            for ( size_t i = i0; i < i1; i++ ) pOut[i - i0] = ticks.Get( i ) * (uint64_t)FastEngine::TickViewQuarterUs / uDiv;
+        }, iThreads );
+        vCache.push_back( { &song, ticks.Size(), p } );
+        return p;
+    }
+}
+
+void FastEngine::SetTickBased( bool bOn )
+{
+    const int iDiv = m_Song.info.iDivision;
+    bOn = bOn && iDiv > 0 && !IsSmpteDivision( iDiv ) && m_Song.stream.ticks.Size() == m_Song.stream.times.Size();
+    if ( bOn == TickBased() ) return;
+    m_pTickView = bOn ? TickViewTable( m_Song, m_iThreads ) : nullptr;
+    m_pTimes = bOn ? m_pTickView.get() : &m_Song.stream.times;
+    // What was built or cached for the other placing: the LOD cache, and the frame's tables
+    if ( m_pLod ) m_pLod.reset( new LodCache() );
+    m_LodView = LodCache::View();
+    m_llCacheSpan = -1;
+    Reset();
+}
+
+long long FastEngine::ToView( long long llTime ) const
+{
+    if ( !m_pTickView ) return llTime;
+    const PackedMonotone &T = m_Song.stream.times, &V = *m_pTickView;
+    const size_t n = T.Size();
+    if ( !n ) return llTime;
+    // Between two unique ticks, in proportion to time; before the first and after the last, at 120 BPM
+    if ( llTime < (long long)T.Get( 0 ) ) return (long long)V.Get( 0 ) - ( (long long)T.Get( 0 ) - llTime );
+    size_t u = T.UpperBound( (uint64_t)llTime );
+    if ( u >= n ) return (long long)V.Get( n - 1 ) + ( llTime - (long long)T.Get( n - 1 ) );
+    const long long t0 = (long long)T.Get( u - 1 ), t1 = (long long)T.Get( u ), v0 = (long long)V.Get( u - 1 ), v1 = (long long)V.Get( u );
+    return v0 + (long long)( (double)( v1 - v0 ) * (double)( llTime - t0 ) / (double)( t1 - t0 ) );
+}
+
+long long FastEngine::FromView( long long llView ) const
+{
+    if ( !m_pTickView ) return llView;
+    const PackedMonotone &T = m_Song.stream.times, &V = *m_pTickView;
+    const size_t n = V.Size();
+    if ( !n ) return llView;
+    if ( llView < (long long)V.Get( 0 ) ) return (long long)T.Get( 0 ) - ( (long long)V.Get( 0 ) - llView );
+    size_t u = V.UpperBound( (uint64_t)llView );
+    if ( u >= n ) return (long long)T.Get( n - 1 ) + ( llView - (long long)V.Get( n - 1 ) );
+    const long long t0 = (long long)T.Get( u - 1 ), t1 = (long long)T.Get( u ), v0 = (long long)V.Get( u - 1 ), v1 = (long long)V.Get( u );
+    return t0 + (long long)( (double)( t1 - t0 ) * (double)( llView - v0 ) / (double)( v1 - v0 ) );
+}
+
 bool FastEngine::ViewPending() const
 {
     return !m_vMask.empty() && !( m_pView && m_vViewMask == m_vMask );
@@ -122,12 +189,12 @@ void FastEngine::Jump( long long llTarget, long long, long long llEndTime )
 
 uint64_t FastEngine::LowerBoundTime( long long t ) const
 {
-    return t <= 0 ? 0 : m_Times.LowerBound( (uint64_t)t );
+    return t <= 0 ? 0 : m_pTimes->LowerBound( (uint64_t)t );
 }
 
 uint64_t FastEngine::UpperBoundTime( long long t ) const
 {
-    return t < 0 ? 0 : m_Times.UpperBound( (uint64_t)t );
+    return t < 0 ? 0 : m_pTimes->UpperBound( (uint64_t)t );
 }
 
 void FastEngine::GetBounds( const VisualStore &S, int k, Bounds &b ) const
@@ -278,7 +345,7 @@ void FastEngine::PrepareFrame( const FrameGlobals &g )
     {
         long long t = F.R + F.vTheta[i];
         size_t iHint = bHints ? (size_t)F.vURow[i] : i ? (size_t)F.vURow[i - 1] : 0;
-        F.vURow[i] = t <= 0 ? 0 : m_Times.LowerBoundFrom( (uint64_t)t, iHint );
+        F.vURow[i] = t <= 0 ? 0 : m_pTimes->LowerBoundFrom( (uint64_t)t, iHint );
     }
 }
 
@@ -468,7 +535,7 @@ void FastEngine::SweepKey( const VisualStore &S, const uint64_t *pCpos, int k, c
             bool bAny = ( F.uClean & Clean::MinHeight ) && iBeta - u <= 1;
             uint64_t llAt = u == uFloor ? llFloor : 0;
             int64_t j = ( F.uClean & Clean::EdgeRound ) ? ks.RightmostEnd( lo, hi, std::max( llAt, bAny ? 0 : F.URow( u ) ) )
-                                                        : ks.RightmostDur( lo, hi, std::max( llAt, bAny ? 0 : (uint64_t)F.vG[iBeta - u] ), m_Times );
+                                                        : ks.RightmostDur( lo, hi, std::max( llAt, bAny ? 0 : (uint64_t)F.vG[iBeta - u] ), *m_pTimes );
             iQueries++;
             if ( j < 0 ) break;
             ks.Get( (size_t)j, n );
@@ -593,7 +660,7 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
         ls.iRowHi = m_F.iRowHi;
         ls.uClean = m_F.uClean & ( Clean::MinHeight | Clean::EdgeRound );
         std::shared_ptr< const VisualStore > pStore = bView ? m_pView : std::shared_ptr< const VisualStore >( std::shared_ptr< const VisualStore >(), &m_Store );
-        m_pLod->Configure( ls, m_F.vTheta, pStore, bView ? 1 + 2 * m_uViewGen : 0, &m_Times );
+        m_pLod->Configure( ls, m_F.vTheta, pStore, bView ? 1 + 2 * m_uViewGen : 0, m_pTimes );
         long long t0 = m_F.R + m_F.vTheta.back(), t1 = m_F.R + m_F.vTheta.front();
         long long llBuild = Timer::NowMicroSecs();
         m_pLod->Retire( m_LodView );                  // the segments only it held are freed off this thread

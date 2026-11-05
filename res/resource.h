@@ -281,3 +281,9 @@
 #define IDC_THEME                       1250
 #define IDC_GRAPHON                     1251
 #define IDC_PERF_ENDOPEN                1252
+#define IDC_TICKBASED                   1253
+#define IDC_PFALAG                      1254
+#define IDC_PFAL2                       1255
+#define IDC_PFAL3                       1256
+#define IDC_PFACPU                      1257
+#define IDC_PFASEND                     1258

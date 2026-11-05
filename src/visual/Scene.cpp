@@ -107,6 +107,7 @@ FrameGlobals Scene::ComputeGlobals( const ViewInputs &in )
     g.iBufferHeight = in.iBufferHeight;
     g.llStartTime = in.llStartTime;
     g.llTimeSpan = in.llTimeSpan;
+    g.llSongTime = in.llSongTime;
     g.uClean = in.uClean;
     g.bLines = in.bLines;
     g.bFlat = in.bFlat;
@@ -999,7 +1000,7 @@ long long MeterTracker::GetMetTick( long long iTick, long long iClocksPerMet, lo
 }
 
 // The horizontal half of MainScreen::RenderLines
-void MeterTracker::DrawMeasureLines( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c, long long iStartTick ) const
+void MeterTracker::DrawMeasureLines( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c, long long iStartTick, bool bTickView ) const
 {
     int iDivision = m_Info.iDivision;
     if ( IsSmpteDivision( iDivision ) || !g.bLines ) return;
@@ -1013,6 +1014,14 @@ void MeterTracker::DrawMeasureLines( Renderer *pRenderer, const FrameGlobals &g,
     long long iMicroSecsPerBeat = m_iMicroSecsPerBeat;
     long long llLastTempoTime = m_llLastTempoTime;
     eventvec_t::const_iterator itNextTempo = m_itNextTempo;
+    // The tick-based view: one tempo of 120 BPM from tick 0, as FastEngine places the notes
+    if ( bTickView )
+    {
+        iLastTempoTick = 0;
+        iMicroSecsPerBeat = 500000;
+        llLastTempoTime = 0;
+        itNextTempo = m_vTempo.end();
+    }
 
     // Copy signature state vars
     long long iLastSignatureTick = m_iLastSignatureTick;

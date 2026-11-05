@@ -182,6 +182,10 @@ void VisualSettings::LoadDefaultValues()
     iBkgOpacity = 100;
     uClean = 0;
     bHideLines = false;
+    bTickBased = false;
+    bPfaLag = false;
+    iPfaL2KB = iPfaL3KB = 0;
+    iPfaSendNs = 50;
     bHideSpeedBoxes = false;
     bLoopColors = false;
     bEdo31Keys = false;
@@ -328,6 +332,11 @@ void VisualSettings::Load( const IniFile &ini )
     iBkgOpacity = std::clamp( ini.GetInt( "Visual", "BkgImageOpacity", iBkgOpacity ), 0, 100 );
     uClean = (unsigned)ini.GetInt( "Visual", "CleanDrawing", (int)uClean ) & 7;
     bHideLines = ini.GetBool( "Visual", "HideLines", bHideLines );
+    bTickBased = ini.GetBool( "Visual", "TickBased", bTickBased );
+    bPfaLag = ini.GetBool( "Visual", "PfaLag", bPfaLag );
+    iPfaL2KB = std::clamp( ini.GetInt( "Visual", "PfaLagL2KB", iPfaL2KB ), 0, 1 << 20 );
+    iPfaL3KB = std::clamp( ini.GetInt( "Visual", "PfaLagL3KB", iPfaL3KB ), 0, 1 << 22 );
+    iPfaSendNs = std::clamp( ini.GetInt( "Visual", "PfaLagSendCostNs", iPfaSendNs ), 0, 10000000 );
     bLoopColors = ini.GetBool( "Visual", "LoopColors", bLoopColors );
     bEdo31Keys = ini.GetBool( "Visual", "Edo31Keys", bEdo31Keys );
     bStatsScaled = ini.GetBool( "Visual", "StatsScaled", bStatsScaled );
@@ -396,6 +405,11 @@ void VisualSettings::Save( IniFile &ini ) const
     ini.SetInt( "Visual", "BkgImageOpacity", iBkgOpacity );
     ini.SetInt( "Visual", "CleanDrawing", uClean );
     ini.SetInt( "Visual", "HideLines", bHideLines );
+    ini.SetInt( "Visual", "TickBased", bTickBased );
+    ini.SetInt( "Visual", "PfaLag", bPfaLag );
+    ini.SetInt( "Visual", "PfaLagL2KB", iPfaL2KB );
+    ini.SetInt( "Visual", "PfaLagL3KB", iPfaL3KB );
+    ini.SetInt( "Visual", "PfaLagSendCostNs", iPfaSendNs );
     ini.SetInt( "Visual", "LoopColors", bLoopColors );
     ini.SetInt( "Visual", "Edo31Keys", bEdo31Keys );
     ini.SetInt( "Visual", "StatsScaled", bStatsScaled );
