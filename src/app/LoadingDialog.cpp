@@ -334,7 +334,7 @@ void FinishLoad( LPARAM lParam )
     pJob->bFinished = true;
 
     const PerformanceSettings &cPerf = Config::GetConfig().GetPerformanceSettings();
-    bool bCancelled = pJob->progress.bCancel && !pJob->progress.bOutOfMemory;    // (stopped for memory: its error is shown)
+    bool bCancelled = pJob->progress.bCancel;
     bool bOk = !bCancelled && pJob->song && pJob->sError.empty();
 
     if ( bOk )

@@ -28,7 +28,6 @@ struct LoadProgress
     std::atomic< uint64_t > llFileSize{ 0 }, llBytesResident{ 0 };
     std::atomic< uint64_t > llTracksFound{ 0 }, llTracksDone{ 0 }, llEvents{ 0 }, llNotes{ 0 };
     std::atomic< bool > bCancel{ false };
-    std::atomic< bool > bOutOfMemory{ false };  // the load was stopped (bCancel) with the computer nearly out of memory
     Archive::Chooser fnChoose;                  // of several MIDI files in an archive, the one to read (song/Archive.h)
     std::atomic< bool > bWaitingOnDisk{ false };
     std::atomic< long long > llCountEndUs{ 0 }; // Timer::NowMicroSecs() when the count pass finished

@@ -1799,11 +1799,6 @@ namespace
         {
             m_Stats.llPrivateBefore = PrivateBytes();
             m_Prog.llPrivateNow = m_Prog.llPrivatePeak = m_Stats.llPrivatePeak = m_Stats.llPrivateBefore;
-            // A load that will not fit stops before the computer runs out: when its free memory falls below
-            // a sixteenth (at least 2 GB)
-            MEMORYSTATUSEX ms = {};
-            ms.dwLength = sizeof( ms );
-            if ( GlobalMemoryStatusEx( &ms ) ) m_llFloor = std::max< uint64_t >( ms.ullTotalPhys / 16, 2ull << 30 );
             m_Thread = std::thread( [this] {
                 std::unique_lock< std::mutex > lock( m_mx );
                 while ( !m_bStop )
@@ -1831,19 +1826,7 @@ namespace
             if ( ll > m_Stats.llPrivatePeak ) m_Prog.llPrivatePeak = m_Stats.llPrivatePeak = ll;
             int iStage = m_Prog.iStage.load( std::memory_order_relaxed );
             if ( iStage >= 0 && iStage < LoadProgress::StageCount ) m_Stats.aStagePeak[iStage] = std::max( m_Stats.aStagePeak[iStage], ll );
-            if ( m_llFloor && !m_Prog.bOutOfMemory && ++m_iSamples % 10 == 0 )
-            {
-                MEMORYSTATUSEX ms = {};
-                ms.dwLength = sizeof( ms );
-                if ( GlobalMemoryStatusEx( &ms ) && ms.ullAvailPhys < m_llFloor )
-                {
-                    m_Prog.bOutOfMemory = true;
-                    m_Prog.bCancel = true;
-                }
-            }
         }
-        uint64_t m_llFloor = 0;
-        unsigned m_iSamples = 0;
 
         LoadProgress &m_Prog;
         LoadStats &m_Stats;
@@ -1888,12 +1871,6 @@ std::unique_ptr< Song > Loader::LoadFile( const std::wstring &sPath, int iThread
     }
     if ( song ) song->info.sFilename = sPath;
     stats.dTotalSeconds = ( Timer::NowMicroSecs() - llStart ) / 1e6;
-    if ( progress.bOutOfMemory )
-    {
-        song.reset();
-        sError = L"The song needs more memory than this computer has free: loading was stopped at " +
-                 std::to_wstring( ( progress.llPrivatePeak.load() + ( 1u << 29 ) ) >> 30 ) + L" GB, with the computer nearly out of memory.";
-    }
     return song;
 }
 
