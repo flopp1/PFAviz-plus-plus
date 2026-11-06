@@ -6,6 +6,7 @@
 #include "app/VideoExport.h"
 
 #include <commdlg.h>
+#include <dwmapi.h>
 #include <shellapi.h>
 #include <algorithm>
 #include <cmath>
@@ -1160,18 +1161,45 @@ namespace
 
 namespace
 {
+    // In full screen the window has no frame, title or menu: the windowed state saved on the way in
+    // (what it adds around the view, its invisible borders, the view's size) stands for it
+    bool g_bFullScreen = false;
+    SIZE g_szChromeWindowed = {}, g_szViewWindowed = {};
+    RECT g_rcInvisWindowed = {};
+
+    // The invisible resize borders round the window's visible frame (Windows 10 and 11: part of the
+    // window's rectangle, but not drawn; a maximized window's are off the monitor)
+    RECT Invisible()
+    {
+        if ( g_bFullScreen ) return g_rcInvisWindowed;
+        RECT rcWin, rcVis;
+        GetWindowRect( g_hWnd, &rcWin );
+        if ( FAILED( DwmGetWindowAttribute( g_hWnd, DWMWA_EXTENDED_FRAME_BOUNDS, &rcVis, sizeof( rcVis ) ) ) ) return RECT{};
+        return { std::max< LONG >( 0, rcVis.left - rcWin.left ), std::max< LONG >( 0, rcVis.top - rcWin.top ),
+                 std::max< LONG >( 0, rcWin.right - rcVis.right ), std::max< LONG >( 0, rcWin.bottom - rcVis.bottom ) };
+    }
+
     // What the window adds around the graphics window (notes and keyboard): its frame, title, menu
     // and the controls bar. A maximized window's rectangle still counts its off-screen frame, so this
     // holds in any state but minimized, when the last one measured is used
     SIZE Chrome()
     {
         static SIZE szLast = {};
+        if ( g_bFullScreen ) return g_szChromeWindowed;
         if ( IsIconic( g_hWnd ) && ( szLast.cx || szLast.cy ) ) return szLast;
         RECT rcMain, rcGfx;
         GetWindowRect( g_hWnd, &rcMain );
         GetClientRect( g_hWndGfx, &rcGfx );
         szLast = { std::max< LONG >( 0, ( rcMain.right - rcMain.left ) - rcGfx.right ), std::max< LONG >( 0, ( rcMain.bottom - rcMain.top ) - rcGfx.bottom ) };
         return szLast;
+    }
+
+    // The same without the invisible borders: what it takes of the monitor
+    SIZE VisibleChrome()
+    {
+        SIZE c = Chrome();
+        RECT r = Invisible();
+        return { std::max< LONG >( 0, c.cx - r.left - r.right ), std::max< LONG >( 0, c.cy - r.top - r.bottom ) };
     }
 
     SIZE MinViewSize()
@@ -1186,15 +1214,18 @@ SIZE MainWindowMinSize()
     return MinViewSize();
 }
 
+// The largest view: a window whose visible frame covers the monitor (as large as a maximized one's
+// or larger)
 SIZE MainWindowMaxSize()
 {
     RECT rc = MainMonitor().rcMonitor;
-    SIZE c = Chrome(), szMin = MinViewSize();
+    SIZE c = VisibleChrome(), szMin = MinViewSize();
     return { std::max< LONG >( rc.right - rc.left - c.cx, szMin.cx ), std::max< LONG >( rc.bottom - rc.top - c.cy, szMin.cy ) };
 }
 
 SIZE MainWindowSize()
 {
+    if ( g_bFullScreen ) return g_szViewWindowed;
     WINDOWPLACEMENT wp = { sizeof( wp ) };
     SIZE c = Chrome();
     RECT rc;
@@ -1215,14 +1246,18 @@ VOID SetMainWindowSize( int iWidth, int iHeight )
     for ( int iPass = 0; iPass < 2; iPass++ )
     {
         SIZE c = Chrome();
+        const RECT r = Invisible();
         int iOuterW = iWidth + c.cx, iOuterH = iHeight + c.cy;
+        // (its visible frame is what must fit: the invisible borders may lie off the monitor)
+        const int iVisW = iOuterW - r.left - r.right, iVisH = iOuterH - r.top - r.bottom;
         const RECT &rcWork = mi.rcWork;
-        const RECT &rcIn = iOuterW <= rcWork.right - rcWork.left && iOuterH <= rcWork.bottom - rcWork.top ? rcWork : mi.rcMonitor;
+        const RECT &rcIn = iVisW <= rcWork.right - rcWork.left && iVisH <= rcWork.bottom - rcWork.top ? rcWork : mi.rcMonitor;
         // Where it is, unless that leaves part of it off the monitor
         RECT rc;
         GetWindowRect( g_hWnd, &rc );
-        int iLeft = std::clamp( (int)rc.left, (int)rcIn.left, std::max( (int)rcIn.left, (int)rcIn.right - iOuterW ) );
-        int iTop = std::clamp( (int)rc.top, (int)rcIn.top, std::max( (int)rcIn.top, (int)rcIn.bottom - iOuterH ) );
+        const int iMinL = (int)rcIn.left - r.left, iMinT = (int)rcIn.top - r.top;
+        int iLeft = std::clamp( (int)rc.left, iMinL, std::max( iMinL, (int)rcIn.right + (int)r.right - iOuterW ) );
+        int iTop = std::clamp( (int)rc.top, iMinT, std::max( iMinT, (int)rcIn.bottom + (int)r.bottom - iOuterH ) );
         SetWindowPos( g_hWnd, nullptr, iLeft, iTop, iOuterW, iOuterH, SWP_NOZORDER | SWP_NOACTIVATE );
         RECT rcGfx;
         GetClientRect( g_hWndGfx, &rcGfx );
@@ -1241,6 +1276,13 @@ VOID SetFullScreen( BOOL bFullScreen )
     {
         // Full screen on the monitor holding the window (the original used the desktop rect)
         GetWindowRect( g_hWnd, &rcOld );
+        if ( !g_bFullScreen )
+        {
+            g_szViewWindowed = MainWindowSize();
+            g_szChromeWindowed = Chrome();
+            g_rcInvisWindowed = Invisible();
+            g_bFullScreen = true;
+        }
         MONITORINFO mi = { sizeof( mi ) };
         GetMonitorInfoW( MonitorFromWindow( g_hWnd, MONITOR_DEFAULTTONEAREST ), &mi );
         RECT rcDesktop = mi.rcMonitor;
@@ -1261,6 +1303,7 @@ VOID SetFullScreen( BOOL bFullScreen )
     }
     else
     {
+        g_bFullScreen = false;
         SetMenu( g_hWnd, hMenu );
         if ( cView.GetControls() ) ShowWindow( g_hWndBar, SW_SHOWNA );
         SetWindowLongPtrW( g_hWnd, GWL_STYLE, GetWindowLongPtrW( g_hWnd, GWL_STYLE ) | WS_CAPTION | WS_THICKFRAME );

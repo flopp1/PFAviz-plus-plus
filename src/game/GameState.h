@@ -274,13 +274,26 @@ private:
     PlaybackClock m_Clock;
     // The PFA lag simulation (song/PfaLag.h): the original's frame running (song time m_llSimCur,
     // from wall time m_llSimWallStart to m_llSimWallEnd), and the time of the last one it drew. Its
-    // frames run back to back, many per frame here when they are short
+    // frames run back to back, many per frame here when they are short. They are worked out a quarter
+    // second ahead (m_vSim, the running one first) and the clock is given all their ramps at once, so
+    // its pace never waits on this thread's frames
+    struct SimFrame
+    {
+        long long llWallStart, llWallEnd, llFrom, llTo;
+        std::vector< PlaybackClock::RampKnot > vKnots;
+    };
     void SimulateFrame( long long llMaxTime );
+    void ResetSim( long long llTime );
+    static PfaLag::Cpu SimCpu( const VisualSettings &cVisual );
+    std::vector< SimFrame > m_vSim;
+    long long m_llSimNextWall = 0, m_llSimNextFrom = 0, m_llSimNoiseWall = 0;   // where the next frame to work out starts
+    unsigned long long m_llSimKey = 0;  // the settings the frames ahead were worked out with
     bool m_bSimOn = false, m_bSimWarned = false;
     PfaLag::Cpu m_SimCpu;
     PfaLag::Noise m_SimNoise;
     long long m_llSimWallStart = 0, m_llSimWallEnd = 0, m_llSimCur = 0, m_llSimShown = 0;
     double m_dSimFrameUs = 0.0;     // the last frame's length
+    long long m_llSimStatsTime = 0; // how far its Logic had played when last read (the statistics, with bPfaLiveStats)
     int m_iSimFrames = 0;           // its frames done since the frame rate was last computed
     unsigned m_uSimVisualGen = 0;   // the visual settings the cache sizes were read from
     double m_dRefreshUs = 0.0;      // the display's refresh period (frames wait for it with Limit FPS)

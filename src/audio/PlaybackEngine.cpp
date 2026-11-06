@@ -261,15 +261,20 @@ void PlaybackEngine::DecoderThread()
         p.iMinVelocity = m_iMinVelocity.load( std::memory_order_relaxed );
         p.bTuning31 = m_bTuning31.load( std::memory_order_relaxed );
 
-        long long llNow = m_Clock.Now();
+        // The PFA lag simulation's ramp: by shares of each millisecond's events (Params::bShares), up to
+        // where the ramp will be a millisecond of real time from now, on one thread (the original's
+        // Logic is one; its fastest, about 20 M events a second, one thread keeps up with)
+        const long long llWallNow = Timer::NowMicroSecs();
+        p.bShares = m_Clock.Ramped() && !m_pSong->noteStats.Empty();
+        long long llNow = m_Clock.At( llWallNow );
 
         // Parallel when one thread cannot keep up
-        int iLanes = m_iMaxLanes.load( std::memory_order_relaxed ) > 1 ? LanesWanted( p, llNow ) : 1;
+        int iLanes = !p.bShares && m_iMaxLanes.load( std::memory_order_relaxed ) > 1 ? LanesWanted( p, llNow ) : 1;
         m_iLanesNow.store( iLanes, std::memory_order_relaxed );
         if ( iLanes > m_iLanesPeak.load( std::memory_order_relaxed ) ) m_iLanesPeak.store( iLanes, std::memory_order_relaxed );
         if ( iLanes > 1 && RunBatch( iLanes, p, llNow, uEpoch, hTimer ) ) continue;
 
-        long long llHorizon = llNow + std::max< long long >( 1000, (long long)( 4000 * p.dSpeed ) );
+        long long llHorizon = p.bShares ? std::max( llNow, m_Clock.At( llWallNow + 1000 ) ) : llNow + std::max< long long >( 1000, (long long)( 4000 * p.dSpeed ) );
         long long llDue, t0 = Timer::NowMicroSecs();
         uint64_t llRead0 = m_Decoder.EventsRead();
         size_t n = m_Decoder.Fill( s->aMsgs, SliceMsgs, llHorizon, llNow, p, llDue );

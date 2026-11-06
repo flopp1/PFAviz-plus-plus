@@ -1,6 +1,7 @@
 #include "audio/PlaybackDecoder.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 
 PlaybackDecoder::PlaybackDecoder( const Song &song ) : m_Song( song ), m_Stream( song.stream )
@@ -24,6 +25,7 @@ void PlaybackDecoder::ResetSendState()
     m_llTokenTime = LLONG_MIN;
     m_Cut = BudgetCut();
     m_dKeepAcc = 0.0;
+    m_uShareBin = SIZE_MAX;
 }
 
 //-----------------------------------------------------------------------------
@@ -240,6 +242,46 @@ long long PlaybackDecoder::NextTime( int iMetronome )
 {
     long long t = EventTime();
     return iMetronome != MetOff ? std::min( t, m_llNextBeatTime ) : t;
+}
+
+// A millisecond's events as PfaLag counts them (ForPieces): its note-ons, its note-offs (the note-ons
+// less what the polyphony grew by) and its share of its CC bin's other events
+double PlaybackDecoder::BinEvents( size_t b ) const
+{
+    const NoteStats &ns = m_Song.noteStats;
+    const EventCounts &cc = m_Song.ccCounts;
+    double d = 0.0;
+    if ( b < ns.vOns.size() )
+    {
+        const double dOn = (double)ns.vOns[b], p0 = b ? (double)ns.vPoly[b - 1] : 0.0, p1 = (double)ns.vPoly[b];
+        d = dOn + std::max( 0.0, dOn - ( p1 - p0 ) );
+    }
+    const size_t c = (size_t)( (long long)b * ns.llBinUs / EventCounts::BinUs );
+    if ( c < cc.vCount.size() ) d += (double)cc.vCount[c] * ns.llBinUs / EventCounts::BinUs;
+    return d;
+}
+
+long long PlaybackDecoder::ShareTime( long long tE )
+{
+    const long long W = m_Song.noteStats.llBinUs;
+    if ( tE == LLONG_MAX || tE < 0 || W <= 0 ) return tE;
+    const size_t b = (size_t)( tE / W );
+    if ( b != m_uShareBin )
+    {
+        m_uShareBin = b;
+        m_dShareN = BinEvents( b );
+        m_dShareRead = 0.0;
+    }
+    // (more events than counted: the rest at the millisecond's end)
+    const double f = m_dShareN > 0.0 ? std::min( m_dShareRead / m_dShareN, 1.0 ) : 0.0;
+    return (long long)b * W + std::min( W - 1, (long long)( f * W ) );
+}
+
+long long PlaybackDecoder::DueTime( const Params &p )
+{
+    long long t = EventTime();
+    if ( p.bShares ) t = ShareTime( t );
+    return p.iMetronome != MetOff ? std::min( t, m_llNextBeatTime ) : t;
 }
 
 // Note-ons below this velocity are skipped at a lag of llLagUs: none up to llSkipLagUs, then a
@@ -534,9 +576,10 @@ size_t PlaybackDecoder::Fill( uint32_t *pOut, size_t iCap, long long llHorizon, 
         SetBeat( GetBeatTick( CurrentTick( llNow ) ) );
     m_iMetronome = p.iMetronome;
 
-    llDue = NextTime( p.iMetronome );
+    llDue = DueTime( p );
     if ( llDue > llHorizon ) return 0;
-    long long llLimit = std::min( llHorizon, llDue + std::max< long long >( 1, (long long)( 500 * p.dSpeed ) ) );
+    // (by shares, the horizon is already close: the clock a millisecond of real time on)
+    long long llLimit = p.bShares ? llHorizon : std::min( llHorizon, llDue + std::max< long long >( 1, (long long)( 500 * p.dSpeed ) ) );
 
     const RefMidiInfo &info = m_Song.info;
     // Switching collapsing on or off: the held counts start over (a voice still sounding gets the off
@@ -556,7 +599,9 @@ size_t PlaybackDecoder::Fill( uint32_t *pOut, size_t iCap, long long llHorizon, 
     while ( n < iCap && iRead < iMaxRead && !m_Cursor.Stopped() )
     {
         long long tE = EventTime();
-        if ( p.iMetronome != MetOff && m_llNextBeatTime < tE && m_llNextBeatTime <= llLimit )
+        // When it is due: its time, or by shares (ShareTime) where it is among its millisecond's events
+        const long long tD = p.bShares ? ShareTime( tE ) : tE;
+        if ( p.iMetronome != MetOff && m_llNextBeatTime < tD && m_llNextBeatTime <= llLimit )
         {
             const Signature &s = SignatureAt( m_llNextBeatTick );
             long long iBeat = GetBeat( m_llNextBeatTick, s );
@@ -570,9 +615,9 @@ size_t PlaybackDecoder::Fill( uint32_t *pOut, size_t iCap, long long llHorizon, 
             SetBeat( GetBeatTick( m_llNextBeatTick + 1 ) );
             continue;
         }
-        if ( tE > llLimit ) break;
+        if ( tD > llLimit ) break;
 
-        m_iSkipVelocity = p.bVelocitySkip ? VelocityThreshold( llNow - tE + p.llSenderLagUs, p.llSkipLagUs ) : 0;
+        m_iSkipVelocity = p.bVelocitySkip ? VelocityThreshold( llNow - tD + p.llSenderLagUs, p.llSkipLagUs ) : 0;
         uint32_t uFloor = (uint32_t)std::max( 0, p.iMinVelocity );
         uint32_t uMinVel = std::max( (uint32_t)m_iSkipVelocity, uFloor );
         m_iSkipVelocity = (int)uMinVel;     // the statistics show the floor too
@@ -580,9 +625,25 @@ size_t PlaybackDecoder::Fill( uint32_t *pOut, size_t iCap, long long llHorizon, 
         if ( bBudget && m_bAtTickStart ) BudgetTick( tE, p );
         const bool bCounting = bBudget && m_bScout;
 
+        // By shares: no further into the millisecond than the limit's share of its events
+        size_t iTickMax = iMaxRead;
+        if ( p.bShares && m_uShareBin != SIZE_MAX )
+        {
+            const long long W = m_Song.noteStats.llBinUs, llInto = llLimit - (long long)m_uShareBin * W;
+            if ( llInto < W - 1 )
+            {
+                const double dUpTo = std::ceil( ( llInto + 1 ) * m_dShareN / W );
+                const size_t iMore = (size_t)std::max( 1.0, dUpTo - m_dShareRead );
+                iTickMax = std::min( iMaxRead, iRead + iMore );
+            }
+        }
         m_bAtTickStart = false;
-        if ( n < iCap && iRead < iMaxRead )
-            m_bAtTickStart = ( this->*s_aFillTick[p.bCollapse * 4 + bCounting * 2 + m_bLane] )( pOut, iCap, n, iRead, iMaxRead, u, uMinVel, p );
+        if ( n < iCap && iRead < iTickMax )
+        {
+            const size_t iRead0 = iRead;
+            m_bAtTickStart = ( this->*s_aFillTick[p.bCollapse * 4 + bCounting * 2 + m_bLane] )( pOut, iCap, n, iRead, iTickMax, u, uMinVel, p );
+            if ( p.bShares ) m_dShareRead += (double)( iRead - iRead0 );
+        }
     }
     m_Counters.llSent += n;
     m_llRead += iRead;

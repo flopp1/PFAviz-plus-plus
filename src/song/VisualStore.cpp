@@ -2658,6 +2658,7 @@ bool PairAll( const Song &song, VisualStore &vs, int iThreads, std::atomic< uint
             llPoly += vDelta[b];
             ns.vPoly[b] = (uint64_t)std::max< int64_t >( llPoly, 0 );
         }
+        ns.BuildMax();
     }
 
     Parallel::For( iThreads, 256, [&]( size_t k, int ) {

@@ -28,7 +28,7 @@ BEGIN
     DEFPUSHBUTTON   "OK",IDOK,177,151,50,14
 END
 
-IDD_PP1_VISUAL DIALOGEX 0, 0, 597, 258
+IDD_PP1_VISUAL DIALOGEX 0, 0, 597, 281
 STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_DISABLED | WS_BORDER
 FONT 8, "MS Shell Dlg", 400, 0, 0x0
 BEGIN
@@ -97,7 +97,7 @@ BEGIN
     GROUPBOX        "Interface",IDC_STATIC,302,141,288,32
     LTEXT           "Light or dark the&me:",IDC_STATIC,308,156,70,8
     COMBOBOX        IDC_THEME,380,154,90,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    GROUPBOX        "Timing",IDC_STATIC,302,177,288,56
+    GROUPBOX        "Timing",IDC_STATIC,302,177,288,83
     CONTROL         "Tic&k-based: notes spaced by ticks (a quarter note is 0.5 s at any tempo)",IDC_TICKBASED,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,308,188,276,10
     CONTROL         "Simulate the original PFA's la&g (frame rate, freezes, audio bursts)",IDC_PFALAG,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,308,200,276,10
     LTEXT           "Its L2:",IDC_STATIC,320,216,22,8
@@ -107,7 +107,11 @@ BEGIN
     LTEXT           "KB; a MIDI message:",IDC_PFACPU,442,216,68,8
     EDITTEXT        IDC_PFASEND,512,214,30,14,ES_AUTOHSCROLL
     LTEXT           "µs",IDC_STATIC,546,216,12,8
-    PUSHBUTTON      "&Restore Defaults",IDC_RESTOREDEFAULTS,521,237,69,14
+    LTEXT           "Its CPU speed:",IDC_STATIC,320,232,50,8
+    EDITTEXT        IDC_PFASPEED,372,230,30,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "% of this computer's",IDC_PFABENCH,406,232,180,8
+    CONTROL         "Statistics follo&w how far its Logic has played (off: its last drawn frame)",IDC_PFASTATS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,320,246,264,10
+    PUSHBUTTON      "&Restore Defaults",IDC_RESTOREDEFAULTS,521,264,69,14
 END
 
 IDD_PP2_AUDIO DIALOGEX 0, 0, 597, 212

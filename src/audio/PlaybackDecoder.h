@@ -48,6 +48,11 @@ public:
         // 31-EDO tuning (Performance tab): notes on keys past 127 are sent (to the tuned output); off,
         // they are not
         bool bTuning31 = false;
+        // The PFA lag simulation (the clock's ramp): a time inside a millisecond of song is a share of
+        // that millisecond's events (the song's note statistics, as PfaLag counts them), not when they
+        // happen, so a tick of a hundred thousand note-offs goes out over the seconds the original takes
+        // to walk them, in its order, instead of all at the moment the clock passes it
+        bool bShares = false;
     };
 
     struct Counters
@@ -133,6 +138,10 @@ private:
     struct Signature { long long llTick, iBeatsPerMeasure, iBeatType; };
 
     long long EventTime();
+    // With bShares: when the next event is due, from its share of its millisecond's events
+    long long ShareTime( long long tE );
+    double BinEvents( size_t b ) const;
+    long long DueTime( const Params &p );
     void ResetSendState();
     void Chase( long long llTarget, std::vector< uint32_t > &vOut );
 public:
@@ -223,6 +232,10 @@ private:
     uint64_t m_llFastOffs = 0;          // the offs a lane sent on it (not counted per key)
     double m_dLaneTokens = 0.0;
     double m_dDepth = 0.0;              // the bucket's depth at the last tick
+
+    // bShares: the millisecond the cursor is in, its events (the statistics' count) and those read
+    size_t m_uShareBin = SIZE_MAX;
+    double m_dShareN = 0.0, m_dShareRead = 0.0;
 
     Counters m_Counters;
     uint64_t m_llRead = 0;              // events read by Fill

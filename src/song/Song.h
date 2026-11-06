@@ -241,12 +241,17 @@ struct NoteStats
     long long llBinUs = 1000;
     std::vector< uint64_t > vOns, vPoly;
     std::vector< uint64_t > vCum;               // NoteOns before bin i << CumShift
+    std::vector< uint64_t > vMaxNps, vMaxPoly;  // the most NPS and polyphony of the bins before bin i << CumShift (BuildMax)
 
     bool Empty() const { return vOns.empty(); }
     uint64_t Passed( long long llTime ) const;      // NoteOns up to llTime (to the end of its bin)
     uint64_t NPS( long long llTime ) const;         // NoteOns in the second up to llTime
     uint64_t Polyphony( long long llTime ) const;
-    size_t MemoryBytes() const { return ( vOns.capacity() + vPoly.capacity() + vCum.capacity() ) * 8; }
+    // The most NPS and polyphony of any bin up to llTime's (each as NPS and Polyphony give it)
+    void BuildMax();
+    uint64_t MaxNPS( long long llTime ) const;
+    uint64_t MaxPolyphony( long long llTime ) const;
+    size_t MemoryBytes() const { return ( vOns.capacity() + vPoly.capacity() + vCum.capacity() + vMaxNps.capacity() + vMaxPoly.capacity() ) * 8; }
 };
 
 // Note-ons (velocity > 0) per velocity in each bin of llBinUs of song time, for the send budget's

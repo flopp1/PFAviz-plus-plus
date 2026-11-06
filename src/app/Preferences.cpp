@@ -451,6 +451,28 @@ namespace
     }
 
     // Sets the values in the visual settings page. Used at init and when restoring defaults
+    // What the benchmark found for this computer (run when the simulation is on: it takes a moment)
+    VOID SetPfaBenchText( HWND hWnd, bool bRun )
+    {
+        static bool s_bRan = false;
+        wchar_t buf[160];
+        if ( !bRun && !s_bRan ) swprintf( buf, 160, L"%% of this computer's" );
+        else
+        {
+            s_bRan = true;
+            const PfaLag::Bench &b = PfaLag::RunBench();
+            PfaLag::Cpu cpu;
+            PfaLag::ApplyBench( cpu, b );
+            if ( b.bReference ) swprintf( buf, 160, L"%% of this computer's (the CPU it was measured on)" );
+            else
+            {
+                // (how fast this one did the walks in L3, and the other work, against the reference)
+                swprintf( buf, 160, L"%% of this computer's (measured %.2fx a Ryzen 5 5500)", 2.0 / ( cpu.aMem[2] + cpu.dCore ) );
+            }
+        }
+        SetDlgItemTextW( hWnd, IDC_PFABENCH, buf );
+    }
+
     VOID SetVisualProc( HWND hWnd, const VisualSettings &cVisual )
     {
         g_Stats.uStats = cVisual.uStats;
@@ -476,6 +498,7 @@ namespace
         CheckDlgButton( hWnd, IDC_HIDELINES, cVisual.bHideLines ? BST_CHECKED : BST_UNCHECKED );
         CheckDlgButton( hWnd, IDC_TICKBASED, cVisual.bTickBased ? BST_CHECKED : BST_UNCHECKED );
         CheckDlgButton( hWnd, IDC_PFALAG, cVisual.bPfaLag ? BST_CHECKED : BST_UNCHECKED );
+        CheckDlgButton( hWnd, IDC_PFASTATS, cVisual.bPfaLiveStats ? BST_CHECKED : BST_UNCHECKED );
         {
             // The cache sizes in KB (empty: this computer's, which the label says)
             const int aiId[2] = { IDC_PFAL2, IDC_PFAL3 }, aiKB[2] = { cVisual.iPfaL2KB, cVisual.iPfaL3KB };
@@ -491,7 +514,9 @@ namespace
             SendDlgItemMessageW( hWnd, IDC_PFAL3, EM_SETCUEBANNER, TRUE, ( LPARAM )buf );
             swprintf( buf, 32, L"%g", cVisual.iPfaSendNs / 1000.0 );
             SetDlgItemTextW( hWnd, IDC_PFASEND, buf );
-            for ( int iId : { IDC_PFAL2, IDC_PFAL3, IDC_PFASEND } ) EnableWindow( GetDlgItem( hWnd, iId ), cVisual.bPfaLag );
+            SetDlgItemInt( hWnd, IDC_PFASPEED, (UINT)cVisual.iPfaCpuPct, FALSE );
+            SetPfaBenchText( hWnd, cVisual.bPfaLag );
+            for ( int iId : { IDC_PFAL2, IDC_PFAL3, IDC_PFASEND, IDC_PFASPEED, IDC_PFASTATS } ) EnableWindow( GetDlgItem( hWnd, iId ), cVisual.bPfaLag );
         }
         CheckDlgButton( hWnd, IDC_LOOPCOLORS, cVisual.bLoopColors ? BST_CHECKED : BST_UNCHECKED );
         CheckDlgButton( hWnd, IDC_EDO31KEYS, cVisual.bEdo31Keys ? BST_CHECKED : BST_UNCHECKED );
@@ -532,12 +557,13 @@ namespace
         EnableWindow( GetDlgItem( hWnd, IDC_WINHEIGHT ), !bFullScreen );
     }
 
-    // Reads a window size edit within [iMin, iMax]; otherwise says so and keeps the sheet open
-    bool ReadSize( HWND hWnd, int iId, int iMin, int iMax, const wchar_t *sWhat, int &iValue )
+    // Reads a window size edit within [iMin, iMax] (or the size it showed, iShown, as it is);
+    // otherwise says so and keeps the sheet open
+    bool ReadSize( HWND hWnd, int iId, int iMin, int iMax, int iShown, const wchar_t *sWhat, int &iValue )
     {
         BOOL bOk = FALSE;
         UINT u = GetDlgItemInt( hWnd, iId, &bOk, FALSE );
-        if ( bOk && (int)u >= iMin && (int)u <= iMax ) { iValue = (int)u; return true; }
+        if ( bOk && ( (int)u == iShown || ( (int)u >= iMin && (int)u <= iMax ) ) ) { iValue = (int)u; return true; }
         wchar_t buf[128];
         swprintf( buf, 128, L"Please specify a view %ls (notes and keyboard) between %d and %d pixels", sWhat, iMin, iMax );
         MessageBoxW( hWnd, buf, L"Error", MB_OK | MB_ICONEXCLAMATION );
@@ -744,7 +770,8 @@ namespace
                     case IDC_PFALAG:
                     {
                         BOOL bOn = IsDlgButtonChecked( hWnd, IDC_PFALAG ) == BST_CHECKED;
-                        for ( int iId : { IDC_PFAL2, IDC_PFAL3, IDC_PFASEND } ) EnableWindow( GetDlgItem( hWnd, iId ), bOn );
+                        for ( int iId : { IDC_PFAL2, IDC_PFAL3, IDC_PFASEND, IDC_PFASPEED, IDC_PFASTATS } ) EnableWindow( GetDlgItem( hWnd, iId ), bOn );
+                        SetPfaBenchText( hWnd, bOn );
                         return TRUE;
                     }
                     case IDC_GRAPHBTN:
@@ -945,8 +972,8 @@ namespace
                     if ( !cView.GetFullScreen() )
                     {
                         SIZE szMin = MainWindowMinSize(), szMax = MainWindowMaxSize();
-                        if ( !ReadSize( hWnd, IDC_WINWIDTH, (int)szMin.cx, (int)szMax.cx, L"width", iWidth ) ) return TRUE;
-                        if ( !ReadSize( hWnd, IDC_WINHEIGHT, (int)szMin.cy, (int)szMax.cy, L"height", iHeight ) ) return TRUE;
+                        if ( !ReadSize( hWnd, IDC_WINWIDTH, (int)szMin.cx, (int)szMax.cx, (int)g_szWindow.cx, L"width", iWidth ) ) return TRUE;
+                        if ( !ReadSize( hWnd, IDC_WINHEIGHT, (int)szMin.cy, (int)szMax.cy, (int)g_szWindow.cy, L"height", iHeight ) ) return TRUE;
                     }
 
                     cVisual.eKeysShown = VisualSettings::All128;
@@ -970,6 +997,7 @@ namespace
                     cVisual.bHideLines = IsDlgButtonChecked( hWnd, IDC_HIDELINES ) == BST_CHECKED;
                     cVisual.bTickBased = IsDlgButtonChecked( hWnd, IDC_TICKBASED ) == BST_CHECKED;
                     cVisual.bPfaLag = IsDlgButtonChecked( hWnd, IDC_PFALAG ) == BST_CHECKED;
+                    cVisual.bPfaLiveStats = IsDlgButtonChecked( hWnd, IDC_PFASTATS ) == BST_CHECKED;
                     {
                         const int aiId[2] = { IDC_PFAL2, IDC_PFAL3 };
                         int *apKB[2] = { &cVisual.iPfaL2KB, &cVisual.iPfaL3KB };
@@ -985,6 +1013,10 @@ namespace
                         wchar_t *pEnd = nullptr;
                         double dSend = wcstod( sSend, &pEnd );
                         if ( pEnd != sSend && dSend >= 0.0 ) cVisual.iPfaSendNs = (int)( std::min( dSend, 10000.0 ) * 1000.0 + 0.5 );
+                        // (a percentage, 10 to 1000; empty or unreadable: this computer's)
+                        BOOL bNum = FALSE;
+                        UINT uPct = GetDlgItemInt( hWnd, IDC_PFASPEED, &bNum, FALSE );
+                        cVisual.iPfaCpuPct = bNum ? std::clamp( (int)uPct, 10, 1000 ) : 100;
                     }
                     cVisual.bLoopColors = IsDlgButtonChecked( hWnd, IDC_LOOPCOLORS ) == BST_CHECKED;
                     cVisual.bEdo31Keys = IsDlgButtonChecked( hWnd, IDC_EDO31KEYS ) == BST_CHECKED;

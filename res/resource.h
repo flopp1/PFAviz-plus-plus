@@ -287,3 +287,6 @@
 #define IDC_PFAL3                       1256
 #define IDC_PFACPU                      1257
 #define IDC_PFASEND                     1258
+#define IDC_PFASTATS                    1259
+#define IDC_PFASPEED                    1260
+#define IDC_PFABENCH                    1261

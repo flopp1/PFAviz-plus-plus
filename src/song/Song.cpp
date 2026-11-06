@@ -281,6 +281,49 @@ uint64_t NoteStats::NPS( long long llTime ) const
     return n;
 }
 
+void NoteStats::BuildMax()
+{
+    const size_t n = vOns.size(), w = (size_t)std::max< long long >( 1, 1000000 / llBinUs );
+    vMaxNps.assign( n ? ( ( n - 1 ) >> CumShift ) + 1 : 0, 0 );
+    vMaxPoly.assign( vMaxNps.size(), 0 );
+    uint64_t llNps = 0, llMaxNps = 0, llMaxPoly = 0;
+    for ( size_t b = 0; b < n; b++ )
+    {
+        if ( !( b & ( ( size_t( 1 ) << CumShift ) - 1 ) ) ) { vMaxNps[b >> CumShift] = llMaxNps; vMaxPoly[b >> CumShift] = llMaxPoly; }
+        // (the second up to bin b, as NPS counts it)
+        llNps += vOns[b];
+        if ( b >= w ) llNps -= vOns[b - w];
+        llMaxNps = std::max( llMaxNps, llNps );
+        llMaxPoly = std::max( llMaxPoly, vPoly[b] );
+    }
+}
+
+uint64_t NoteStats::MaxNPS( long long llTime ) const
+{
+    if ( vOns.empty() || vMaxNps.empty() || llTime < 0 ) return 0;
+    const size_t b = std::min< size_t >( (size_t)( llTime / llBinUs ), vOns.size() - 1 ), b0 = ( b >> CumShift ) << CumShift;
+    const size_t w = (size_t)std::max< long long >( 1, 1000000 / llBinUs );
+    // From the block's start: its bins' seconds, the first counted whole
+    uint64_t m = vMaxNps[b >> CumShift], n = NPS( (long long)b0 * llBinUs );
+    m = std::max( m, n );
+    for ( size_t i = b0 + 1; i <= b; i++ )
+    {
+        n += vOns[i];
+        if ( i >= w ) n -= vOns[i - w];
+        m = std::max( m, n );
+    }
+    return m;
+}
+
+uint64_t NoteStats::MaxPolyphony( long long llTime ) const
+{
+    if ( vPoly.empty() || vMaxPoly.empty() || llTime < 0 ) return 0;
+    const size_t b = std::min< size_t >( (size_t)( llTime / llBinUs ), vPoly.size() - 1 ), b0 = ( b >> CumShift ) << CumShift;
+    uint64_t m = vMaxPoly[b >> CumShift];
+    for ( size_t i = b0; i <= b; i++ ) m = std::max( m, vPoly[i] );
+    return m;
+}
+
 uint64_t NoteStats::Polyphony( long long llTime ) const
 {
     if ( vPoly.empty() || llTime < 0 ) return 0;

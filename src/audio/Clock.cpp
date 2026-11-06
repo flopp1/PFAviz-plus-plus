@@ -12,22 +12,28 @@ long long PlaybackClock::NowLocked( long long llWall ) const
 
 long long PlaybackClock::Now() const
 {
-    long long llWall = Timer::NowMicroSecs();
+    return At( Timer::NowMicroSecs() );
+}
+
+long long PlaybackClock::At( long long llWall ) const
+{
     AcquireSRWLockShared( &m_lock );
     long long t;
     if ( !m_bRamp ) t = NowLocked( llWall );
     else if ( m_nRamp <= 0 ) t = m_llBase;
     else if ( llWall <= m_aRamp[0].llWall ) t = m_aRamp[0].llSong;
+    else if ( llWall >= m_aRamp[m_nRamp - 1].llWall ) t = m_aRamp[m_nRamp - 1].llSong;
     else
     {
-        t = m_aRamp[m_nRamp - 1].llSong;
-        for ( int i = 1; i < m_nRamp; i++ )
-            if ( llWall < m_aRamp[i].llWall )
-            {
-                const RampKnot &a = m_aRamp[i - 1], &b = m_aRamp[i];
-                t = a.llSong + (long long)( (double)( b.llSong - a.llSong ) * ( llWall - a.llWall ) / ( b.llWall - a.llWall ) );
-                break;
-            }
+        // The first knot past llWall (knots ascend)
+        int lo = 1, hi = m_nRamp - 1;
+        while ( lo < hi )
+        {
+            int mid = ( lo + hi ) / 2;
+            if ( llWall < m_aRamp[mid].llWall ) hi = mid; else lo = mid + 1;
+        }
+        const RampKnot &a = m_aRamp[lo - 1], &b = m_aRamp[lo];
+        t = a.llSong + (long long)( (double)( b.llSong - a.llSong ) * ( llWall - a.llWall ) / ( b.llWall - a.llWall ) );
     }
     ReleaseSRWLockShared( &m_lock );
     return t;
@@ -55,6 +61,7 @@ void PlaybackClock::SetRamp( const RampKnot *pKnots, int nKnots )
     AcquireSRWLockExclusive( &m_lock );
     m_bRamp = true;
     m_nRamp = std::min( std::max( nKnots, 0 ), MaxRampKnots );
+    if ( (int)m_aRamp.size() < std::max( m_nRamp, 1 ) ) m_aRamp.resize( std::max( m_nRamp, 1 ) );
     for ( int i = 0; i < m_nRamp; i++ )
     {
         m_aRamp[i] = pKnots[i];

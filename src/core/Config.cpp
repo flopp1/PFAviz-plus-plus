@@ -145,22 +145,22 @@ const int VisualSettings::StatSections[StatCount] = {
     SectionSynth, SectionSynth, SectionSynth, SectionSynth, SectionSynth,
     SectionFrame, SectionFrame, SectionFrame, SectionFrame,
     SectionPipeline, SectionPipeline, SectionPipeline, SectionPipeline, SectionPipeline,
-    SectionGeneral, SectionSynth, SectionSynth, SectionNotes };
+    SectionGeneral, SectionSynth, SectionSynth, SectionNotes, SectionNotes, SectionNotes };
 const wchar_t *const VisualSettings::StatLabels[StatCount] = {
     L"Time:", L"FPS:", L"Score:", L"Notes:", L"NPS:", L"Polyphony:",
     L"Sent/s:", L"Skipped/s:", L"Collapsed/s:", L"Lag:", L"Skipping:",
     L"Other ms:", L"Notes ms:", L"Scene ms:", L"Present ms:",
     L"Decoded/s:", L"Decoder busy:", L"Sender busy:", L"Ring:", L"Send cost:",
-    L"Tempo:", L"Voices:", L"Synth CPU:", L"CC events:" };
+    L"Tempo:", L"Voices:", L"Synth CPU:", L"CC events:", L"Max NPS:", L"Max Poly:" };
 const wchar_t *const VisualSettings::StatNames[StatCount] = {
     L"Time", L"Frame rate", L"Score", L"Notes passed", L"NPS", L"Polyphony",
     L"Messages sent", L"Skipped", L"Collapsed", L"Lag", L"Skipping threshold",
     L"Other (frame ms)", L"Notes (frame ms)", L"Scene (frame ms)", L"Present (frame ms)",
     L"Messages decoded", L"Decoder busy", L"Sender busy", L"Ring fill", L"Send cost",
-    L"Tempo (BPM)", L"Synth voices (KDMAPI)", L"Synth CPU (KDMAPI)", L"CC events passed" };
+    L"Tempo (BPM)", L"Synth voices (KDMAPI)", L"Synth CPU (KDMAPI)", L"CC events passed", L"Max NPS (so far)", L"Max Poly (so far)" };
 // The order the lines had before they could be moved: general, notes, synth, pipeline, frame time
 const unsigned char VisualSettings::DefaultStatOrder[StatCount] = {
-    StatTime, StatFPS, StatScore, StatTempo, StatNotes, StatNPS, StatPolyphony, StatCC,
+    StatTime, StatFPS, StatScore, StatTempo, StatNotes, StatNPS, StatMaxNPS, StatPolyphony, StatMaxPoly, StatCC,
     StatSent, StatSkipped, StatCollapsed, StatLag, StatSkipping, StatVoices, StatSynthCpu,
     StatDecoded, StatDecoderBusy, StatSenderBusy, StatRing, StatSendCost,
     StatOtherMs, StatNotesMs, StatSceneMs, StatPresentMs };
@@ -184,8 +184,10 @@ void VisualSettings::LoadDefaultValues()
     bHideLines = false;
     bTickBased = false;
     bPfaLag = false;
+    bPfaLiveStats = false;
     iPfaL2KB = iPfaL3KB = 0;
     iPfaSendNs = 50;
+    iPfaCpuPct = 100;
     bHideSpeedBoxes = false;
     bLoopColors = false;
     bEdo31Keys = false;
@@ -316,8 +318,22 @@ void VisualSettings::Load( const IniFile &ini )
             if ( iStat >= 0 && iStat < StatCount && !abSeen[iStat] ) { abSeen[iStat] = true; aStatOrder[n++] = (unsigned char)iStat; }
             i = j + 1;
         }
+        // (a line the config predates goes after the line before it in the default order, and is
+        // shown when that one is: Max NPS under NPS, Max Poly under Polyphony)
         for ( int i = 0; i < StatCount; i++ )
-            if ( !abSeen[DefaultStatOrder[i]] ) aStatOrder[n++] = DefaultStatOrder[i];
+        {
+            const unsigned char uStat = DefaultStatOrder[i];
+            if ( abSeen[uStat] ) continue;
+            int iAt = n;
+            if ( i > 0 && n > 0 )
+                for ( int k = 0; k < n; k++ )
+                    if ( aStatOrder[k] == DefaultStatOrder[i - 1] ) { iAt = k + 1; break; }
+            for ( int k = n; k > iAt; k-- ) aStatOrder[k] = aStatOrder[k - 1];
+            aStatOrder[iAt] = uStat;
+            n++;
+            abSeen[uStat] = true;
+            if ( !s.empty() && i > 0 && ( uStats >> DefaultStatOrder[i - 1] ) & 1 ) uStats |= 1u << uStat;
+        }
     }
     iFirstKey = std::clamp( ini.GetInt( "Visual", "FirstKey", iFirstKey ), 0, 255 );
     iLastKey = std::clamp( ini.GetInt( "Visual", "LastKey", iLastKey ), 0, 255 );
@@ -334,9 +350,11 @@ void VisualSettings::Load( const IniFile &ini )
     bHideLines = ini.GetBool( "Visual", "HideLines", bHideLines );
     bTickBased = ini.GetBool( "Visual", "TickBased", bTickBased );
     bPfaLag = ini.GetBool( "Visual", "PfaLag", bPfaLag );
+    bPfaLiveStats = ini.GetBool( "Visual", "PfaLagLiveStats", bPfaLiveStats );
     iPfaL2KB = std::clamp( ini.GetInt( "Visual", "PfaLagL2KB", iPfaL2KB ), 0, 1 << 20 );
     iPfaL3KB = std::clamp( ini.GetInt( "Visual", "PfaLagL3KB", iPfaL3KB ), 0, 1 << 22 );
     iPfaSendNs = std::clamp( ini.GetInt( "Visual", "PfaLagSendCostNs", iPfaSendNs ), 0, 10000000 );
+    iPfaCpuPct = std::clamp( ini.GetInt( "Visual", "PfaLagCpuPercent", iPfaCpuPct ), 10, 1000 );
     bLoopColors = ini.GetBool( "Visual", "LoopColors", bLoopColors );
     bEdo31Keys = ini.GetBool( "Visual", "Edo31Keys", bEdo31Keys );
     bStatsScaled = ini.GetBool( "Visual", "StatsScaled", bStatsScaled );
@@ -407,9 +425,11 @@ void VisualSettings::Save( IniFile &ini ) const
     ini.SetInt( "Visual", "HideLines", bHideLines );
     ini.SetInt( "Visual", "TickBased", bTickBased );
     ini.SetInt( "Visual", "PfaLag", bPfaLag );
+    ini.SetInt( "Visual", "PfaLagLiveStats", bPfaLiveStats );
     ini.SetInt( "Visual", "PfaLagL2KB", iPfaL2KB );
     ini.SetInt( "Visual", "PfaLagL3KB", iPfaL3KB );
     ini.SetInt( "Visual", "PfaLagSendCostNs", iPfaSendNs );
+    ini.SetInt( "Visual", "PfaLagCpuPercent", iPfaCpuPct );
     ini.SetInt( "Visual", "LoopColors", bLoopColors );
     ini.SetInt( "Visual", "Edo31Keys", bEdo31Keys );
     ini.SetInt( "Visual", "StatsScaled", bStatsScaled );

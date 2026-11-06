@@ -33,8 +33,29 @@ namespace PfaLag
     struct Cpu
     {
         uint64_t llL1 = 32 << 10, llL2 = 512 << 10, llL3 = 16 << 20;
+        // How much longer the original's work takes on this CPU than on the one its costs were
+        // measured on (a Ryzen 5 5500): its walks at each of the five working-set sizes (the caches'
+        // speed and the memory's), and its other work (the core's clock and how much it does a clock).
+        // 1: the same. From Bench (ApplyBench), and the speed setting (Faster)
+        double aMem[5] = { 1.0, 1.0, 1.0, 1.0, 1.0 };
+        double dCore = 1.0;
         static Cpu Detect();
+        void Faster( double dTimes );       // a CPU dTimes as fast (0.5: half as fast)
     };
+
+    // A short benchmark of the original's work on this CPU (about half a second, once per run): its
+    // note-off walk (a list of indices into an array of pointers to event objects scattered in
+    // memory, each compared and its key read) at four working-set sizes by this CPU's caches (half of
+    // L1, of L2 and of L3, and four times L3), and its per-event loop, in ns. bReference: this is the
+    // CPU the costs were measured on, which is taken as is
+    struct Bench
+    {
+        double aWalkNs[4] = {}, dEventNs = 0.0;
+        char sBrand[49] = {};
+        bool bReference = false;
+    };
+    const Bench &RunBench();
+    void ApplyBench( Cpu &cpu, const Bench &b );
 
     struct Params
     {
@@ -74,7 +95,7 @@ namespace PfaLag
         double dUs;
         long long llSong;
     };
-    static const int RampPoints = 33;
+    static const int RampPoints = 129;
 
     struct FrameCost
     {

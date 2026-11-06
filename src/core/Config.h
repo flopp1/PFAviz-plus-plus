@@ -101,8 +101,9 @@ struct VisualSettings
     // aStatOrder lists them all top to bottom. New lines are added at the end, so saved bits stay put.
     enum Stat { StatTime, StatFPS, StatScore, StatNotes, StatNPS, StatPolyphony, StatSent, StatSkipped, StatCollapsed, StatLag,
                 StatSkipping, StatOtherMs, StatNotesMs, StatSceneMs, StatPresentMs,
-                StatDecoded, StatDecoderBusy, StatSenderBusy, StatRing, StatSendCost, StatTempo, StatVoices, StatSynthCpu, StatCC, StatCount };
-    static constexpr unsigned NoteStats = 7u << StatNotes;      // counted while a song loads (Song::noteStats)
+                StatDecoded, StatDecoderBusy, StatSenderBusy, StatRing, StatSendCost, StatTempo, StatVoices, StatSynthCpu, StatCC,
+                StatMaxNPS, StatMaxPoly, StatCount };
+    static constexpr unsigned NoteStats = 7u << StatNotes | 3u << StatMaxNPS;      // counted while a song loads (Song::noteStats)
     static constexpr unsigned PipelineStats = 31u << StatDecoded;
     static constexpr unsigned VoiceStats = 3u << StatVoices;    // asked of the synth (KDMAPI only)
     static constexpr unsigned SynthStats = 31u << StatSent | PipelineStats | VoiceStats;   // need a MIDI output
@@ -132,8 +133,10 @@ struct VisualSettings
     bool bHideLines;            // no key dividers or measure lines over the background
     bool bTickBased;            // notes placed by tick, not time (FastEngine::SetTickBased)
     bool bPfaLag;               // play as the original PFA would lag on this computer (song/PfaLag.h)
+    bool bPfaLiveStats;         // its statistics (and graphs) follow how far its Logic has played, not its last drawn frame
     int iPfaL2KB, iPfaL3KB;     // its CPU's L2 and L3 caches (0: this computer's)
     int iPfaSendNs;             // what one MIDI message costs it on average (midiOutShortMsg), nanoseconds (50: the KDMAPI patch)
+    int iPfaCpuPct;             // its CPU's speed, percent of this computer's (100: this one, as benchmarked)
     bool bHideSpeedBoxes;       // the toolbar as the original's: sliders only, without the exact speed boxes
     bool bLoopColors;           // the track colors repeat (channel n gets colors[n % iColorCount]); off: random after them
     bool bEdo31Keys;            // the 256-key view in the 31-EDO layout (31 keys an octave; Scene.cpp)
