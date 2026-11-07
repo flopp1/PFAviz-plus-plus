@@ -2,6 +2,7 @@
 #pragma once
 
 #include <map>
+#include <vector>
 #include <set>
 #include <string>
 
@@ -13,6 +14,9 @@ public:
     std::string Text() const;           // the file's contents, as Save writes them
 
     bool Has( const std::string &sSection, const std::string &sKey ) const;
+    bool HasSection( const std::string &sSection ) const { return m_mData.count( sSection ) != 0; }
+    // A section's keys and values, in key order (none: empty)
+    std::vector< std::pair< std::string, std::string > > Section( const std::string &sSection ) const;
     std::string GetString( const std::string &sSection, const std::string &sKey, const std::string &sDefault = "" ) const;
     int GetInt( const std::string &sSection, const std::string &sKey, int iDefault ) const;
     double GetDouble( const std::string &sSection, const std::string &sKey, double dDefault ) const;

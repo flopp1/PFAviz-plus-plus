@@ -85,6 +85,8 @@ ChannelSettings Effects::Look::Unlit( int ePart, const ChannelSettings &cs ) con
     r.iDarkRGB = Scale( cs.iDarkRGB, m_aKeep[ePart] );
     r.iVeryDarkRGB = Scale( cs.iVeryDarkRGB, m_aKeep[ePart] );
     if ( m_bFlat ) r.iDarkRGB = r.iVeryDarkRGB = r.iPrimaryRGB;
+    // (the semi-flat look: the notes only; its keys keep their shades, DrawKeysSemiFlat's lips)
+    if ( m_fSemiFlat >= 0.0f && ePart <= EffectSettings::PartShort ) { r.iDarkRGB = r.iPrimaryRGB; r.iVeryDarkRGB = Scale( r.iPrimaryRGB, m_fSemiFlat ); }
     return r;
 }
 
@@ -99,7 +101,8 @@ void Effects::Look::Prepare( const EffectSettings &fx, const std::vector< TrackS
     m_fRest = fx.iRestLight / 100.0f;
     m_fOutline = fx.iLightOutlines / 100.0f;
     m_fInside = fx.iLightInsides / 100.0f;
-    m_bFlat = fx.bFlat;
+    m_bFlat = fx.eLook == EffectSettings::LookFlat;
+    m_fSemiFlat = fx.eLook == EffectSettings::LookSemiFlat ? 1.0f - fx.iSemiFlatOutline / 100.0f : -1.0f;
 
     // The scene's colours, darkened (the background and the keys each their own); the flat look's
     // lines one colour (the keys' own are DrawKeysFlat's)
@@ -119,11 +122,11 @@ void Effects::Look::Prepare( const EffectSettings &fx, const std::vector< TrackS
     // The notes' at rest: only when anything changes them, and the short notes' only when they differ
     // (copied again when what they are made from changes)
     const int iN = EffectSettings::PartNotes, iS = EffectSettings::PartShort;
-    auto Changes = [&]( int p ) { return fx.aDark[p] > 0 || fx.bFlat || ( fx.iRestLight > 0 && ( fx.aDark[p] > 0 || fx.aLightUp[p] > 0 || fx.iLightOutlines > 100 ) ); };
+    auto Changes = [&]( int p ) { return fx.aDark[p] > 0 || fx.eLook != EffectSettings::LookNormal || ( fx.iRestLight > 0 && ( fx.aDark[p] > 0 || fx.aLightUp[p] > 0 || fx.iLightOutlines > 100 ) ); };
     m_abOwnRest[0] = Changes( iN );
     m_abOwnRest[1] = Changes( iS ) && ( fx.aDark[iS] != fx.aDark[iN] || fx.aLightUp[iS] != fx.aLightUp[iN] );
     if ( !m_abOwnRest[0] && !m_abOwnRest[1] ) { m_avRest[0].clear(); m_avRest[1].clear(); m_vRestKey.clear(); return; }
-    const std::vector< long long > vKey = { fx.aDark[iN], fx.aDark[iS], fx.aLightUp[iN], fx.aLightUp[iS], fx.bFlat, fx.iLightOutlines, fx.iLightInsides,
+    const std::vector< long long > vKey = { fx.aDark[iN], fx.aDark[iS], fx.aLightUp[iN], fx.aLightUp[iS], fx.eLook, fx.iSemiFlatOutline, fx.iLightOutlines, fx.iLightInsides,
                                             fx.iRestLight, uTracksGen, (long long)vTracks.size(), m_abOwnRest[0], m_abOwnRest[1] };
     if ( vKey == m_vRestKey ) return;
     m_vRestKey = vKey;
@@ -150,6 +153,7 @@ ChannelSettings Effects::Look::Lit( int ePart, const ChannelSettings &base, cons
     const D3DCOLOR cWhite = 0x00FFFFFF;
     D3DCOLOR p = Mix( base.iPrimaryRGB, cWhite, fUp ), d = Mix( base.iDarkRGB, cWhite, fUp ), vd = Mix( base.iVeryDarkRGB, cWhite, fUp );
     if ( m_bFlat ) d = vd = p;
+    if ( m_fSemiFlat >= 0.0f && ePart <= EffectSettings::PartShort ) { d = p; vd = Scale( p, m_fSemiFlat ); }
     // A long note's light split: the inside its share; the outline (the very dark colour) its share up
     // to 1, and past it on towards the main colour, then white. A short note (the very dark colour
     // only, or the main colour) and a key are lit whole.

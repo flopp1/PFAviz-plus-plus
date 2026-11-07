@@ -35,12 +35,18 @@ struct EffectSettings
     // PartShort: notes too short to have an inside; PartBar: the keyboard's red bar, never lit (its
     // light-up and glow always as at full light)
     enum Part { PartNotes, PartShort, PartKeys, PartBackground, PartBar, PartCount };
-    bool bFlat;                 // flat look: plain keys without the red bar, notes one flat colour without outlines
+    // The look: normal (the original's); flat (plain keys, notes one flat colour without outlines); semi-flat
+    // (the normal look's bar over keys without depth, pressed and unpressed told apart by their colours
+    // only; notes one colour, their outlines iSemiFlatOutline darker)
+    enum Look { LookNormal, LookFlat, LookSemiFlat, LookCount };
+    int eLook;
     bool bFlatBorders;          // the flat keys have gaps between them (off: the white keys meet)
-    // Pressed keys whiten towards their top, each look its own (0: the normal look, 1: the flat look): on
-    // (the normal look's off: darkening towards the top, as the original), and how far (percent)
-    bool abKeyWhite[2];
-    int aiKeyWhite[2];
+    int iSemiFlatOutline;       // percent: the semi-flat look's note outlines that much darker than their insides
+    bool bSemiFlatLip;          // the semi-flat look's pressed black keys keep their lip (off: one flat colour)
+    // Pressed keys whiten towards their top, each look its own (by Look): on (the normal look's off:
+    // darkening towards the top, as the original), and how far (percent)
+    bool abKeyWhite[LookCount];
+    int aiKeyWhite[LookCount];
     bool bNoBar;                // the keyboard without its red bar
     bool bHollow;               // the notes' insides are not drawn: only their outlines, the scene showing through
     bool bShortColor;           // short notes are drawn in their main colour, not their outline's
@@ -125,6 +131,10 @@ struct VisualSettings
     // The user's saved palettes (Visual tab: chosen, they replace the track colors), each its colours in order
     struct Palette { std::wstring sName; std::vector< unsigned > vColors; };
     std::vector< Palette > vPalettes;
+    // The user's saved effects profiles (Effects tab: chosen, they fill it), each every effect setting
+    // but bOn. A config from before them: its effects as the first one (VisualSettings::Load)
+    struct FxProfile { std::wstring sName; EffectSettings fx; };
+    std::vector< FxProfile > vFxProfiles;
     bool bBkgImage;             // the background image is shown
     std::wstring sBkgImage;     // its file, drawn over iBkgColor
     int iBkgFit;                // Renderer::ImageFit
@@ -143,6 +153,8 @@ struct VisualSettings
     bool bStatsScaled;          // the stats box's size is as at 1080p, scaled with the picture's height (off: pixels)
     int iStatsCX, iStatsCY;     // the box's size: its height over its lines sets the line height and font; the
                                 // width is the least, widened to fit the text
+    bool bStatsFontSet;         // the font's size set instead (iStatsFontPx), the height following it
+    int iStatsFontPx;           // its height, pixels (scaled as the box is with bStatsScaled)
     int iStatsCorner;           // StatsCorner bits: where the box sits (0: top right)
     std::wstring sStatsFont;    // the box's font (the original's: Tahoma)
     bool bStatsBackground;      // the box's translucent black background
@@ -169,11 +181,14 @@ struct VisualSettings
         int iFontPx;                    // the text's height, pixels as at 1080p
         int iGrowMs, iShrinkMs;         // how quickly a scale follows its values up and down: the time to
                                         // get most of the way there (0: at once), ms of song time
+        bool bScale;                    // a vertical scale: values at the left, lines across at them
+        bool bMaxLine;                  // a line across at the highest value shown, with it written
+        unsigned uMaxColor;             // its colour (a COLORREF)
         void Fix();                     // together: only the first filled one stays filled; places not
                                         // each held once: back to the series' order
     } graph;
     enum StatsCorner { StatsLeft = 1, StatsBottom = 2 };    // bottom: on the keyboard's red bar
-    static const int StatsCXMin = 20, StatsCXMax = 3840, StatsCYMin = 8, StatsCYMax = 2160;
+    static const int StatsCXMin = 20, StatsCXMax = 3840, StatsCYMin = 8, StatsCYMax = 2160, StatsFontMin = 4, StatsFontMax = 400;
     // The original's box: 156 pixels wide, 16 a line and 3 above and below
     static int StatsDefaultCY( unsigned uStats ) { return 6 + 16 * std::max( 1, __builtin_popcount( uStats & AllStats ) ); }
     EffectSettings fx;

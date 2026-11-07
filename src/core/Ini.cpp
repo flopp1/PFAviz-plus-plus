@@ -103,6 +103,14 @@ void IniFile::Set( const std::string &sSection, const std::string &sKey, const s
     m_mData[sSection][sKey] = sValue;
 }
 
+std::vector< std::pair< std::string, std::string > > IniFile::Section( const std::string &sSection ) const
+{
+    std::vector< std::pair< std::string, std::string > > v;
+    auto it = m_mData.find( sSection );
+    if ( it != m_mData.end() ) v.assign( it->second.begin(), it->second.end() );
+    return v;
+}
+
 void IniFile::Overlay( const IniFile &o )
 {
     for ( const auto &sec : o.m_mData )

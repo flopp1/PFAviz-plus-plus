@@ -62,6 +62,7 @@ namespace Effects
         float m_fRest = 0.0f, m_fOutline = 1.0f, m_fInside = 1.0f;
         D3DCOLOR m_cBarGlow = 0;
         bool m_bFlat = false;
+        float m_fSemiFlat = -1.0f;     // the semi-flat look: its outlines' colour, of their insides' (below 0: not that look)
         SceneColors m_Colors;
         // The rest colours: notes', and short notes' when they differ
         bool m_abOwnRest[2] = {};

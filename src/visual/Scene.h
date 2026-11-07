@@ -62,6 +62,7 @@ struct ViewInputs
     bool bLines = true;               // the key dividers and measure lines
     bool bEdo31 = false;              // the 256-key view in the 31-EDO layout (Visual tab)
     bool bFlat = false;               // the effects' flat look (DrawKeys)
+    bool bSemiFlat = false;           // the effects' semi-flat look (DrawKeys)
     bool bNoBar = false;              // the keyboard without its red bar
     int iHitLine = -1;                // the effects' hit line in the red bar's place: its height, pixels at 1080p (-1: none)
 };
@@ -80,6 +81,7 @@ struct FrameGlobals
     bool bLines;
     bool bEdo31 = false;              // 31-EDO layout: 8 octaves of 31 keys and C to D#, by Scene's key table
     bool bFlat = false;               // flat keys, from the notes' bottom down
+    bool bSemiFlat = false;           // keys without depth under the normal look's bar
     bool bNoBar = false;              // no red bar: the keys from the notes' bottom down
     bool bHitLine = false;            // the hit line instead of the red bar (DrawHitLine)
     float fHitLineCY = 0.0f;          // its place over the keys, as tall as it (0: none, or no keyboard)
@@ -96,6 +98,7 @@ struct KeyLook
                                                             // (below 0: off; the flat look then has none, the normal
                                                             // look darkens towards the top)
     D3DCOLOR cBarGlow = 0;                                  // the red bar's glow (with pGlow)
+    bool bPressedLip = false;                               // the semi-flat look: pressed black keys keep their lip
 };
 
 // The effects' hit line (Scene::DrawHitLine)

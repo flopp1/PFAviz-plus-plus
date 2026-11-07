@@ -111,6 +111,7 @@ FrameGlobals Scene::ComputeGlobals( const ViewInputs &in )
     g.uClean = in.uClean;
     g.bLines = in.bLines;
     g.bFlat = in.bFlat;
+    g.bSemiFlat = in.bSemiFlat && !in.bFlat;
     g.bNoBar = in.bNoBar;
     g.bHitLine = in.iHitLine >= 0;
 
@@ -597,6 +598,89 @@ static void DrawKeysFlat( Renderer *pRenderer, const FrameGlobals &g, const Scen
         }
 }
 
+// The semi-flat look's keys, fCY tall from fTop (under the normal look's bar): the normal look's
+// keys without their depth, a pressed key the same shape as an unpressed one, told apart by its colours
+// only. A white key is one colour with a strip along its bottom in the dividers' colour (pressed: its
+// note's colour, the strip darker), divided from its neighbours as in the normal look, except between
+// two pressed ones; a black key is a face over a darker lip at its front (pressed: one flat colour, its
+// note's, or with KeyLook::bPressedLip its note's colours over the lip still).
+static void DrawKeysSemiFlat( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c, const ChannelSettings *const pKeyColor[256],
+                              const KeyLook *pLook, float fTop, float fCY )
+{
+    using namespace Scene;
+    const ChannelSettings &csKBB = c.csKBBackground;
+    const float fKeyGap = max( 1.0f, floor( g.fWhiteCX * 0.05f + 0.5f ) );
+    const float fKeyGap1 = fKeyGap - floor( fKeyGap / 2.0f + 0.5f );
+    const float fLipCY = max( 1.0f, floor( fCY * 0.03f + 0.5f ) );
+    const float fSharpCY = floor( fCY * 0.62f + 0.5f ), fSharpLipCY = max( 1.0f, floor( fCY * 0.05f + 0.5f ) );
+    auto Lit = [&]( int i ) -> const ChannelSettings * { return i >= 0 && i < 256 ? pKeyColor[i] : nullptr; };
+    auto Own = [&]( int i, const ChannelSettings &cs ) -> const ChannelSettings & { return pLook && i >= 0 && i < 256 && pLook->apUnlit[i] ? *pLook->apUnlit[i] : cs; };
+    // A face cy tall with its lip at the bottom: pressed in its note's colours (whitening to the top
+    // with KeyLook::fTopWhite), else in cFace over cLip; and its glow
+    auto Face = [&]( int i, float x, float y, float cx, float cy, float fLip, D3DCOLOR cFace, D3DCOLOR cLip ) {
+        if ( const ChannelSettings *pLit = Lit( i ) )
+        {
+            const D3DCOLOR cBottom = pLit->iPrimaryRGB;
+            const D3DCOLOR cUp = pLook && pLook->fTopWhite >= 0.0f ? MixRGB( cBottom, 0x00FFFFFF, pLook->fTopWhite ) : cBottom;
+            pRenderer->DrawRect( x, y, cx, cy - fLip, cUp, cUp, cBottom, cBottom );
+            if ( fLip > 0.0f ) pRenderer->DrawRect( x, y + cy - fLip, cx, fLip, MixRGB( cBottom, pLit->iDarkRGB, 0.5f ) );
+        }
+        else
+        {
+            pRenderer->DrawRect( x, y, cx, cy - fLip, cFace );
+            pRenderer->DrawRect( x, y + cy - fLip, cx, fLip, cLip );
+        }
+        if ( pLook && pLook->pGlow ) pLook->pGlow->push_back( { x, y, cx, cy, i >= 0 && i < 256 ? pLook->aGlow[i] : 0 } );
+    };
+    auto IsWhite = [&]( int i ) { return g.bEdo31 ? KeyLayer( g, i ) == 0 : !Notes::IsSharp( i ); };
+
+    // The white keys, each with the divider to its right (none to a pressed key from a pressed one: the
+    // left one's colour across it instead)
+    int iStartRender = ( Notes::IsSharp( g.iStartNote ) ? g.iStartNote - 1 : g.iStartNote );
+    int iEndRender = ( Notes::IsSharp( g.iEndNote ) && g.iEndNote < 255 ? g.iEndNote + 1 : g.iEndNote );
+    float fCurX = g.fNotesX + ( Notes::IsSharp( g.iStartNote ) ? g.fWhiteCX * ( SharpRatio / 2.0f - 1.0f ) : 0.0f );
+    for ( int i = iStartRender; i <= iEndRender; i++ )
+    {
+        if ( !IsWhite( i ) ) continue;
+        int iNext = i + 1;
+        while ( iNext <= iEndRender && !IsWhite( iNext ) ) iNext++;
+        const bool bJoined = Lit( i ) && iNext <= iEndRender && Lit( iNext );
+        const ChannelSettings &csKBW = Own( i, c.csKBWhite );
+        const float x = fCurX + fKeyGap1, cx = g.fWhiteCX - fKeyGap;
+        Face( i, x, fTop, bJoined ? cx + fKeyGap + 1.0f : cx, fCY, fLipCY, MixRGB( csKBW.iDarkRGB, csKBW.iPrimaryRGB, 0.5f ), csKBB.iPrimaryRGB );
+        if ( i == g.iMiddleC )
+        {
+            const ChannelSettings *pLit = Lit( i );
+            const float fMXGap = floor( g.fWhiteCX * 0.25f + 0.5f ), fMCX = g.fWhiteCX - fMXGap * 2.0f - fKeyGap;
+            const float fBottom = fTop + fCY - fLipCY - 5.0f, fMY = max( fBottom - fMCX, fTop + fSharpCY + 5.0f );
+            pRenderer->DrawRect( x + fMXGap, fMY, fMCX, fBottom - fMY, pLit ? MixRGB( pLit->iPrimaryRGB, 0x00FFFFFF, 0.5f ) : csKBW.iDarkRGB );
+        }
+        if ( !bJoined )
+            pRenderer->DrawRect( floor( x + cx + 0.5f ), fTop, fKeyGap, fCY, csKBB.iVeryDarkRGB, csKBB.iPrimaryRGB, csKBB.iPrimaryRGB, csKBB.iVeryDarkRGB );
+        fCurX += g.fWhiteCX;
+    }
+
+    // The black keys (31-EDO: the half keys as tall, then the full ones half as tall over them), in the
+    // notes' columns
+    auto Black = [&]( int i, float cy, const ChannelSettings &cs ) {
+        const NoteKey nk = GetNoteKey( g, i );
+        const ChannelSettings &own = Own( i, cs );
+        const bool bFlatten = Lit( i ) && !( pLook && pLook->bPressedLip );
+        Face( i, nk.x, fTop, nk.cx, cy, bFlatten ? 0.0f : std::min( fSharpLipCY, cy * 0.5f ), own.iPrimaryRGB, own.iDarkRGB );
+    };
+    if ( g.bEdo31 )
+    {
+        for ( int iLayer = 1; iLayer <= 2; iLayer++ )
+            for ( int i = g.iStartNote; i <= g.iEndNote; i++ )
+                if ( KeyLayer( g, i ) == iLayer )
+                    Black( i, iLayer == 1 ? fSharpCY : floor( fSharpCY * 0.5f + 0.5f ),
+                           iLayer == 1 ? c.csKBHalf : Key31Of( i ).kind == Sharp ? c.csKBSharp31 : c.csKBSharp );
+        return;
+    }
+    for ( int i = g.iStartNote; i <= g.iEndNote; i++ )
+        if ( Notes::IsSharp( i ) ) Black( i, fSharpCY, c.csKBSharp );
+}
+
 void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c, const ChannelSettings *const pKeyColor[256],
                       const KeyLook *pLook )
 {
@@ -623,6 +707,7 @@ void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneCol
     if ( pLook && pLook->pGlow && fRedCY > 0.0f && !g.bHitLine ) pLook->pGlow->push_back( { g.fNotesX, fKeysY + fTransitionCY, g.fNotesCX, fRedCY, pLook->cBarGlow } );
     pRenderer->DrawRect( g.fNotesX, fKeysY + fTransitionCY + fRedCY, g.fNotesCX, fSpacerCY,
         c.csKBBackground.iDarkRGB, c.csKBBackground.iDarkRGB, c.csKBBackground.iDarkRGB, c.csKBBackground.iDarkRGB );
+    if ( g.bSemiFlat ) return DrawKeysSemiFlat( pRenderer, g, c, pKeyColor, pLook, fKeysY + fTransitionCY + fRedCY + fSpacerCY, fTopCY + fNearCY );
 
     // Keys info
     float fKeyGap = max( 1.0f, floor( g.fWhiteCX * 0.05f + 0.5f ) );

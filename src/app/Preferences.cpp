@@ -19,6 +19,7 @@
 #include "app/VideoExport.h"
 #include "audio/MidiOutput.h"
 #include "core/Config.h"
+#include "core/Ini.h"
 #include "midi/Notes.h"
 #include "resource.h"
 #include "song/PfaLag.h"
@@ -82,7 +83,8 @@ namespace
                std::equal( a.abRight, a.abRight + n, b.abRight ) && std::equal( a.aColor, a.aColor + n, b.aColor ) &&
                std::equal( a.aiPlace, a.aiPlace + n, b.aiPlace ) && a.bTogether == b.bTogether && a.bZero == b.bZero &&
                a.bMiddle == b.bMiddle && a.iCorner == b.iCorner && a.iSpanMs == b.iSpanMs && a.iCX == b.iCX && a.iCY == b.iCY &&
-               a.iFontPx == b.iFontPx && a.iGrowMs == b.iGrowMs && a.iShrinkMs == b.iShrinkMs;
+               a.iFontPx == b.iFontPx && a.iGrowMs == b.iGrowMs && a.iShrinkMs == b.iShrinkMs &&
+               a.bScale == b.bScale && a.bMaxLine == b.bMaxLine && a.uMaxColor == b.uMaxColor;
     }
 
     // The graphs' settings, chosen in the Graphs dialog and saved with the Visual page
@@ -122,7 +124,7 @@ namespace
             case WM_DRAWITEM:
             {
                 const UINT uId = ( ( LPDRAWITEMSTRUCT )lParam )->CtlID;
-                if ( uId < IDC_GRAPH_COLOR0 || uId >= IDC_GRAPH_COLOR0 + GS::SeriesCount ) return FALSE;
+                if ( ( uId < IDC_GRAPH_COLOR0 || uId >= IDC_GRAPH_COLOR0 + GS::SeriesCount ) && uId != IDC_GRAPH_MAXCOLOR ) return FALSE;
                 DrawSwatch( ( LPDRAWITEMSTRUCT )lParam );
                 return TRUE;
             }
@@ -158,12 +160,15 @@ namespace
                 SetDlgItemInt( hWnd, IDC_GRAPH_FONT, p->iFontPx, FALSE );
                 SetDlgItemInt( hWnd, IDC_GRAPH_GROW, p->iGrowMs, FALSE );
                 SetDlgItemInt( hWnd, IDC_GRAPH_SHRINK, p->iShrinkMs, FALSE );
+                CheckDlgButton( hWnd, IDC_GRAPH_SCALE, p->bScale ? BST_CHECKED : BST_UNCHECKED );
+                CheckDlgButton( hWnd, IDC_GRAPH_MAXLINE, p->bMaxLine ? BST_CHECKED : BST_UNCHECKED );
+                SetWindowLongPtrW( GetDlgItem( hWnd, IDC_GRAPH_MAXCOLOR ), GWLP_USERDATA, p->uMaxColor );
                 return TRUE;
             }
             case WM_COMMAND:
             {
                 const int iId = LOWORD( wParam );
-                if ( iId >= IDC_GRAPH_COLOR0 && iId < IDC_GRAPH_COLOR0 + GS::SeriesCount )
+                if ( ( iId >= IDC_GRAPH_COLOR0 && iId < IDC_GRAPH_COLOR0 + GS::SeriesCount ) || iId == IDC_GRAPH_MAXCOLOR )
                 {
                     if ( HIWORD( wParam ) != BN_CLICKED ) return TRUE;
                     HWND hWndBtn = ( HWND )lParam;
@@ -213,6 +218,9 @@ namespace
                     p->iFontPx = Num( IDC_GRAPH_FONT, 6, 200, p->iFontPx );
                     p->iGrowMs = Num( IDC_GRAPH_GROW, 0, 10000, p->iGrowMs );
                     p->iShrinkMs = Num( IDC_GRAPH_SHRINK, 0, 10000, p->iShrinkMs );
+                    p->bScale = IsDlgButtonChecked( hWnd, IDC_GRAPH_SCALE ) == BST_CHECKED;
+                    p->bMaxLine = IsDlgButtonChecked( hWnd, IDC_GRAPH_MAXLINE ) == BST_CHECKED;
+                    p->uMaxColor = ( unsigned )GetWindowLongPtrW( GetDlgItem( hWnd, IDC_GRAPH_MAXCOLOR ), GWLP_USERDATA );
                     p->Fix();
                     EndDialog( hWnd, IDOK );
                 }
@@ -247,11 +255,19 @@ namespace
         InvalidateRect( GetDlgItem( hWnd, IDC_PALETTE ), nullptr, FALSE );
     }
 
+    // The name dialog asks for a palette's, or with this set, an effects profile's
+    bool g_bNameProfile = false;
+
     INT_PTR CALLBACK PaletteNameProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
     {
         switch ( msg )
         {
             case WM_INITDIALOG:
+                if ( g_bNameProfile )
+                {
+                    SetWindowTextW( hWnd, L"Save Effects Profile" );
+                    SetDlgItemTextW( hWnd, IDC_PALETTENAMETEXT, L"Name (a saved profile of the same name is replaced):" );
+                }
                 SetWindowLongPtrW( hWnd, GWLP_USERDATA, lParam );
                 SetDlgItemTextW( hWnd, IDC_PALETTENAME, ( ( std::wstring * )lParam )->c_str() );
                 SendDlgItemMessageW( hWnd, IDC_PALETTENAME, EM_SETSEL, 0, -1 );
@@ -519,10 +535,14 @@ namespace
             for ( int iId : { IDC_PFAL2, IDC_PFAL3, IDC_PFASEND, IDC_PFASPEED, IDC_PFASTATS } ) EnableWindow( GetDlgItem( hWnd, iId ), cVisual.bPfaLag );
         }
         CheckDlgButton( hWnd, IDC_LOOPCOLORS, cVisual.bLoopColors ? BST_CHECKED : BST_UNCHECKED );
-        CheckDlgButton( hWnd, IDC_EDO31KEYS, cVisual.bEdo31Keys ? BST_CHECKED : BST_UNCHECKED );
         CheckDlgButton( hWnd, IDC_STATSSCALED, cVisual.bStatsScaled ? BST_CHECKED : BST_UNCHECKED );
         SetDlgItemInt( hWnd, IDC_STATSSIZE, (UINT)cVisual.iStatsCX, FALSE );
         SetDlgItemInt( hWnd, IDC_STATSHEIGHT, (UINT)cVisual.iStatsCY, FALSE );
+        // (the font's size or the height: one or the other)
+        CheckDlgButton( hWnd, IDC_STATSFONTSET, cVisual.bStatsFontSet ? BST_CHECKED : BST_UNCHECKED );
+        SetDlgItemInt( hWnd, IDC_STATSFONTPX, (UINT)cVisual.iStatsFontPx, FALSE );
+        EnableWindow( GetDlgItem( hWnd, IDC_STATSHEIGHT ), !cVisual.bStatsFontSet );
+        EnableWindow( GetDlgItem( hWnd, IDC_STATSFONTPX ), cVisual.bStatsFontSet );
         SendDlgItemMessageW( hWnd, IDC_STATSCORNER, CB_SETCURSEL, cVisual.iStatsCorner, 0 );
         SetDlgItemTextW( hWnd, IDC_STATSFONT, cVisual.sStatsFont.c_str() );
         CheckDlgButton( hWnd, IDC_STATSBKG, cVisual.bStatsBackground ? BST_CHECKED : BST_UNCHECKED );
@@ -767,6 +787,13 @@ namespace
                     case IDC_STATSSHADOW:
                         EnableWindow( GetDlgItem( hWnd, IDC_STATSMIRROR ), IsDlgButtonChecked( hWnd, IDC_STATSSHADOW ) == BST_CHECKED );
                         return TRUE;
+                    case IDC_STATSFONTSET:
+                    {
+                        const BOOL bSet = IsDlgButtonChecked( hWnd, IDC_STATSFONTSET ) == BST_CHECKED;
+                        EnableWindow( GetDlgItem( hWnd, IDC_STATSHEIGHT ), !bSet );
+                        EnableWindow( GetDlgItem( hWnd, IDC_STATSFONTPX ), bSet );
+                        return TRUE;
+                    }
                     case IDC_PFALAG:
                     {
                         BOOL bOn = IsDlgButtonChecked( hWnd, IDC_PFALAG ) == BST_CHECKED;
@@ -933,18 +960,22 @@ namespace
                     }
                     // The stats box's size
                     bool bStatsScaled = IsDlgButtonChecked( hWnd, IDC_STATSSCALED ) == BST_CHECKED;
-                    int aiStatsSize[2];
+                    // (the width, then the height or the font's size, whichever is set: the other kept)
+                    const bool bStatsFontSet = IsDlgButtonChecked( hWnd, IDC_STATSFONTSET ) == BST_CHECKED;
+                    int aiStatsSize[3] = { 0, config.GetVisualSettings().iStatsCY, config.GetVisualSettings().iStatsFontPx };
                     {
-                        const int aiId[2] = { IDC_STATSSIZE, IDC_STATSHEIGHT };
-                        const int aiMin[2] = { VisualSettings::StatsCXMin, VisualSettings::StatsCYMin };
-                        const int aiMax[2] = { VisualSettings::StatsCXMax, VisualSettings::StatsCYMax };
-                        for ( int i = 0; i < 2; i++ )
+                        const int aiId[3] = { IDC_STATSSIZE, IDC_STATSHEIGHT, IDC_STATSFONTPX };
+                        const int aiMin[3] = { VisualSettings::StatsCXMin, VisualSettings::StatsCYMin, VisualSettings::StatsFontMin };
+                        const int aiMax[3] = { VisualSettings::StatsCXMax, VisualSettings::StatsCYMax, VisualSettings::StatsFontMax };
+                        static const wchar_t *const asWhat[3] = { L"width", L"height", L"font size" };
+                        for ( int i = 0; i < 3; i++ )
                         {
+                            if ( i && ( i == 2 ) != bStatsFontSet ) continue;
                             UINT u = GetDlgItemInt( hWnd, aiId[i], &bOk, FALSE );
                             if ( !bOk || u < (UINT)aiMin[i] || u > (UINT)aiMax[i] )
                             {
                                 wchar_t sMsg[128];
-                                swprintf( sMsg, 128, L"Please specify a stats box %ls between %d and %d pixels", i ? L"height" : L"width", aiMin[i], aiMax[i] );
+                                swprintf( sMsg, 128, L"Please specify a stats box %ls between %d and %d pixels", asWhat[i], aiMin[i], aiMax[i] );
                                 MessageBoxW( hWnd, sMsg, L"Error", MB_OK | MB_ICONEXCLAMATION );
                                 PostMessageW( hWnd, WM_NEXTDLGCTL, ( WPARAM )GetDlgItem( hWnd, aiId[i] ), TRUE );
                                 SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_INVALID );
@@ -1019,10 +1050,11 @@ namespace
                         cVisual.iPfaCpuPct = bNum ? std::clamp( (int)uPct, 10, 1000 ) : 100;
                     }
                     cVisual.bLoopColors = IsDlgButtonChecked( hWnd, IDC_LOOPCOLORS ) == BST_CHECKED;
-                    cVisual.bEdo31Keys = IsDlgButtonChecked( hWnd, IDC_EDO31KEYS ) == BST_CHECKED;
                     cVisual.bStatsScaled = bStatsScaled;
                     cVisual.iStatsCX = aiStatsSize[0];
                     cVisual.iStatsCY = aiStatsSize[1];
+                    cVisual.bStatsFontSet = bStatsFontSet;
+                    cVisual.iStatsFontPx = aiStatsSize[2];
                     cVisual.iStatsCorner = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_STATSCORNER, CB_GETCURSEL, 0, 0 ) );
                     wchar_t sFont[LF_FACESIZE] = L"";
                     GetDlgItemTextW( hWnd, IDC_STATSFONT, sFont, LF_FACESIZE );
@@ -1091,9 +1123,16 @@ namespace
                 CheckDlgButton( hWnd, IDC_PERF_KDMAPI, cPerf.bPreferKDMAPI ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_PERF_LONGSENDS, cPerf.bKdmapiLongSends ? BST_CHECKED : BST_UNCHECKED );
                 EnableWindow( GetDlgItem( hWnd, IDC_PERF_KDMAPI ), MidiOutputs::KdmapiAvailable() || cPerf.bPreferKDMAPI );
+                // 31-EDO: the keys' layout and the tuning
+                CheckDlgButton( hWnd, IDC_EDO31KEYS, Config::GetConfig().GetVisualSettings().bEdo31Keys ? BST_CHECKED : BST_UNCHECKED );
+                CheckDlgButton( hWnd, IDC_PERF_TUNING31, cPerf.bTuning31 ? BST_CHECKED : BST_UNCHECKED );
+                CheckDlgButton( hWnd, IDC_PERF_TUNING31BEND, cPerf.bTuning31PitchBend ? BST_CHECKED : BST_UNCHECKED );
+                EnableWindow( GetDlgItem( hWnd, IDC_PERF_TUNING31BEND ), cPerf.bTuning31 );
                 return TRUE;
             }
             case WM_COMMAND:
+                if ( LOWORD( wParam ) == IDC_PERF_TUNING31 && HIWORD( wParam ) == BN_CLICKED )
+                    EnableWindow( GetDlgItem( hWnd, IDC_PERF_TUNING31BEND ), IsDlgButtonChecked( hWnd, IDC_PERF_TUNING31 ) == BST_CHECKED );
                 if ( UserChange( wParam, lParam ) ) Changed( hWnd );
                 break;
             case WM_DEVICECHANGE:
@@ -1115,7 +1154,12 @@ namespace
                     bChanged |= bKdmapi != cPerf.bPreferKDMAPI;
                     cPerf.bPreferKDMAPI = bKdmapi;
                     cPerf.bKdmapiLongSends = IsDlgButtonChecked( hWnd, IDC_PERF_LONGSENDS ) == BST_CHECKED;
+                    cPerf.bTuning31 = IsDlgButtonChecked( hWnd, IDC_PERF_TUNING31 ) == BST_CHECKED;
+                    cPerf.bTuning31PitchBend = IsDlgButtonChecked( hWnd, IDC_PERF_TUNING31BEND ) == BST_CHECKED;
                     config.SetPerformanceSettings( cPerf );
+                    VisualSettings cVisual = config.GetVisualSettings();
+                    cVisual.bEdo31Keys = IsDlgButtonChecked( hWnd, IDC_EDO31KEYS ) == BST_CHECKED;
+                    config.SetVisualSettings( cVisual );
                     if ( bChanged ) HandOffMsg( WM_DEVICECHANGE, 0, 0 );
                     SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_NOERROR );
                     return TRUE;
@@ -1166,6 +1210,7 @@ namespace
         { IDC_FX_HITGLOW, FX( iHitLineGlow ), 0, 300, L"the hit line's glow (0 to 300%)" },
         { IDC_FX_HITFADEMS, FX( iHitLineFadeMs ), 0, 60000, L"the hit line's fade (0 to 60000 ms)" },
         { IDC_FX_HITSMEAR, FX( iHitLineSmear ), 0, 400, L"the hit line's smear (0 to 400 pixels)" },
+        { IDC_FX_SEMIOUTLINE, FX( iSemiFlatOutline ), 0, 100, L"how much darker the semi-flat look's outlines are (0 to 100%)" },
     };
 #undef FX
 
@@ -1185,11 +1230,19 @@ namespace
             EnableWindow( GetDlgItem( hWnd, iId ), bOn );
     }
 
-    // The flat look's own settings mean nothing without it (and merged outlines nothing with it: it has none)
+    // The look chosen (EffectSettings::Look)
+    int FxLook( HWND hWnd )
+    {
+        return std::clamp( (int)SendDlgItemMessageW( hWnd, IDC_FX_FLAT, CB_GETCURSEL, 0, 0 ), 0, EffectSettings::LookCount - 1 );
+    }
+
+    // Each look's own settings mean nothing without it (and merged outlines nothing with the flat look: it has none)
     VOID EnableFxFlat( HWND hWnd )
     {
-        BOOL bOn = IsDlgButtonChecked( hWnd, IDC_FX_FLAT ) == BST_CHECKED;
+        BOOL bOn = FxLook( hWnd ) == EffectSettings::LookFlat;
         EnableWindow( GetDlgItem( hWnd, IDC_FX_FLATBORDERS ), bOn );
+        EnableWindow( GetDlgItem( hWnd, IDC_FX_SEMIOUTLINE ), FxLook( hWnd ) == EffectSettings::LookSemiFlat );
+        EnableWindow( GetDlgItem( hWnd, IDC_FX_SEMILIP ), FxLook( hWnd ) == EffectSettings::LookSemiFlat );
         const BOOL bMerge = !bOn && IsDlgButtonChecked( hWnd, IDC_FX_MERGE ) == BST_CHECKED;
         const BOOL bShort = bMerge && IsDlgButtonChecked( hWnd, IDC_FX_MERGESHORT ) == BST_CHECKED;
         EnableWindow( GetDlgItem( hWnd, IDC_FX_MERGE ), !bOn );
@@ -1198,8 +1251,8 @@ namespace
     }
 
     // Pressed keys whitening: each look its own, the row showing the look chosen (g_iKeyWhiteLook)
-    bool g_abKeyWhite[2];
-    int g_aiKeyWhite[2], g_iKeyWhiteLook;
+    bool g_abKeyWhite[EffectSettings::LookCount];
+    int g_aiKeyWhite[EffectSettings::LookCount], g_iKeyWhiteLook;
 
     VOID ShowKeyWhite( HWND hWnd )
     {
@@ -1220,8 +1273,13 @@ namespace
     VOID EnableFx( HWND hWnd )
     {
         const BOOL bOn = IsDlgButtonChecked( hWnd, IDC_FX_ON ) == BST_CHECKED;
+        // (the profiles stay usable)
         for ( HWND h = GetWindow( hWnd, GW_CHILD ); h; h = GetWindow( h, GW_HWNDNEXT ) )
-            if ( GetDlgCtrlID( h ) != IDC_FX_ON ) EnableWindow( h, bOn );
+        {
+            const int iId = GetDlgCtrlID( h );
+            if ( iId != IDC_FX_ON && ( iId < IDC_FX_PROFILES || iId > IDC_FX_PROFILENEW ) && iId != IDC_FX_PROFILEKEEP && h != GetWindow( GetDlgItem( hWnd, IDC_FX_PROFILES ), GW_HWNDPREV ) )
+                EnableWindow( h, bOn );
+        }
         if ( bOn )
         {
             EnableFxFlat( hWnd );
@@ -1231,15 +1289,51 @@ namespace
         }
     }
 
-    INT_PTR CALLBACK EffectsProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
+    // The page's settings as shown (what disabled ones keep), and the saved profiles as edited (kept on
+    // Apply)
+    EffectSettings g_FxShown;
+    std::vector< VisualSettings::FxProfile > g_vFxProfiles;
+
+    // The profiles kept at once (saving or deleting one is not a change of the page's settings, to apply)
+    VOID KeepFxProfiles()
     {
-        switch ( msg )
+        Config &config = Config::GetConfig();
+        VisualSettings cVisual = config.GetVisualSettings();
+        cVisual.vFxProfiles = g_vFxProfiles;
+        config.SetVisualSettings( cVisual );
+    }
+
+    VOID UpdateFxSave( HWND hWnd );
+
+    VOID ShowFxProfiles( HWND hWnd, int iSelect )
+    {
+        HWND hCombo = GetDlgItem( hWnd, IDC_FX_PROFILES );
+        SendMessageW( hCombo, CB_RESETCONTENT, 0, 0 );
+        for ( const VisualSettings::FxProfile &p : g_vFxProfiles ) SendMessageW( hCombo, CB_ADDSTRING, 0, ( LPARAM )p.sName.c_str() );
+        SendMessageW( hCombo, CB_SETCURSEL, iSelect, 0 );
+        EnableWindow( hCombo, !g_vFxProfiles.empty() );
+        EnableWindow( GetDlgItem( hWnd, IDC_FX_PROFILEDELETE ), iSelect >= 0 );
+        UpdateFxSave( hWnd );
+    }
+
+    // The profile with every setting as fx's (the switch aside), or -1
+    int MatchingFxProfile( const EffectSettings &fx )
+    {
+        auto Text = []( EffectSettings f ) { f.bOn = true; IniFile ini; f.Save( ini ); return ini.Text(); };
+        const std::string s = Text( fx );
+        for ( size_t i = 0; i < g_vFxProfiles.size(); i++ )
+            if ( Text( g_vFxProfiles[i].fx ) == s ) return (int)i;
+        return -1;
+    }
+
+    // Every setting's control but the effects' switch, from fx
+    VOID ShowFx( HWND hWnd, const EffectSettings &fx )
+    {
+        g_FxShown = fx;
         {
-            case WM_INITDIALOG:
-            {
-                const EffectSettings &fx = Config::GetConfig().GetVisualSettings().fx;
-                CheckDlgButton( hWnd, IDC_FX_FLAT, fx.bFlat ? BST_CHECKED : BST_UNCHECKED );
+                SendDlgItemMessageW( hWnd, IDC_FX_FLAT, CB_SETCURSEL, fx.eLook, 0 );
                 CheckDlgButton( hWnd, IDC_FX_FLATBORDERS, fx.bFlatBorders ? BST_CHECKED : BST_UNCHECKED );
+                CheckDlgButton( hWnd, IDC_FX_SEMILIP, fx.bSemiFlatLip ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_FX_NOBAR, fx.bNoBar ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_FX_SHORTCOLOR, fx.bShortColor ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_FX_HOLLOW, fx.bHollow ? BST_CHECKED : BST_UNCHECKED );
@@ -1251,21 +1345,98 @@ namespace
                 CheckDlgButton( hWnd, IDC_FX_HITPLAYING, fx.bHitLinePlaying ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_FX_HITNOTECOLOR, fx.bHitLineNoteColor ? BST_CHECKED : BST_UNCHECKED );
                 SetWindowLongPtrW( GetDlgItem( hWnd, IDC_FX_HITCOLOR ), GWLP_USERDATA, fx.iHitLineColor );
-                EnableFxHitLine( hWnd );
+                InvalidateRect( GetDlgItem( hWnd, IDC_FX_HITCOLOR ), nullptr, FALSE );
                 for ( const FxNumber &n : aFxNumbers ) SetDlgItemInt( hWnd, n.iId, (UINT)n.Get( const_cast< EffectSettings & >( fx ) ), FALSE );
-                // By EffectSettings::Decay
-                for ( const wchar_t *s : { L"None (steady)", L"Linear", L"Exponential", L"Smooth" } )
-                    SendDlgItemMessageW( hWnd, IDC_FX_DECAY, CB_ADDSTRING, 0, ( LPARAM )s );
                 SendDlgItemMessageW( hWnd, IDC_FX_DECAY, CB_SETCURSEL, fx.eDecay, 0 );
-                for ( const wchar_t *s : { L"None (off at once)", L"Linear", L"Exponential", L"Smooth" } )
-                    SendDlgItemMessageW( hWnd, IDC_FX_HITCURVE, CB_ADDSTRING, 0, ( LPARAM )s );
                 SendDlgItemMessageW( hWnd, IDC_FX_HITCURVE, CB_SETCURSEL, fx.eHitLineCurve, 0 );
-                CheckDlgButton( hWnd, IDC_FX_ON, fx.bOn ? BST_CHECKED : BST_UNCHECKED );
-                std::copy( fx.abKeyWhite, fx.abKeyWhite + 2, g_abKeyWhite );
-                std::copy( fx.aiKeyWhite, fx.aiKeyWhite + 2, g_aiKeyWhite );
-                g_iKeyWhiteLook = fx.bFlat;
+                std::copy( fx.abKeyWhite, fx.abKeyWhite + EffectSettings::LookCount, g_abKeyWhite );
+                std::copy( fx.aiKeyWhite, fx.aiKeyWhite + EffectSettings::LookCount, g_aiKeyWhite );
+                g_iKeyWhiteLook = fx.eLook;
                 ShowKeyWhite( hWnd );
                 EnableFx( hWnd );
+        }
+        UpdateFxSave( hWnd );
+    }
+
+    // The controls over fx (a disabled number keeps fx's); a number out of its range: that one, and
+    // nothing changed
+    const FxNumber *ReadFx( HWND hWnd, EffectSettings &fxOut )
+    {
+        EffectSettings fx = fxOut;
+        for ( const FxNumber &n : aFxNumbers )
+        {
+            BOOL bOk;
+            UINT u = GetDlgItemInt( hWnd, n.iId, &bOk, FALSE );
+            if ( !IsWindowEnabled( GetDlgItem( hWnd, n.iId ) ) ) continue;
+            if ( !bOk || u < (UINT)n.iMin || u > (UINT)n.iMax ) return &n;
+            n.Get( fx ) = (int)u;
+        }
+        fx.eLook = FxLook( hWnd );
+        fx.bFlatBorders = IsDlgButtonChecked( hWnd, IDC_FX_FLATBORDERS ) == BST_CHECKED;
+        fx.bSemiFlatLip = IsDlgButtonChecked( hWnd, IDC_FX_SEMILIP ) == BST_CHECKED;
+        fx.bNoBar = IsDlgButtonChecked( hWnd, IDC_FX_NOBAR ) == BST_CHECKED;
+        fx.bShortColor = IsDlgButtonChecked( hWnd, IDC_FX_SHORTCOLOR ) == BST_CHECKED;
+        fx.bHollow = IsDlgButtonChecked( hWnd, IDC_FX_HOLLOW ) == BST_CHECKED;
+        fx.bMergeOutlines = IsDlgButtonChecked( hWnd, IDC_FX_MERGE ) == BST_CHECKED;
+        fx.bMergeShort = IsDlgButtonChecked( hWnd, IDC_FX_MERGESHORT ) == BST_CHECKED;
+        fx.bMergeShortLong = IsDlgButtonChecked( hWnd, IDC_FX_MERGESHORTLONG ) == BST_CHECKED;
+        fx.bStats = IsDlgButtonChecked( hWnd, IDC_FX_STATS ) == BST_CHECKED;
+        fx.bOn = IsDlgButtonChecked( hWnd, IDC_FX_ON ) == BST_CHECKED;
+        KeepKeyWhite( hWnd );
+        std::copy( g_abKeyWhite, g_abKeyWhite + EffectSettings::LookCount, fx.abKeyWhite );
+        std::copy( g_aiKeyWhite, g_aiKeyWhite + EffectSettings::LookCount, fx.aiKeyWhite );
+        fx.bHitLine = IsDlgButtonChecked( hWnd, IDC_FX_HITLINE ) == BST_CHECKED;
+        fx.bHitLinePlaying = IsDlgButtonChecked( hWnd, IDC_FX_HITPLAYING ) == BST_CHECKED;
+        fx.bHitLineNoteColor = IsDlgButtonChecked( hWnd, IDC_FX_HITNOTECOLOR ) == BST_CHECKED;
+        fx.iHitLineColor = ( unsigned )GetWindowLongPtrW( GetDlgItem( hWnd, IDC_FX_HITCOLOR ), GWLP_USERDATA );
+        fx.eDecay = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_FX_DECAY, CB_GETCURSEL, 0, 0 ) );
+        fx.eHitLineCurve = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_FX_HITCURVE, CB_GETCURSEL, 0, 0 ) );
+        fxOut = fx;
+        return nullptr;
+    }
+
+    // Save: only with a profile chosen that the page's settings differ from (a number out of range
+    // counts as a difference, so saving says what is wrong)
+    VOID UpdateFxSave( HWND hWnd )
+    {
+        const int i = (int)SendDlgItemMessageW( hWnd, IDC_FX_PROFILES, CB_GETCURSEL, 0, 0 );
+        bool bDiffer = false;
+        if ( i >= 0 && i < (int)g_vFxProfiles.size() )
+        {
+            auto Text = []( EffectSettings f ) { f.bOn = true; IniFile ini; f.Save( ini ); return ini.Text(); };
+            EffectSettings fx = g_FxShown;
+            bDiffer = ReadFx( hWnd, fx ) != nullptr || Text( fx ) != Text( g_vFxProfiles[i].fx );
+        }
+        EnableWindow( GetDlgItem( hWnd, IDC_FX_PROFILEKEEP ), bDiffer );
+    }
+
+    // A number out of range: said, and its box focused
+    VOID FxNumberError( HWND hWnd, const FxNumber &n )
+    {
+        wchar_t buf[160];
+        swprintf( buf, 160, L"Please specify %ls", n.sName );
+        MessageBoxW( hWnd, buf, L"Error", MB_OK | MB_ICONEXCLAMATION );
+        PostMessageW( hWnd, WM_NEXTDLGCTL, ( WPARAM )GetDlgItem( hWnd, n.iId ), TRUE );
+    }
+
+    INT_PTR CALLBACK EffectsProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
+    {
+        switch ( msg )
+        {
+            case WM_INITDIALOG:
+            {
+                const VisualSettings &cVisual = Config::GetConfig().GetVisualSettings();
+                // By EffectSettings::Look and Decay
+                for ( const wchar_t *s : { L"Normal", L"Flat", L"Semi-flat" } )
+                    SendDlgItemMessageW( hWnd, IDC_FX_FLAT, CB_ADDSTRING, 0, ( LPARAM )s );
+                for ( const wchar_t *s : { L"None (steady)", L"Linear", L"Exponential", L"Smooth" } )
+                    SendDlgItemMessageW( hWnd, IDC_FX_DECAY, CB_ADDSTRING, 0, ( LPARAM )s );
+                for ( const wchar_t *s : { L"None (off at once)", L"Linear", L"Exponential", L"Smooth" } )
+                    SendDlgItemMessageW( hWnd, IDC_FX_HITCURVE, CB_ADDSTRING, 0, ( LPARAM )s );
+                CheckDlgButton( hWnd, IDC_FX_ON, cVisual.fx.bOn ? BST_CHECKED : BST_UNCHECKED );
+                g_vFxProfiles = cVisual.vFxProfiles;
+                ShowFxProfiles( hWnd, MatchingFxProfile( cVisual.fx ) );
+                ShowFx( hWnd, cVisual.fx );
                 return TRUE;
             }
             case WM_DRAWITEM:
@@ -1281,65 +1452,114 @@ namespace
                     SetWindowLongPtrW( hWndBtn, GWLP_USERDATA, cr );
                     InvalidateRect( hWndBtn, nullptr, FALSE );
                     if ( cr != crOld ) Changed( hWnd );
+                    UpdateFxSave( hWnd );
                     return TRUE;
+                }
+                // Saved profiles: one chosen fills the page (but the effects' switch); the page saved
+                // under a name; the defaults shown
+                switch ( LOWORD( wParam ) )
+                {
+                    case IDC_FX_PROFILES:
+                    {
+                        if ( HIWORD( wParam ) != CBN_SELCHANGE ) return TRUE;
+                        int i = (int)SendDlgItemMessageW( hWnd, IDC_FX_PROFILES, CB_GETCURSEL, 0, 0 );
+                        if ( i >= 0 && i < (int)g_vFxProfiles.size() )
+                        {
+                            EffectSettings fx = g_vFxProfiles[i].fx;
+                            fx.bOn = IsDlgButtonChecked( hWnd, IDC_FX_ON ) == BST_CHECKED;
+                            ShowFx( hWnd, fx );
+                            Changed( hWnd );
+                        }
+                        EnableWindow( GetDlgItem( hWnd, IDC_FX_PROFILEDELETE ), i >= 0 );
+                        UpdateFxSave( hWnd );
+                        return TRUE;
+                    }
+                    case IDC_FX_PROFILEKEEP:
+                    {
+                        // (the page's settings over the profile chosen, under its own name)
+                        int i = (int)SendDlgItemMessageW( hWnd, IDC_FX_PROFILES, CB_GETCURSEL, 0, 0 );
+                        if ( i < 0 || i >= (int)g_vFxProfiles.size() ) return TRUE;
+                        EffectSettings fx = g_FxShown;
+                        if ( const FxNumber *pBad = ReadFx( hWnd, fx ) ) { FxNumberError( hWnd, *pBad ); return TRUE; }
+                        fx.bOn = true;
+                        g_vFxProfiles[i].fx = fx;
+                        KeepFxProfiles();
+                        UpdateFxSave( hWnd );
+                        return TRUE;
+                    }
+                    case IDC_FX_PROFILESAVE:
+                    {
+                        EffectSettings fx = g_FxShown;
+                        if ( const FxNumber *pBad = ReadFx( hWnd, fx ) ) { FxNumberError( hWnd, *pBad ); return TRUE; }
+                        int i = (int)SendDlgItemMessageW( hWnd, IDC_FX_PROFILES, CB_GETCURSEL, 0, 0 );
+                        std::wstring sName = i >= 0 && i < (int)g_vFxProfiles.size() ? g_vFxProfiles[i].sName : L"Profile " + std::to_wstring( g_vFxProfiles.size() + 1 );
+                        g_bNameProfile = true;
+                        const INT_PTR r = DialogBoxParamW( GetModuleHandleW( nullptr ), MAKEINTRESOURCEW( IDD_PALETTENAME ), GetParent( hWnd ), PaletteNameProc, ( LPARAM )&sName );
+                        g_bNameProfile = false;
+                        if ( r != IDOK ) return TRUE;
+                        fx.bOn = true;
+                        VisualSettings::FxProfile prof = { sName, fx };
+                        auto it = std::find_if( g_vFxProfiles.begin(), g_vFxProfiles.end(), [&]( const VisualSettings::FxProfile &p ) { return _wcsicmp( p.sName.c_str(), sName.c_str() ) == 0; } );
+                        if ( it != g_vFxProfiles.end() ) *it = prof;
+                        else it = g_vFxProfiles.insert( g_vFxProfiles.end(), prof );
+                        ShowFxProfiles( hWnd, (int)( it - g_vFxProfiles.begin() ) );
+                        KeepFxProfiles();
+                        return TRUE;
+                    }
+                    case IDC_FX_PROFILEDELETE:
+                    {
+                        int i = (int)SendDlgItemMessageW( hWnd, IDC_FX_PROFILES, CB_GETCURSEL, 0, 0 );
+                        if ( i < 0 || i >= (int)g_vFxProfiles.size() ) return TRUE;
+                        std::wstring sAsk = L"Delete the effects profile \"" + g_vFxProfiles[i].sName + L"\"? (The page keeps its settings.)";
+                        if ( MessageBoxW( GetParent( hWnd ), sAsk.c_str(), L"Delete Profile", MB_YESNO | MB_ICONQUESTION ) != IDYES ) return TRUE;
+                        g_vFxProfiles.erase( g_vFxProfiles.begin() + i );
+                        ShowFxProfiles( hWnd, -1 );
+                        KeepFxProfiles();
+                        return TRUE;
+                    }
+                    case IDC_FX_PROFILENEW:
+                    {
+                        EffectSettings def;
+                        def.LoadDefaultValues();
+                        def.bOn = IsDlgButtonChecked( hWnd, IDC_FX_ON ) == BST_CHECKED;
+                        ShowFx( hWnd, def );
+                        ShowFxProfiles( hWnd, -1 );
+                        Changed( hWnd );
+                        return TRUE;
+                    }
                 }
                 if ( LOWORD( wParam ) == IDC_FX_ON ) EnableFx( hWnd );
                 if ( LOWORD( wParam ) == IDC_FX_KEYWHITE ) { KeepKeyWhite( hWnd ); ShowKeyWhite( hWnd ); }
                 if ( LOWORD( wParam ) == IDC_FX_MERGE || LOWORD( wParam ) == IDC_FX_MERGESHORT ) EnableFxFlat( hWnd );
-                if ( LOWORD( wParam ) == IDC_FX_FLAT )
+                if ( LOWORD( wParam ) == IDC_FX_FLAT && HIWORD( wParam ) == CBN_SELCHANGE )
                 {
                     // (the other look's whitening shown)
                     KeepKeyWhite( hWnd );
-                    g_iKeyWhiteLook = IsDlgButtonChecked( hWnd, IDC_FX_FLAT ) == BST_CHECKED;
+                    g_iKeyWhiteLook = FxLook( hWnd );
                     ShowKeyWhite( hWnd );
                 }
                 if ( LOWORD( wParam ) == IDC_FX_HITLINE ) EnableFxHitLine( hWnd );
                 if ( LOWORD( wParam ) == IDC_FX_DECAY && HIWORD( wParam ) == CBN_SELCHANGE ) EnableFxDecay( hWnd );
-                if ( LOWORD( wParam ) == IDC_FX_FLAT )
+                if ( LOWORD( wParam ) == IDC_FX_FLAT && HIWORD( wParam ) == CBN_SELCHANGE )
                     EnableFxFlat( hWnd );
                 if ( UserChange( wParam, lParam ) ) Changed( hWnd );
+                UpdateFxSave( hWnd );
                 break;
             case WM_NOTIFY:
                 if ( ( ( LPNMHDR )lParam )->code == PSN_APPLY )
                 {
                     Config &config = Config::GetConfig();
                     VisualSettings cVisual = config.GetVisualSettings();
-                    EffectSettings &fx = cVisual.fx;
-                    for ( const FxNumber &n : aFxNumbers )
+                    EffectSettings fx = g_FxShown;
+                    if ( const FxNumber *pBad = ReadFx( hWnd, fx ) )
                     {
-                        BOOL bOk;
-                        UINT u = GetDlgItemInt( hWnd, n.iId, &bOk, FALSE );
-                        if ( !IsWindowEnabled( GetDlgItem( hWnd, n.iId ) ) ) continue;
-                        if ( !bOk || u < (UINT)n.iMin || u > (UINT)n.iMax )
-                        {
-                            wchar_t buf[160];
-                            swprintf( buf, 160, L"Please specify %ls", n.sName );
-                            MessageBoxW( hWnd, buf, L"Error", MB_OK | MB_ICONEXCLAMATION );
-                            PostMessageW( hWnd, WM_NEXTDLGCTL, ( WPARAM )GetDlgItem( hWnd, n.iId ), TRUE );
-                            SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_INVALID );
-                            return TRUE;
-                        }
-                        n.Get( fx ) = (int)u;
+                        FxNumberError( hWnd, *pBad );
+                        SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_INVALID );
+                        return TRUE;
                     }
-                    fx.bFlat = IsDlgButtonChecked( hWnd, IDC_FX_FLAT ) == BST_CHECKED;
-                    fx.bFlatBorders = IsDlgButtonChecked( hWnd, IDC_FX_FLATBORDERS ) == BST_CHECKED;
-                    fx.bNoBar = IsDlgButtonChecked( hWnd, IDC_FX_NOBAR ) == BST_CHECKED;
-                    fx.bShortColor = IsDlgButtonChecked( hWnd, IDC_FX_SHORTCOLOR ) == BST_CHECKED;
-                    fx.bHollow = IsDlgButtonChecked( hWnd, IDC_FX_HOLLOW ) == BST_CHECKED;
-                    fx.bMergeOutlines = IsDlgButtonChecked( hWnd, IDC_FX_MERGE ) == BST_CHECKED;
-                    fx.bMergeShort = IsDlgButtonChecked( hWnd, IDC_FX_MERGESHORT ) == BST_CHECKED;
-                    fx.bMergeShortLong = IsDlgButtonChecked( hWnd, IDC_FX_MERGESHORTLONG ) == BST_CHECKED;
-                    fx.bStats = IsDlgButtonChecked( hWnd, IDC_FX_STATS ) == BST_CHECKED;
-                    fx.bOn = IsDlgButtonChecked( hWnd, IDC_FX_ON ) == BST_CHECKED;
-                    KeepKeyWhite( hWnd );
-                    std::copy( g_abKeyWhite, g_abKeyWhite + 2, fx.abKeyWhite );
-                    std::copy( g_aiKeyWhite, g_aiKeyWhite + 2, fx.aiKeyWhite );
-                    fx.bHitLine = IsDlgButtonChecked( hWnd, IDC_FX_HITLINE ) == BST_CHECKED;
-                    fx.bHitLinePlaying = IsDlgButtonChecked( hWnd, IDC_FX_HITPLAYING ) == BST_CHECKED;
-                    fx.bHitLineNoteColor = IsDlgButtonChecked( hWnd, IDC_FX_HITNOTECOLOR ) == BST_CHECKED;
-                    fx.iHitLineColor = ( unsigned )GetWindowLongPtrW( GetDlgItem( hWnd, IDC_FX_HITCOLOR ), GWLP_USERDATA );
-                    fx.eDecay = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_FX_DECAY, CB_GETCURSEL, 0, 0 ) );
-                    fx.eHitLineCurve = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_FX_HITCURVE, CB_GETCURSEL, 0, 0 ) );
+                    cVisual.fx = fx;
+                    g_FxShown = fx;
+                    cVisual.vFxProfiles = g_vFxProfiles;
                     config.SetVisualSettings( cVisual );
                     SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_NOERROR );
                     return TRUE;
@@ -1476,9 +1696,6 @@ namespace
                 CheckDlgButton( hWnd, IDC_PERF_DEDUPASSUME, cPerf.bDedupAssume ? BST_CHECKED : BST_UNCHECKED );
                 EnableWindow( GetDlgItem( hWnd, IDC_PERF_DEDUPASSUME ), cPerf.bDedup );
                 SetDlgItemInt( hWnd, IDC_PERF_CACHEMB, (UINT)cPerf.iBlockCacheMB, FALSE );
-                CheckDlgButton( hWnd, IDC_PERF_TUNING31, cPerf.bTuning31 ? BST_CHECKED : BST_UNCHECKED );
-                CheckDlgButton( hWnd, IDC_PERF_TUNING31BEND, cPerf.bTuning31PitchBend ? BST_CHECKED : BST_UNCHECKED );
-                EnableWindow( GetDlgItem( hWnd, IDC_PERF_TUNING31BEND ), cPerf.bTuning31 );
                 CheckDlgButton( hWnd, IDC_PERF_COLLAPSE, cPerf.bCollapseStacks ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_PERF_VELFLOOR, cPerf.bVelocityFloor ? BST_CHECKED : BST_UNCHECKED );
                 SetDlgItemInt( hWnd, IDC_PERF_MINVEL, (UINT)cPerf.iMinVelocity, FALSE );
@@ -1494,8 +1711,6 @@ namespace
                 int iCode = HIWORD( wParam );
                 if ( LOWORD( wParam ) == IDC_PERF_DEDUP && iCode == BN_CLICKED )
                     EnableWindow( GetDlgItem( hWnd, IDC_PERF_DEDUPASSUME ), IsDlgButtonChecked( hWnd, IDC_PERF_DEDUP ) == BST_CHECKED );
-                if ( LOWORD( wParam ) == IDC_PERF_TUNING31 && iCode == BN_CLICKED )
-                    EnableWindow( GetDlgItem( hWnd, IDC_PERF_TUNING31BEND ), IsDlgButtonChecked( hWnd, IDC_PERF_TUNING31 ) == BST_CHECKED );
                 if ( LOWORD( wParam ) == IDC_PERF_VIDEO )
                 {
                     if ( iCode == BN_CLICKED ) DoVideoExport( GetParent( hWnd ) );
@@ -1566,8 +1781,6 @@ namespace
                     cPerf.bDedup = IsDlgButtonChecked( hWnd, IDC_PERF_DEDUP ) == BST_CHECKED;
                     cPerf.bDedupAssume = IsDlgButtonChecked( hWnd, IDC_PERF_DEDUPASSUME ) == BST_CHECKED;
                     cPerf.iBlockCacheMB = (int)uCache;
-                    cPerf.bTuning31 = IsDlgButtonChecked( hWnd, IDC_PERF_TUNING31 ) == BST_CHECKED;
-                    cPerf.bTuning31PitchBend = IsDlgButtonChecked( hWnd, IDC_PERF_TUNING31BEND ) == BST_CHECKED;
                     cVideo.bLimitFPS = IsDlgButtonChecked( hWnd, IDC_LIMITFPS ) == BST_CHECKED;
 
                     config.SetPerformanceSettings( cPerf );

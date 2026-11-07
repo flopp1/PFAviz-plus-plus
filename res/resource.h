@@ -51,6 +51,19 @@
 #define IDC_GRAPH_SPAN                  1566
 #define IDC_GRAPH_CX                    1567
 #define IDC_GRAPH_CY                    1568
+#define IDC_GRAPH_SCALE                 1600
+#define IDC_GRAPH_MAXLINE               1601
+#define IDC_GRAPH_MAXCOLOR              1602
+#define IDC_FX_SEMIOUTLINE              1603
+#define IDC_STATSFONTSET                1604
+#define IDC_STATSFONTPX                 1605
+#define IDC_FX_PROFILES                 1606
+#define IDC_FX_PROFILESAVE              1607
+#define IDC_FX_PROFILEDELETE            1608
+#define IDC_FX_PROFILENEW               1609
+#define IDC_PALETTENAMETEXT             1610
+#define IDC_FX_SEMILIP                  1611
+#define IDC_FX_PROFILEKEEP              1612
 
 #define IDC_PICTURE                     1089
 #define IDC_LICENSE                     1093

@@ -35,7 +35,6 @@ BEGIN
     LTEXT           "Keys to display:",IDC_STATIC,7,7,52,8
     CONTROL         "Show all &128 keys",IDC_SHOWALL128KEYS,"Button",BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP,7,19,73,10
     CONTROL         "Show &256 keys",IDC_SHOWALL256KEYS,"Button",BS_AUTORADIOBUTTON | WS_TABSTOP,90,19,73,10
-    CONTROL         "in the &31-EDO layout",IDC_EDO31KEYS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,165,19,90,10
     CONTROL         "&Show all 88 keys",IDC_SHOWALLKEYS,"Button",BS_AUTORADIOBUTTON | WS_TABSTOP,7,33,69,10
     CONTROL         "S&how song keys",IDC_SHOWSONGKEYS,"Button",BS_AUTORADIOBUTTON | WS_TABSTOP,7,47,67,10
     CONTROL         "Show &keys:",IDC_SHOWCUSTOMKEYS,"Button",BS_AUTORADIOBUTTON | WS_TABSTOP,7,62,53,10
@@ -72,14 +71,17 @@ BEGIN
     COMBOBOX        IDC_STATSCORNER,81,198,62,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     LTEXT           "Font:",IDC_STATIC,152,201,20,8
     COMBOBOX        IDC_STATSFONT,174,198,121,200,CBS_DROPDOWN | CBS_SORT | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
-    CONTROL         "Background",IDC_STATSBKG,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,53,216,52,10
-    CONTROL         "Text sha&dow",IDC_STATSSHADOW,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,111,216,56,10
-    CONTROL         "Shadow follows corner",IDC_STATSMIRROR,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,171,216,90,10
-    LTEXT           "&View size:",IDC_STATIC,7,237,44,8
-    EDITTEXT        IDC_WINWIDTH,53,235,34,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "x",IDC_STATIC,91,237,8,8
-    EDITTEXT        IDC_WINHEIGHT,101,235,34,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "",IDC_WINSIZEMAX,141,237,155,8
+    CONTROL         "Set the font size, the height b&y it:",IDC_STATSFONTSET,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,53,216,128,10
+    EDITTEXT        IDC_STATSFONTPX,183,214,30,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "pixels",IDC_STATIC,217,216,30,8
+    CONTROL         "Background",IDC_STATSBKG,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,53,232,52,10
+    CONTROL         "Text sha&dow",IDC_STATSSHADOW,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,111,232,56,10
+    CONTROL         "Shadow follows corner",IDC_STATSMIRROR,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,171,232,90,10
+    LTEXT           "&View size:",IDC_STATIC,7,253,44,8
+    EDITTEXT        IDC_WINWIDTH,53,251,34,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "x",IDC_STATIC,91,253,8,8
+    EDITTEXT        IDC_WINHEIGHT,101,251,34,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "",IDC_WINSIZEMAX,141,253,155,8
     GROUPBOX        "Background",IDC_STATIC,302,7,288,74
     CONTROL         "Show a background &image (over the background color, in the notes area):",IDC_BKGON,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,308,19,276,10
     EDITTEXT        IDC_BKGIMAGE,308,32,222,14,ES_AUTOHSCROLL
@@ -125,6 +127,11 @@ BEGIN
     LTEXT           "",IDC_KDMAPISTATUS,13,101,571,16
     CONTROL         "&Use KDMAPI when it is available, instead of the device above",IDC_PERF_KDMAPI,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,120,300,10
     CONTROL         "Send in lo&ng messages (raw MIDI, one per batch of events)",IDC_PERF_LONGSENDS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,25,134,300,10
+    GROUPBOX        "31-EDO",IDC_STATIC,7,154,583,54
+    CONTROL         "Show 256 keys in the &31-EDO layout (31 keys an octave; with Visual > Show 256 keys)",IDC_EDO31KEYS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,166,400,10
+    CONTROL         "Apply 31-EDO &tuning",IDC_PERF_TUNING31,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,180,100,10
+    LTEXT           "Applies at once. Off: keys past 127 are not played (Show 256 keys shows them).",IDC_STATIC,120,181,300,8
+    CONTROL         "Use pitch-bends tuning instead of MTS for compatibility. Broken.",IDC_PERF_TUNING31BEND,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,25,194,300,10
 END
 
 IDD_PP6_EFFECTS DIALOGEX 0, 0, 597, 266
@@ -132,11 +139,22 @@ STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_DISABLED | WS_CAPTION
 CAPTION "Property Page"
 FONT 8, "MS Shell Dlg", 400, 0, 0x0
 BEGIN
-    CONTROL         "Effects on: eye candy for the window and for rendered videos (each one is off at 0)",IDC_FX_ON,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,7,6,581,10
-    GROUPBOX        "Look",IDC_STATIC,7,20,288,90
-    CONTROL         "&Flat look: plain black and white keys, notes in one flat colour without outlines",IDC_FX_FLAT,"Button",BS_AUTOCHECKBOX | BS_MULTILINE | WS_TABSTOP,13,31,276,18
+    CONTROL         "Effects on: eye candy for the window and rendered videos",IDC_FX_ON,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,7,6,290,10
+    LTEXT           "Pro&file:",IDC_STATIC,302,7,28,8
+    COMBOBOX        IDC_FX_PROFILES,332,4,92,120,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    PUSHBUTTON      "Save",IDC_FX_PROFILEKEEP,427,3,30,14
+    PUSHBUTTON      "Save as...",IDC_FX_PROFILESAVE,460,3,42,14
+    PUSHBUTTON      "Delete",IDC_FX_PROFILEDELETE,505,3,36,14
+    PUSHBUTTON      "Defaults",IDC_FX_PROFILENEW,544,3,44,14
+    GROUPBOX        "Look",IDC_STATIC,7,20,288,104
+    LTEXT           "Ke&y and note look:",IDC_STATIC,13,33,66,8
+    COMBOBOX        IDC_FX_FLAT,80,31,58,60,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Semi-flat outlines darker:",IDC_STATIC,146,33,90,8
+    EDITTEXT        IDC_FX_SEMIOUTLINE,238,31,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "%",IDC_STATIC,269,33,8,8
     CONTROL         "&Gaps between the white keys",IDC_FX_FLATBORDERS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,25,50,110,10
-    CONTROL         "&Hollow notes: outlines only, no insides",IDC_FX_HOLLOW,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,140,50,150,10
+    CONTROL         "Semi-flat: pressed black keys keep their lip",IDC_FX_SEMILIP,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,140,50,152,10
+    CONTROL         "&Hollow notes: outlines only, no insides",IDC_FX_HOLLOW,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,106,150,10
     CONTROL         "&Short notes (too short to have an inside) in their main colour",IDC_FX_SHORTCOLOR,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,64,270,10
     CONTROL         "No red &bar above the keys",IDC_FX_NOBAR,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,78,110,10
     CONTROL         "Pressed keys &whiten to the top:",IDC_FX_KEYWHITE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,128,78,118,10
@@ -145,27 +163,27 @@ BEGIN
     CONTROL         "Merge outlines of touching notes",IDC_FX_MERGE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,92,124,10
     CONTROL         "Short notes too",IDC_FX_MERGESHORT,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,140,92,66,10
     CONTROL         "With the long ones",IDC_FX_MERGESHORTLONG,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,209,92,80,10
-    GROUPBOX        "Light (0: unlit, 100%: fully lit)",IDC_STATIC,7,114,288,84
-    LTEXT           "&Resting light of every note:",IDC_STATIC,13,127,98,8
-    EDITTEXT        IDC_FX_RESTLIGHT,113,125,28,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "%",IDC_STATIC,144,127,8,8
-    LTEXT           "O&utlines lit:",IDC_STATIC,170,127,76,8
-    EDITTEXT        IDC_FX_LIGHTOUTLINES,248,125,28,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "%",IDC_STATIC,279,127,8,8
-    LTEXT           "&Curve:",IDC_STATIC,13,145,24,8
-    COMBOBOX        IDC_FX_DECAY,39,143,70,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    LTEXT           "&Insides lit:",IDC_STATIC,170,145,76,8
-    EDITTEXT        IDC_FX_LIGHTINSIDES,248,143,28,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "%",IDC_STATIC,279,145,8,8
-    LTEXT           "A playing note falls over",IDC_STATIC,13,163,84,8
-    EDITTEXT        IDC_FX_DECAYMS,99,161,32,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "ms to",IDC_STATIC,134,163,20,8
-    EDITTEXT        IDC_FX_FLOOR,156,161,28,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "% light",IDC_STATIC,187,163,30,8
-    LTEXT           "A key let go fades out &over",IDC_STATIC,13,181,96,8
-    EDITTEXT        IDC_FX_RELEASEMS,111,179,32,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "ms",IDC_STATIC,146,181,12,8
-    LTEXT           "(outlines: 200 main colour, 300 white)",IDC_STATIC,163,181,130,8
+    GROUPBOX        "Light (0: unlit, 100%: fully lit)",IDC_STATIC,7,128,288,84
+    LTEXT           "&Resting light of every note:",IDC_STATIC,13,141,98,8
+    EDITTEXT        IDC_FX_RESTLIGHT,113,139,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "%",IDC_STATIC,144,141,8,8
+    LTEXT           "O&utlines lit:",IDC_STATIC,170,141,76,8
+    EDITTEXT        IDC_FX_LIGHTOUTLINES,248,139,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "%",IDC_STATIC,279,141,8,8
+    LTEXT           "&Curve:",IDC_STATIC,13,159,24,8
+    COMBOBOX        IDC_FX_DECAY,39,157,70,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Insides lit:",IDC_STATIC,170,159,76,8
+    EDITTEXT        IDC_FX_LIGHTINSIDES,248,157,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "%",IDC_STATIC,279,159,8,8
+    LTEXT           "A playing note falls over",IDC_STATIC,13,177,84,8
+    EDITTEXT        IDC_FX_DECAYMS,99,175,32,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "ms to",IDC_STATIC,134,177,20,8
+    EDITTEXT        IDC_FX_FLOOR,156,175,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "% light",IDC_STATIC,187,177,30,8
+    LTEXT           "A key let go fades out &over",IDC_STATIC,13,195,96,8
+    EDITTEXT        IDC_FX_RELEASEMS,111,193,32,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "ms",IDC_STATIC,146,195,12,8
+    LTEXT           "(outlines: 200 main colour, 300 white)",IDC_STATIC,163,195,130,8
     GROUPBOX        "Each part (lit: playing notes and pressed keys, and every note by its resting light)",IDC_STATIC,302,20,288,134
     LTEXT           "Darkened unlit",IDC_STATIC,359,32,64,8
     LTEXT           "Lightened lit",IDC_STATIC,431,32,64,8
@@ -204,24 +222,24 @@ BEGIN
     EDITTEXT        IDC_FX_GLOWBKG,503,116,28,14,ES_AUTOHSCROLL | ES_NUMBER
     LTEXT           "%",IDC_STATIC,534,118,8,8
     LTEXT           "The red bar is never lit: its lightening and glow always show. The background glows from the whole frame, where it is brighter than the threshold.",IDC_STATIC,308,132,276,16
-    GROUPBOX        "Bloom and exposure",IDC_STATIC,7,202,288,48
-    LTEXT           "Stre&ngth:",IDC_STATIC,13,215,32,8
-    EDITTEXT        IDC_FX_BLOOM,47,213,28,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "%",IDC_STATIC,78,215,8,8
-    LTEXT           "R&adius:",IDC_STATIC,94,215,26,8
-    EDITTEXT        IDC_FX_RADIUS,122,213,28,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "px at 1080p",IDC_STATIC,153,215,40,8
-    LTEXT           "&Threshold:",IDC_STATIC,200,215,36,8
-    EDITTEXT        IDC_FX_THRESHOLD,238,213,28,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "%",IDC_STATIC,269,215,8,8
-    LTEXT           "Soft limit:",IDC_STATIC,13,233,36,8
-    EDITTEXT        IDC_FX_BLOOMLIMIT,51,231,28,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "% (0: none)",IDC_STATIC,82,233,42,8
-    LTEXT           "Auto exposure:",IDC_STATIC,130,233,50,8
-    EDITTEXT        IDC_FX_EXPOSURE,182,231,28,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "%, over",IDC_STATIC,213,233,30,8
-    EDITTEXT        IDC_FX_EXPOSUREMS,245,231,30,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "ms",IDC_STATIC,278,233,12,8
+    GROUPBOX        "Bloom and exposure",IDC_STATIC,7,216,288,48
+    LTEXT           "Stre&ngth:",IDC_STATIC,13,229,32,8
+    EDITTEXT        IDC_FX_BLOOM,47,227,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "%",IDC_STATIC,78,229,8,8
+    LTEXT           "R&adius:",IDC_STATIC,94,229,26,8
+    EDITTEXT        IDC_FX_RADIUS,122,227,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "px at 1080p",IDC_STATIC,153,229,40,8
+    LTEXT           "&Threshold:",IDC_STATIC,200,229,36,8
+    EDITTEXT        IDC_FX_THRESHOLD,238,227,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "%",IDC_STATIC,269,229,8,8
+    LTEXT           "Soft limit:",IDC_STATIC,13,247,36,8
+    EDITTEXT        IDC_FX_BLOOMLIMIT,51,245,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "% (0: none)",IDC_STATIC,82,247,42,8
+    LTEXT           "Auto exposure:",IDC_STATIC,130,247,50,8
+    EDITTEXT        IDC_FX_EXPOSURE,182,245,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "%, over",IDC_STATIC,213,247,30,8
+    EDITTEXT        IDC_FX_EXPOSUREMS,245,245,30,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "ms",IDC_STATIC,278,247,12,8
     GROUPBOX        "Hit line: in the red bar's place, over everything (sizes in px at 1080p)",IDC_STATIC,302,158,288,84
     CONTROL         "&Draw a hit line",IDC_FX_HITLINE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,308,171,70,10
     LTEXT           "Colour:",IDC_STATIC,385,172,26,8
@@ -295,7 +313,7 @@ BEGIN
     CONTROL         "&GPU instancing for notes (less CPU work per note; not pixel-exact)",IDC_PERF_INSTANCING,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,124,270,10
     CONTROL         "Dedu&plicate repeated tracks (also in layered compressed files: repeats read once)",IDC_PERF_DEDUP,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,138,275,10
     CONTROL         "Assume the rest of a layer &repeats when its size fits (fast; exact unless sizes collide)",IDC_PERF_DEDUPASSUME,"Button",BS_AUTOCHECKBOX | BS_MULTILINE | WS_TABSTOP,25,152,263,18
-    GROUPBOX        "Playback",IDC_STATIC,302,7,288,165
+    GROUPBOX        "Playback",IDC_STATIC,302,7,288,118
     LTEXT           "&Decoding threads:",IDC_STATIC,308,21,64,8
     EDITTEXT        IDC_PERF_PLAYTHREADS,375,19,30,14,ES_AUTOHSCROLL | ES_NUMBER
     LTEXT           "",IDC_PERF_PLAYTHREADSNOTE,409,21,174,8
@@ -311,9 +329,6 @@ BEGIN
     CONTROL         "Li&mit sending to",IDC_PERF_SENDLIMIT,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,308,106,66,10
     EDITTEXT        IDC_PERF_MAXSENDS,375,104,50,14,ES_AUTOHSCROLL | ES_NUMBER
     LTEXT           "messages/s (quietest notes skipped first)",IDC_STATIC,429,106,154,8
-    CONTROL         "Apply 31-EDO tuning",IDC_PERF_TUNING31,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,308,124,275,10
-    CONTROL         "Use pitch-bends tuning instead of MTS for compatibility. Broken.",IDC_PERF_TUNING31BEND,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,320,139,263,10
-    LTEXT           "Applies at once. Off: keys past 127 are not played (Show 256 keys shows them).",IDC_STATIC,320,155,263,8
     GROUPBOX        "Display",IDC_STATIC,7,177,286,28
     CONTROL         "&Limit frame rate",IDC_LIMITFPS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,190,100,10
     PUSHBUTTON      "Render &video...",IDC_PERF_VIDEO,120,187,80,14
@@ -335,13 +350,13 @@ STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSM
 CAPTION "Save Palette"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
-    LTEXT           "Name (a saved palette of the same name is replaced):",IDC_STATIC,7,7,186,8
+    LTEXT           "Name (a saved palette of the same name is replaced):",IDC_PALETTENAMETEXT,7,7,186,8
     EDITTEXT        IDC_PALETTENAME,7,19,186,14,ES_AUTOHSCROLL
     DEFPUSHBUTTON   "Save",IDOK,89,41,50,14
     PUSHBUTTON      "Cancel",IDCANCEL,143,41,50,14
 END
 
-IDD_GRAPH DIALOGEX 0, 0, 334, 270
+IDD_GRAPH DIALOGEX 0, 0, 334, 288
 STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Graphs"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
@@ -389,9 +404,12 @@ BEGIN
     LTEXT           "ms, down in",IDC_STATIC,124,203,40,8
     EDITTEXT        IDC_GRAPH_SHRINK,166,201,30,14,ES_AUTOHSCROLL | ES_NUMBER
     LTEXT           "ms (0: at once)",IDC_STATIC,200,203,56,8
-    LTEXT           "Each graph's top follows its highest value shown. The counts are made while a song loads: one opened with the graphs and the note statistics off has none until it is opened again.",IDC_STATIC,7,221,320,24
-    DEFPUSHBUTTON   "OK",IDOK,223,249,50,14
-    PUSHBUTTON      "Cancel",IDCANCEL,277,249,50,14
+    CONTROL         "Vertical &scale",IDC_GRAPH_SCALE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,7,221,70,10
+    CONTROL         "A line at the &highest value shown, in",IDC_GRAPH_MAXLINE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,84,221,140,10
+    CONTROL         "",IDC_GRAPH_MAXCOLOR,"Button",BS_OWNERDRAW | WS_TABSTOP,226,220,15,12,WS_EX_CLIENTEDGE
+    LTEXT           "Each graph's top follows its highest value shown. The counts are made while a song loads: one opened with the graphs and the note statistics off has none until it is opened again.",IDC_STATIC,7,239,320,24
+    DEFPUSHBUTTON   "OK",IDOK,223,267,50,14
+    PUSHBUTTON      "Cancel",IDCANCEL,277,267,50,14
 END
 
 IDD_STATS DIALOGEX 0, 0, 300, 252

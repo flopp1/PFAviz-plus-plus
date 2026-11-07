@@ -58,7 +58,7 @@ void Config::LoadDefaultValues()
 namespace
 {
     const wchar_t *const ConfigFile = L"\\config.ini", *const ConfigAllFile = L"\\config.all.ini";
-    const std::set< std::string > WholeSections = { "Palettes" };   // lists: a count and its items
+    const std::set< std::string > WholeSections = { "Palettes", "EffectProfiles" };   // lists: a count and its items
 
     bool LoadShared( const std::wstring &sFolder, IniFile &ini )
     {
@@ -199,6 +199,8 @@ void VisualSettings::LoadDefaultValues()
     bStatsBackground = true;
     bStatsShadow = true;
     bStatsShadowMirror = false;
+    bStatsFontSet = false;
+    iStatsFontPx = 15;
     bGraph = false;
     for ( int i = 0; i < GraphSettings::SeriesCount; i++ ) { graph.abShow[i] = true; graph.abLine[i] = graph.abRight[i] = false; graph.aiPlace[i] = i; }
     graph.aColor[GraphSettings::NPS] = 0x00FFA050;
@@ -214,6 +216,9 @@ void VisualSettings::LoadDefaultValues()
     graph.iFontPx = 18;
     graph.iGrowMs = 60;
     graph.iShrinkMs = 60;
+    graph.bScale = false;
+    graph.bMaxLine = false;
+    graph.uMaxColor = 0x0000FFFF;
     fx.LoadDefaultValues();
     int R, G, B, S = 80, V = 100;
     const int iColors = 16;     // the original's 16, as it made them
@@ -280,6 +285,7 @@ void VisualSettings::Load( const IniFile &ini )
 {
     // The saved palettes: Name<i> and Colors<i> (hex, space-separated)
     vPalettes.clear();
+    vFxProfiles.clear();
     const int iPalettes = std::clamp( ini.GetInt( "Palettes", "Count", 0 ), 0, 1000 );
     for ( int i = 0; i < iPalettes; i++ )
     {
@@ -368,6 +374,8 @@ void VisualSettings::Load( const IniFile &ini )
     bStatsBackground = ini.GetBool( "Visual", "StatsBackground", bStatsBackground );
     bStatsShadow = ini.GetBool( "Visual", "StatsShadow", bStatsShadow );
     bStatsShadowMirror = ini.GetBool( "Visual", "StatsShadowMirror", bStatsShadowMirror );
+    bStatsFontSet = ini.GetBool( "Visual", "StatsFontSet", bStatsFontSet );
+    iStatsFontPx = std::clamp( ini.GetInt( "Visual", "StatsFontPx", iStatsFontPx ), StatsFontMin, StatsFontMax );
     bGraph = ini.GetBool( "Visual", "Graph", bGraph );
     for ( int i = 0; i < GraphSettings::SeriesCount; i++ )
     {
@@ -389,9 +397,41 @@ void VisualSettings::Load( const IniFile &ini )
     graph.iFontPx = std::clamp( ini.GetInt( "Graphs", "FontSize", graph.iFontPx ), 6, 200 );
     graph.iGrowMs = std::clamp( ini.GetInt( "Graphs", "GrowMs", graph.iGrowMs ), 0, 10000 );
     graph.iShrinkMs = std::clamp( ini.GetInt( "Graphs", "ShrinkMs", graph.iShrinkMs ), 0, 10000 );
+    graph.bScale = ini.GetBool( "Graphs", "Scale", graph.bScale );
+    graph.bMaxLine = ini.GetBool( "Graphs", "MaxLine", graph.bMaxLine );
+    graph.uMaxColor = ParseRGB( ini.GetString( "Graphs", "MaxColor" ), graph.uMaxColor );
     graph.Fix();
     bHideSpeedBoxes = ini.GetBool( "Visual", "HideSpeedBoxes", bHideSpeedBoxes );
     fx.LoadConfigValues( ini );
+    // The effects profiles: Name<i>, and <i>.<key> each as the Effects section's key (a config with
+    // effects saved before them: those as the first, to keep them)
+    vFxProfiles.clear();
+    const int iProfiles = std::clamp( ini.GetInt( "EffectProfiles", "Count", -1 ), -1, 1000 );
+    if ( iProfiles < 0 && ini.HasSection( "Effects" ) )
+    {
+        // (in the look the versions before profiles knew, by Flat: the semi-flat look came just before them)
+        FxProfile p = { L"My previous effects", fx };
+        p.fx.eLook = ini.GetBool( "Effects", "Flat", false ) ? EffectSettings::LookFlat : EffectSettings::LookNormal;
+        vFxProfiles.push_back( p );
+    }
+    if ( iProfiles > 0 )
+    {
+        const auto vKeys = ini.Section( "EffectProfiles" );
+        for ( int i = 0; i < iProfiles; i++ )
+        {
+            FxProfile p;
+            p.sName = Util::Utf8ToWide( ini.GetString( "EffectProfiles", "Name" + std::to_string( i ) ) );
+            if ( p.sName.empty() ) continue;
+            const std::string sPrefix = std::to_string( i ) + ".";
+            IniFile one;
+            for ( const auto &kv : vKeys )
+                if ( kv.first.compare( 0, sPrefix.size(), sPrefix ) == 0 ) one.Set( "Effects", kv.first.substr( sPrefix.size() ), kv.second );
+            p.fx.LoadDefaultValues();
+            p.fx.LoadConfigValues( one );
+            p.fx.bOn = true;
+            vFxProfiles.push_back( p );
+        }
+    }
 }
 
 void VisualSettings::Save( IniFile &ini ) const
@@ -440,6 +480,8 @@ void VisualSettings::Save( IniFile &ini ) const
     ini.SetInt( "Visual", "StatsBackground", bStatsBackground );
     ini.SetInt( "Visual", "StatsShadow", bStatsShadow );
     ini.SetInt( "Visual", "StatsShadowMirror", bStatsShadowMirror );
+    ini.SetInt( "Visual", "StatsFontSet", bStatsFontSet );
+    ini.SetInt( "Visual", "StatsFontPx", iStatsFontPx );
     ini.SetInt( "Visual", "Graph", bGraph );
     for ( int i = 0; i < GraphSettings::SeriesCount; i++ )
     {
@@ -460,18 +502,33 @@ void VisualSettings::Save( IniFile &ini ) const
     ini.SetInt( "Graphs", "FontSize", graph.iFontPx );
     ini.SetInt( "Graphs", "GrowMs", graph.iGrowMs );
     ini.SetInt( "Graphs", "ShrinkMs", graph.iShrinkMs );
+    ini.SetInt( "Graphs", "Scale", graph.bScale );
+    ini.SetInt( "Graphs", "MaxLine", graph.bMaxLine );
+    ini.Set( "Graphs", "MaxColor", FormatRGB( graph.uMaxColor ) );
     ini.SetInt( "Visual", "HideSpeedBoxes", bHideSpeedBoxes );
     fx.Save( ini );
+    ini.SetInt( "EffectProfiles", "Count", (int)vFxProfiles.size() );
+    for ( size_t i = 0; i < vFxProfiles.size(); i++ )
+    {
+        ini.Set( "EffectProfiles", "Name" + std::to_string( i ), Util::WideToUtf8( vFxProfiles[i].sName ) );
+        IniFile one;
+        vFxProfiles[i].fx.Save( one );
+        for ( const auto &kv : one.Section( "Effects" ) )
+            if ( kv.first != "On" && kv.first != "Flat" ) ini.Set( "EffectProfiles", std::to_string( i ) + "." + kv.first, kv.second );
+    }
 }
 
 void EffectSettings::LoadDefaultValues()
 {
     bOn = true;
-    bFlat = false;
+    eLook = LookNormal;
     bFlatBorders = true;
-    abKeyWhite[0] = false;
-    abKeyWhite[1] = true;
-    aiKeyWhite[0] = aiKeyWhite[1] = 30;
+    iSemiFlatOutline = 30;
+    bSemiFlatLip = false;
+    abKeyWhite[LookNormal] = false;
+    abKeyWhite[LookFlat] = true;
+    abKeyWhite[LookSemiFlat] = false;
+    for ( int &i : aiKeyWhite ) i = 30;
     bNoBar = false;
     bHollow = false;
     bShortColor = false;
@@ -507,22 +564,30 @@ void EffectSettings::LoadDefaultValues()
 bool EffectSettings::Any() const
 {
     if ( !bOn ) return false;
-    if ( bFlat || bNoBar || bHollow || bShortColor || iRestLight || iVignette || eDecay || bHitLine || abKeyWhite[0] || bMergeOutlines ) return true;
+    if ( eLook != LookNormal || bNoBar || bHollow || bShortColor || iRestLight || iVignette || eDecay || bHitLine || abKeyWhite[0] || bMergeOutlines ) return true;
     for ( int p = 0; p < PartCount; p++ )
         if ( aDark[p] || aLightUp[p] || ( iBloom && aGlow[p] ) ) return true;
     return false;
 }
 
 static const char *const PartNames[EffectSettings::PartCount] = { "Notes", "Short", "Keys", "Background", "Bar" };
+static const char *const KeyWhiteNames[EffectSettings::LookCount] = { "KeyWhite", "FlatKeyWhite", "SemiFlatKeyWhite" };
 
 void EffectSettings::LoadConfigValues( const IniFile &ini )
 {
     bOn = ini.GetBool( "Effects", "On", bOn );
-    bFlat = ini.GetBool( "Effects", "Flat", bFlat );
+    // (before the semi-flat look: Flat on or off)
+    const bool bFlat = ini.GetBool( "Effects", "Flat", eLook == LookFlat );
+    eLook = std::clamp( ini.GetInt( "Effects", "Look", bFlat ? LookFlat : LookNormal ), 0, LookCount - 1 );
+    // (a version before the semi-flat look writes Flat only: a look it changed leaves Look disagreeing
+    // with Flat, and Flat holds)
+    if ( ( eLook == LookFlat ) != bFlat ) eLook = bFlat ? LookFlat : LookNormal;
     bFlatBorders = ini.GetBool( "Effects", "FlatBorders", bFlatBorders );
-    for ( int i = 0; i < 2; i++ )
+    iSemiFlatOutline = std::clamp( ini.GetInt( "Effects", "SemiFlatOutline", iSemiFlatOutline ), 0, 100 );
+    bSemiFlatLip = ini.GetBool( "Effects", "SemiFlatPressedLip", bSemiFlatLip );
+    for ( int i = 0; i < LookCount; i++ )
     {
-        const std::string sLook = i ? "FlatKeyWhite" : "KeyWhite";
+        const std::string sLook = KeyWhiteNames[i];
         abKeyWhite[i] = ini.GetBool( "Effects", sLook + "On", abKeyWhite[i] );
         aiKeyWhite[i] = std::clamp( ini.GetInt( "Effects", sLook, aiKeyWhite[i] ), 0, 100 );
     }
@@ -580,11 +645,14 @@ void EffectSettings::LoadConfigValues( const IniFile &ini )
 void EffectSettings::Save( IniFile &ini ) const
 {
     ini.SetInt( "Effects", "On", bOn );
-    ini.SetInt( "Effects", "Flat", bFlat );
+    ini.SetInt( "Effects", "Look", eLook );
+    ini.SetInt( "Effects", "Flat", eLook == LookFlat );     // (for versions before the semi-flat look)
     ini.SetInt( "Effects", "FlatBorders", bFlatBorders );
-    for ( int i = 0; i < 2; i++ )
+    ini.SetInt( "Effects", "SemiFlatOutline", iSemiFlatOutline );
+    ini.SetInt( "Effects", "SemiFlatPressedLip", bSemiFlatLip );
+    for ( int i = 0; i < LookCount; i++ )
     {
-        const std::string sLook = i ? "FlatKeyWhite" : "KeyWhite";
+        const std::string sLook = KeyWhiteNames[i];
         ini.SetInt( "Effects", sLook + "On", abKeyWhite[i] );
         ini.SetInt( "Effects", sLook, aiKeyWhite[i] );
     }

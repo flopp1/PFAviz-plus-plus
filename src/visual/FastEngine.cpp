@@ -713,7 +713,7 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
     const bool bHollow = m_pLight && m_pLight->pFx->bHollow;
     // Merged outlines (Effects): the notes' rects without outlines, and as IDs and outline colours, for
     // Renderer::DrawNoteEdges (not with the flat look, which has no outlines; nor without the shaders)
-    const bool bEdges = m_pLight && m_pLight->pFx->bMergeOutlines && !m_pLight->pFx->bFlat && pRenderer->NoteEdgesOn();
+    const bool bEdges = m_pLight && m_pLight->pFx->bMergeOutlines && m_pLight->pFx->eLook != EffectSettings::LookFlat && pRenderer->NoteEdgesOn();
     const bool bInst = pRenderer->InstancingOn() && m_Song.info.iMaxNote < 128 && !bHollow && !bEdges;
     // Keys that may share a pixel column with another are drawn interleaved with it, owner by owner
     // (below), so only the others merge rects across owners

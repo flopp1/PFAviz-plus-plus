@@ -2,96 +2,19 @@
 
 A performance rewrite of [Piano From Above](https://github.com/brian-pantano/PianoFromAbove) (Brian Pantano, 2010) for black MIDI. Notes and the keyboard are drawn exactly as Piano From Above draws them, pixel for pixel; loading, storage, playback and rendering are rebuilt for files with billions of notes.
 
-## Features
+## Summary
 
-**Loading**
-- Files load on a background thread with a progress and statistics popup: per-stage times, throughput, memory in use and its peak.
-- The loader is memory-mapped and multi-threaded. A 100 M-note file loads in about 1.9 s on a 6-core CPU; files that do not fit in memory are read once, at the disk's sequential speed.
-- Events are stored LZ4-compressed (liblz4's HC: 0.2–0.4 bytes per event on black MIDIs), and notes that can never show are dropped: a 1.1 billion-note, 6.3 GB file takes about 270 MB once loaded.
-- Peak memory while loading stays close to what the song takes once loaded. The event stream is built a window at a time, and the count pass already works out which notes no note-off will pair and when long notes end, so pairing finishes those at once instead of holding back every later note of their key. *Night of Nights* (17.7 GB, 2.3 billion notes): peak 10.4 → 4.4 GB, 3.9 GB once loaded; *Destruction 321 SE*: 2.7 → 1.5 GB. The notes' ticks are kept as compact records per track and merged a window at a time, so songs with billions of distinct ticks fit too: *nut3* (1 billion ticks) peaks at 3.5 GB instead of 21.5 GB.
-- **Compact visual store** (Performance tab, on by default) keeps the notes LZ4-compressed in groups of 2048 per key, decoding only the groups a frame draws: 20–36 % less memory for the notes (*Night of Nights*: 2,260 → 1,635 MB), with the same pixels. Frames read from it while scrubbing (a jump every frame) cost 0–25 % more CPU, still under about 6 ms on *Night of Nights* and *Destruction 321 SE*.
-- Notes transposed past key 127 (a common black MIDI artefact) are read as stock Piano From Above reads them and dropped, instead of throwing the rest of their track out of step; velocities and controller values past 127 are clamped.
-- **Weird notes end at their own note-off.** When more than 10 notes stack up on one channel and key in a track, the original pairs the next note-off with the latest unpaired note of that key on *any* channel; a note taken from another channel's stack is then paired again by its own channel's note-off. The original draws it to that later note-off but stops drawing it (and unlights its key) at the first one, so it seems to end early, often the moment it reaches the keyboard. Here it lasts to its later note-off, which in *Night of Nights* is its own channel's for 1,146 of its 1,174 such notes (a note-off on another channel cannot end it). Songs with them also load with one pairing pass instead of two (*Night of Nights*, from an SSD: loading 76 s, pairing 53 s).
-- **End weird notes at their first note-off** (Performance tab, off by default): those notes keep their first pairing instead, so they are drawn short.
-- **Layered compressed files: notes without a note-off last until the song's end** (Performance tab, on by default). Layered black MIDIs (a MIDI compressed in two or more layers, such as `.mid.xz.xz`) often leave the note-offs out to fit more notes, and expect the player to end them at the end of the file. Other songs are drawn as the original draws them, which never draws such notes.
-- Archives and compressed files open the MIDI file inside; an archive holding several asks which one to open, with their sizes.
-- **Deduplicate repeated tracks** (Performance tab, off by default): identical tracks are loaded once and drawn and counted as many times as they appear, in plain files and archives alike. Layered compressed files (a MIDI cut into pieces, each compressed, repeated and compressed again, several layers deep, so that a few MB expand to terabytes) are read as their distinct pieces, so files of trillions of notes load in a minute or two: *NoiseMidi* (94 trillion notes) in about 2 minutes. "Assume the rest of a layer repeats when its size fits" (on by default) skips decoding the rest of a layer once its pattern repeats; it is exact unless a different piece happens to have the same size. Duplicates are played once, which can sound quieter on a synth that stacks identical notes.
-- 7z (LZMA2) and xz files compressed on several threads decompress on the loading threads (Performance tab), instead of on one.
-- Tempo events of 0 (damaged files) are ignored instead of stopping time.
-- A file's time division is read as SMPTE only for real frame rates (24, 25, 29.97 and 30 fps), so files with a very fine PPQN (such as 61440) are no longer squeezed to time 0.
-- Closing or switching songs no longer freezes the window, however large the song: the old one is freed on a thread of its own.
+- Has massively improved MIDI loading: files with billions of notes load in seconds to minutes, using far less memory.
+- Opens compressed and archived MIDIs (7z, zip, xz and more), including layered files of trillions of notes.
+- Draws as fast whatever the note count, with no note limit, and the same pixels as the original.
+- Plays smoothly on its own threads, with KDMAPI support and optional limits for synths that fall behind.
+- Can simulate how the original Piano From Above would lag on your computer.
+- Adds a configurable stats box and graphs of notes per second, polyphony and tempo.
+- Adds optional effects: lighting, glow, flat and semi-flat looks, a hit line, and saved effect profiles.
+- Renders songs to MP4 video.
+- Adds 128- and 256-key views, a 31-EDO keyboard and tuning, dark mode, track palettes, and drag and drop.
 
-**Drawing**
-- Each frame finds, per key, only the notes that own a pixel row, so drawing cost depends on the window size, not the note count. There is no note limit.
-- Consecutive one-colour rects of a key that meet edge to edge are drawn as one, with the same pixels. In dense passages, where every pixel row has its own note, this removes almost all of them (the end of *rftmis*: 69,400 rects per frame → 373, frame time 1.55 → 0.87 ms).
-- An optional **LOD cache** (on by default) keeps, for the current window size and note speed, only the notes that can show, built in the background around the playhead. Dense songs draw several times faster with the same pixels.
-- Optional **GPU instancing for notes** (Performance tab, off by default): each note goes to the GPU as one 32-byte instance instead of two quads (160 bytes), and a vertex shader builds its rects. It is not pixel-exact: over the test harness's 90,000 frames, 171 differ from the original, each by one colour level (out of 255) along one or two pixel columns of a note's gradient; note edges are never off. With a long note span it saves about a quarter of the frame time (rftmis at 3 s: 0.49 → 0.36 ms median); at short spans it is about even.
-- **Hidden channels** get their own drawing data, built in the background ("Applying hidden channels..." until ready), so hiding most of a black MIDI's tracks makes it faster.
-- **128 keys** by default ("Show all 88 keys" is still there).
-- **Keep short notes on screen** (Visual > Clean drawing): a note too short to fill a pixel row still shows from the top edge until it reaches the keyboard (the original can drop such notes at either end).
-- **Tick-based view** (Visual > Timing, off by default): notes are spaced by their ticks instead of their time, a quarter note always as tall as half a second at 120 BPM, so a tempo change no longer stretches or squeezes the notes; the playhead moves through each beat at the song's own pace. Measure lines follow the same spacing, and key fades and the hit line keep real time.
-- The **note speed slider** is logarithmic and covers the whole range: 10 at the left, 0.06 (the default) in the middle, 0.005 at the right.
-
-**Playback**
-- Audio runs on its own decoder and sender threads, off a microsecond clock, independent of the frame rate. KDMAPI is used when a synth that provides it is installed (OmniMIDI and others), WinMM otherwise. The synth is opened once and stays open across songs, so it loads its soundfonts only at the first song (or when the output setting changes); a song that closes leaves its channels reset.
-- Every event is sent by default. Optional limits (Performance tab), for synths that fall behind:
-  - **Skip quiet notes while the synth lags**: above a lag you choose, quiet note-ons go first, rising to every note-on at 4 times that lag.
-  - **Always skip notes quieter than velocity N** (default 20), with their note-offs.
-  - **Collapse stacked notes**: one voice per channel, key and tick, lasting until the last of the stacked notes ends. RFTMIS rev10 sends 42 % fewer note-ons.
-  - **Limit sending to N messages/s**: looks 50 ms ahead and skips the quietest note-ons first so the rest fit; within the last velocity it thins evenly, so songs with one velocity still play partly. Note-ons stay within N/2 per second; total messages average N but can briefly reach about 1.5 N as earlier notes end.
-- When one thread cannot decode a dense passage in time, decoding spreads over more threads, up to the Performance tab's thread setting (a change applies at once), and back to one when the passage ends. The visuals stay exact; audio may differ slightly from one thread's: with collapsing on, a tick split between threads can sound a key once per thread, and the send budget is shared between them. Night of Nights' busiest second (224 M events) decodes in 0.18 s on 16 threads with collapsing, the budget and the velocity floor on, against 0.96 s on one.
-- **Start songs paused after loading** (Controls tab, off by default).
-- Mute, volume, pause, stop, seeking and the metronome behave as in the original (clicks inside a parallel stretch are left out).
-- Seeking restores the song's state at the new position, wherever you came from:
-  - It resets all controllers, then sends each channel's last value before that point of every controller, program, pitch bend and channel pressure, in the order the song set them, so bank selects still come before their program changes.
-  - Volume and pan go back to the GM defaults (100 and 64) on channels with no value yet. So do bank, program, reverb and chorus on channels that only set them later in the song.
-  - It looks back only until every value it needs is found, which usually takes microseconds.
-
-**PFA lag simulation** (Visual > Timing, off by default)
-- Plays the song the way the original Piano From Above 1.1.0 would lag on this computer: its frame rate, its freezes and its audio. A model of the original's frame (song/PfaLag.h), counted per millisecond of song from its note statistics and the CPU's caches, with costs measured from stock PFA 1.1.0 itself (its frames logged over seventeen black MIDIs up to 184,000 polyphony, from 2,500 fps down to 216-second frames, with the usual `winmm.dll` patch that sends to KDMAPI, and checked against synthetic slams of 128 keys that grow, hold, renew and release polyphony at set rates):
-  - Its Logic goes through every event since the last frame in order, sending each with `midiOutShortMsg` (about 0.04 µs of its own work, plus the send). Every note-off walks the whole list of sounding notes, reading each one's event object. So what costs is note-offs times the polyphony at that moment, not polyphony alone: 10,000 notes held cost nothing more while they are held, but renewed by new notes, every one that ends walks all 10,000. A walk is about 1.2 ns a note while the sounding notes fit in L2, 2.0 ns in L3 and 7.4 ns past it (up to 0.5 ns more in a frame whose events overflow L3, as they push the notes out). Each walk is costed at the polyphony it walks, so a mass release (every note ending at one tick) is priced along the falling polyphony: most of its walking is done while the notes are still many, too many for the caches.
-  - Before its sends it reads the events coming into view, and after them the events it played, again (about 0.02 µs an event together), so it sends nothing for a moment after a frame is shown and again before the next.
-  - Its Render walks the sounding notes and every event in view twice and draws each note as two rects, with a draw call every 50 notes. Once the two outgrow L2, each sounding note costs about 0.3 µs more (each is drawn over the whole view), so a climb to high polyphony slows the frames even while few notes end.
-  - Its clock is the time that passed, so a slow frame leaves more song for the next: once a second of song takes more than a second, each frame is longer than the last, as the original freezes (a frame is capped at ten minutes).
-- Frames run back to back, so a light song runs at the original's 2,000–2,500 fps, and the stats box shows that frame rate ("PFA sim"). The picture shows the last finished frame, and so do the statistics and graphs, unless "Statistics follow how far its Logic has played" is on (off by default): then they move on through a freeze as the frame's Logic plays, while the picture holds. The audio plays a frame's events as its Logic gets to them, in the original's order: it crawls through a crash for as long as the crash's walks take, then races through the light song time after it at once, and then waits while the frame draws. That gives the original's pattern in a freeze: a burst of music, a gap, a new frame. Its pace follows the work smoothly (128 points a frame, spaced along both the work and the song time), and the original's frames are worked out a quarter second ahead, so the pace runs on from one to the next by itself instead of waiting on this app's own frames. Inside a millisecond it goes by that millisecond's events rather than their exact times, so a tick that ends a hundred thousand notes goes out note by note over the seconds the original takes to walk them (the sound thins out as it does), with notes starting at that tick before or after them by track, as in the original.
-- A MIDI message costs 0.05 µs by default (the field takes decimals): stock PFA with the `winmm.dll` patch that sends to KDMAPI, as measured. Without the patch, on Windows 11 builds whose WinMM goes through the new MIDI service, WinMM itself costs 13–28 µs a message for any synth, even Microsoft's GS Wavetable Synth. That also pushes PFA's own data out of the caches between events, so an unpatched PFA lags far more than its send cost alone (type 30 to come close).
-- Mild randomness stands in for the rest of the computer:
-  - Other programs take a wandering 0–60 % share of L2 and L3 (typically 15 %).
-  - Each frame's own work varies by about 8 %, less for long frames.
-  - The send path drifts slowly by about 20 %, each message varies, and an occasional message stalls.
-  - Every 0.3 s or so, a stall of about 1.5 ms (another thread, a page fault).
-- The L2 and L3 sizes default to this computer's; others can be typed in to see how a different CPU would fare. The costs were measured on a Ryzen 5 5500. On another CPU, a half-second benchmark the first time the simulation starts times the original's note-off walk (indices into pointers to scattered event objects) at half of L1, L2 and L3 and at four times L3, and its per-event work, against the same benchmark on the Ryzen 5 5500. Each cost is scaled by its own result: the walks by the caches' and memory's speed at their size, the rest by the core's (its clock and how much it does per clock). The send cost isn't scaled; it's its own setting. On a Ryzen 5 5500 it is taken as is. "Its CPU speed" scales everything on top (200 % is a CPU twice as fast as this one), to imitate another computer. Against the measured runs, 5-second stretches come within about ±10 % of the original's frame rate (median 3–9 % per song). Frames longer than a second come within 0.7–1.3× when given the same song time on most songs (0.65–1.7× at worst: songs differ in ways the note statistics don't show). A whole freeze varies a lot from run to run: each frame plays the song time the last one took, so small differences grow. Over several runs, lagging 10-second stretches take a median 0.75–0.9× the original's time. It needs the note statistics, which are counted at load time while it is on (a song opened before it was turned on is opened again).
-
-**Statistics**
-- Each line of the stats box is chosen in Visual > **Statistics...**; with every line off the box is not drawn. The lines:
-  - Time, frame rate and score (on by default: time and score).
-  - Notes passed, NPS (note-ons in the last second) and polyphony (note-ons minus the note-offs that release a held note of the same track, channel and key), from 1 ms tables built while the notes are paired at load time (on by default; not counted while they are all off). Max NPS and Max Poly, under them by default, are the most of each in any millisecond of the song up to the point played (a peak inside one millisecond doesn't show, as the polyphony line can't show it either).
-  - Synth: messages sent (handed to the output), skipped and collapsed per second, the sender's lag and the skipping threshold.
-  - Playback pipeline, to see what holds playback back: messages decoded per second, how busy the decoder (with "×N" while N threads decode) and sender threads are, how full the ring between them is (average and peak) and the output's cost per message. A busy decoder with an empty ring is the decoder's limit; a full ring with a busy sender is the output's, and a rising send cost means the synth is pushing back.
-  - Frame time, split into logic, notes, the rest of the scene and Present.
-- The box's corner, font, size (width × height in pixels, or as at 1080p scaled with the picture), translucent background and text shadow are set in Visual. Its height shared by its lines sets the font size; it widens itself so the text never overlaps.
-- **Graphs** (View > Graphs, Ctrl+G; set in Visual > Graphs...): notes per second, polyphony and tempo over the last moments (a millisecond to ten minutes), each in its own box or all in one. Each is filled or a line, in its own colour, with its text at the left or the right, in the order you choose from top to bottom. Each scale follows the highest value shown, easing up and down at speeds you set, and its bottom sits at zero or at the lowest value shown.
-
-**Effects** (Preferences > Effects, off until set; one box turns them all off)
-- Everything is drawn by its light, from 0 (unlit) to 1 (fully lit): a playing note and the key it presses rise to 1 and can fall along a curve while held; a key let go fades out. Every note can also have a resting light.
-- For each part (notes, short notes, keys, red bar, background): how dark it is unlit, how much it is lightened when lit, and how much it glows (bloom). How much of a note's light reaches its outline and its inside, so neither swamps the other.
-- Flat look (plain keys, flat notes), hollow notes (outlines only), no red bar, and a vignette.
-- Pressed keys can whiten towards their top, set for the normal and the flat look apart.
-- **Merged outlines**: touching notes of one track and channel share one outline, around them all; short notes can stay apart, merge among themselves, or merge with the long notes too.
-- **Auto exposure** follows how much of the keyboard is lit, turning the light up in sparse parts and down in dense ones, and a **soft limit** caps the glow added to a pixel so dense parts do not wash out to white.
-- **Hit line**: a line in the red bar's place, right on the keys, drawn over everything. It can run across the keyboard or show only over the keys being played, take the notes' colours, fade with its own time and curve after a key is let go, spread sideways, and glow.
-
-**Interface**
-- **Dark mode** (Preferences, Visual tab: Light, Dark or Follow Windows), dialogs and menus included.
-- Preferences fit the screen: the tall tabs are laid out in two columns, and a tab that still does not fit (a large display scaling, a small screen) scrolls, so OK and Apply stay in reach.
-- Colours of the background, the red bar and the tracks are set in Preferences > Visual; the colour dialog takes hex codes (`#RRGGBB` or `#RGB`), as do colour settings in the config file. A changed track palette recolours the open song at once. Track palettes can be saved under a name and picked again.
-- The loading popup shows how long each stage took.
-
-**Video rendering** (Performance tab, "Render video...")
-- Renders the open song from start to end to an MP4, off-screen at any resolution up to 8192 × 8192 and 1–240 fps, with x264 (CPU) or a hardware encoder (NVIDIA NVENC, AMD AMF or Intel QSV; H.264 or HEVC), a quality setting (CRF, CQ or QP; default 20) and a speed preset.
-- Frames are converted to YUV 4:2:0 (BT.709) on the GPU and read back a few frames behind the GPU, so ffmpeg only encodes. At 1080p60 on an RTX 3060: about 290 fps with x264 veryfast, 540 fps with NVENC.
-- A frame is what the window shows (keyboard and notes with the current view, note speed, colours and hidden channels) plus, optionally, the stats box (its chosen lines, less the synth and frame-time ones). There is no sound.
-- Needs `ffmpeg.exe` in the current folder, next to `PFAviz++.exe`, or on the PATH. The progress popup shows a preview; Cancel keeps a playable video of the part done so far.
+For how each of these works, and the settings behind them, see [FEATURES.md](FEATURES.md).
 
 ## Requirements
 
@@ -106,11 +29,7 @@ Open a song with File > Play Song, by dropping it on the window, or by passing i
 PFAviz++.exe "song.mid"
 ```
 
-The notes and keyboard area's exact size can be typed in under Visual > View size, up to its monitor's size less the visible title, frame, menu and controls bars (which are added around it; Windows' invisible resize borders don't count). The window then moves, if it has to, so its visible frame lies wholly on that monitor. The size the page shows is always accepted as it is, even maximized or in full screen.
-
-Settings are kept in `%APPDATA%\PFAviz++\config.ini`. Several versions can share it, even running at once: each saves only the settings it changed and keeps the ones it does not know, and every setting is also kept in `config.all.ini` beside it, so one an older version dropped comes back with the next newer one.
-
-Environment variables for timed test runs: `PFAVIZ_MUTE=1`, `PFAVIZ_UNCAPPED=1`, `PFAVIZ_NOTESPEED=x`, `PFAVIZ_MAXIMIZE=1`, `PFAVIZ_FRAMELOG=file` (frame times every half second), `PFAVIZ_GDITEXT=1` (the GDI text fallback even with D3DX installed), `PFAVIZ_START=seconds` (starts that far into the song), `PFAVIZ_EXIT_AFTER=seconds` (closes the window without saving the configuration) and `PFAVIZ_RENDER=out.mp4` (renders the song with the saved video settings, then closes; with `PFAVIZ_ENCODER=n`, the n-th encoder of the list instead, `PFAVIZ_CAPTUREDEPTH=n` frames in flight, `PFAVIZ_BGRXPIPE=1` BGRX frames converted by ffmpeg).
+Settings are kept in `%APPDATA%\PFAviz++\config.ini`. More on the settings, the window size and test switches is in [FEATURES.md](FEATURES.md).
 
 ## Building
 
