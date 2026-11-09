@@ -64,6 +64,7 @@
 #define IDC_PALETTENAMETEXT             1610
 #define IDC_FX_SEMILIP                  1611
 #define IDC_FX_PROFILEKEEP              1612
+#define IDC_STATSPFASIZE                1614
 
 #define IDC_PICTURE                     1089
 #define IDC_LICENSE                     1093

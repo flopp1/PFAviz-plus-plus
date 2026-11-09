@@ -1107,9 +1107,12 @@ static long long TempoAt( const std::vector< RefMetaEvent > &vMeta, long long ll
 
 // Per pixel column of a plot, each series' value: the notes per second at its end, the highest polyphony
 // in it (from at most 64 of its bins), the tempo at its end. A graph's top eases towards the highest value
-// shown (quickly up, slowly down), and its bottom (unless at zero) towards the lowest. Its vertical scale
-// (GraphSettings::bScale) is at the left of the plot, its values a round step apart; the line at the
-// highest value shown (bMaxLine) is written there too (without the scale: at the plot's left, above it)
+// shown (quickly up, slowly down), and its bottom (unless at zero) towards the lowest. The size set is the
+// plot's: the series' text goes above it, and its vertical scale (GraphSettings::bScale) at its left, the
+// box widening with the scale's widest value so the plot keeps its size. The scale's values are a round
+// step apart; the line at the highest value shown (bMaxLine) is written there too (without the scale: at
+// the plot's left, above it). Neither is drawn with the graphs in one box: each has its own scale, and
+// every one's highest value would be at the top.
 void MainScreen::RenderGraph( Renderer *pRenderer, int iWidth, int iHeight, int iBottomY, long long llTime, long long llPastEnd,
                               const StatsBox *pStats, float fDark, GraphScale &scale )
 {
@@ -1123,14 +1126,8 @@ void MainScreen::RenderGraph( Renderer *pRenderer, int iWidth, int iHeight, int 
     if ( !iShown ) return;
     const double u = iHeight / 1080.0;
     auto Px = [&]( double v ) { return std::max( 1, (int)std::lround( v * u ) ); };
-    const int iCX = std::min( iWidth, Px( gs.iCX ) ), iCY = std::min( iHeight, Px( gs.iCY ) );
     const int iBoxes = gs.bTogether ? 1 : iShown;
-    const bool bBottom = ( gs.iCorner & VisualSettings::StatsBottom ) != 0;
-    // The boxes from the corner inwards, below (or above) the stats box when it is in the same corner
-    const int x = ( gs.iCorner & VisualSettings::StatsLeft ) ? 0 : iWidth - iCX;
-    int y = bBottom ? std::clamp( iBottomY, iCY, std::max( iCY, iHeight ) ) - iCY : 0;
-    if ( pStats && gs.iCorner == cVisual.iStatsCorner ) y = bBottom ? pStats->rc.top - iCY : pStats->rc.bottom;
-    if ( bBottom ) y -= ( iBoxes - 1 ) * iCY;     // (the top one's: in either corner the first place is at the top)
+    const bool bScale = gs.bScale && !gs.bTogether, bMaxLine = gs.bMaxLine && !gs.bTogether;
 
     auto Dark = [&]( D3DCOLOR c ) { return fDark < 1.0f ? ( c & 0xFF000000 ) | ( Effects::Scale( c, fDark ) & 0x00FFFFFF ) : c; };
     D3DCOLOR aColor[GS::SeriesCount];     // (no alpha)
@@ -1139,17 +1136,13 @@ void MainScreen::RenderGraph( Renderer *pRenderer, int iWidth, int iHeight, int 
     pRenderer->SetGraphFont( iFontCY, cVisual.sStatsFont );
     const NoteStats &ns = m_pSong->noteStats;
 
+    // The plot's size (the box: the text above it, and the scale, when shown, at its left)
+    const int iPlotCY = std::min( Px( gs.iCY ), iHeight - iLabelCY - iPad );
+    const int n = std::min( Px( gs.iCX ), iWidth - iPad * 2 );
+    if ( n < 2 || iPlotCY < 2 ) return;
+    const int iCY = iLabelCY + iPlotCY + iPad;
+
     // The values (counts: none when the song was loaded without them)
-    if ( gs.bScale && scale.iScaleCX <= 0 )
-    {
-        // (a first frame: as wide as three digits)
-        RECT rcCalc = { 0, 0, 0, 0 };
-        pRenderer->DrawText( L"000", Renderer::Graph, &rcCalc, DT_CALCRECT | DT_SINGLELINE, 0 );
-        scale.iScaleCX = rcCalc.right - rcCalc.left + iPad * 2;
-    }
-    const int iScaleCX = gs.bScale ? std::min( scale.iScaleCX, iCX / 2 ) : 0;
-    const int n = iCX - iPad * 2 - iScaleCX;
-    if ( n < 2 ) return;
     const long long llNow = llTime + llPastEnd, llSpan = gs.iSpanMs * 1000LL;
     const long long llT0 = llNow - ( gs.bMiddle ? llSpan / 2 : llSpan );
     static thread_local std::vector< double > av[GS::SeriesCount];
@@ -1225,26 +1218,27 @@ void MainScreen::RenderGraph( Renderer *pRenderer, int iWidth, int iHeight, int 
     static const wchar_t *const asName[GS::SeriesCount] = { L"NPS", L"Polyphony", L"BPM" };
     const int iNowCol = gs.bMiddle ? n / 2 : n - 1;
     const D3DCOLOR cMax = 0xFF000000 | ( gs.uMaxColor & 0xFF ) << 16 | ( gs.uMaxColor & 0xFF00 ) | ( gs.uMaxColor >> 16 & 0xFF );
-    int iWidest = 0;            // the scale's widest value this frame
+    const int iThick = Px( 2 );
+    // A point's height in the plot, from its top
+    auto YOf = [&]( int s, double v ) {
+        const double dLo = scale.adBottom[s], dRange = scale.adTop[s] - dLo;
+        return iPlotCY - (int)std::lround( std::clamp( ( v - dLo ) / dRange, 0.0, 1.0 ) * iPlotCY );
+    };
+    auto TextCX = [&]( const std::wstring &t ) {
+        RECT rcCalc = { 0, 0, 0, 0 };
+        pRenderer->DrawText( t.c_str(), Renderer::Graph, &rcCalc, DT_CALCRECT | DT_SINGLELINE, 0 );
+        return (int)( rcCalc.right - rcCalc.left );
+    };
+
+    // Each box's scale values (its series', about two and a half lines of text apart: a step of 1, 2, 2.5
+    // or 5 times a power of ten, counts whole) and highest value, first: the widest sets the scale's width
+    struct Mark { int y; std::wstring s; D3DCOLOR c; };
+    std::vector< Mark > avMarks[GS::SeriesCount], avMax[GS::SeriesCount];
+    int iWidest = 0;
     for ( int iBox = 0; iBox < iBoxes; iBox++ )
     {
-        const int yBox = y + iBox * iCY;
-        if ( cVisual.bStatsBackground ) pRenderer->DrawRect( (float)x, (float)yBox, (float)iCX, (float)iCY, 0x80000000 );
-        const int iX0 = x + iPad + iScaleCX, iY0 = yBox + iLabelCY, iY1 = yBox + iCY - iPad, iPlotCY = iY1 - iY0;
-        if ( iPlotCY < 2 ) continue;
-        const int iFirst = gs.bTogether ? 0 : iBox, iLast = gs.bTogether ? iShown : iBox + 1;
-        auto YOf = [&]( int s, double v ) {
-            const double dLo = scale.adBottom[s], dRange = scale.adTop[s] - dLo;
-            return iY1 - (int)std::lround( std::clamp( ( v - dLo ) / dRange, 0.0, 1.0 ) * iPlotCY );
-        };
-        const int iThick = Px( 2 );
-
-        // The scale's values (the first series' in the box), about two and a half lines of text apart:
-        // a step of 1, 2, 2.5 or 5 times a power of ten (counts: whole), a faint line across at each
-        struct Mark { int y; std::wstring s; D3DCOLOR c; };
-        std::vector< Mark > vMarks;
-        const int sScale = aiShown[iFirst];
-        if ( gs.bScale && abHave[sScale] )
+        const int sScale = aiShown[iBox];
+        if ( bScale && abHave[sScale] )
         {
             const double dLo = scale.adBottom[sScale], dRange = scale.adTop[sScale] - dLo;
             const double dWant = dRange * iFontCY * 2.5 / iPlotCY;
@@ -1261,11 +1255,42 @@ void MainScreen::RenderGraph( Renderer *pRenderer, int iWidth, int iHeight, int 
             for ( double v = std::ceil( dLo / dStep - 1e-9 ) * dStep; v <= scale.adTop[sScale] + 1e-9; v += dStep )
             {
                 const int yv = YOf( sScale, v );
-                if ( yv < iY0 || yv > iY1 ) continue;
-                pRenderer->DrawRect( (float)iX0, (float)yv, (float)n, 1.0f, Dark( 0xC0FFFFFF ) );   // (a rect's alpha: how clear)
-                vMarks.push_back( { yv, Tick( std::abs( v ) < dStep * 1e-6 ? 0.0 : v, iDecimals, sScale ), Dark( 0xFFA0A0A0 ) } );
+                if ( yv < 0 || yv > iPlotCY ) continue;
+                avMarks[iBox].push_back( { yv, Tick( std::abs( v ) < dStep * 1e-6 ? 0.0 : v, iDecimals, sScale ), Dark( 0xFFA0A0A0 ) } );
             }
         }
+        // (where a line graph's top is drawn)
+        if ( bMaxLine && abHave[sScale] && adMax[sScale] > 0.0 )
+            avMax[iBox].push_back( { std::min( YOf( sScale, adMax[sScale] ), iPlotCY - iThick ) + iThick / 2, Tick( adMax[sScale], 2, sScale ), Dark( cMax ) } );
+        // (the scale's values a highest value's would overlap are left out)
+        auto &v = avMarks[iBox];
+        v.erase( std::remove_if( v.begin(), v.end(), [&]( const Mark &m ) {
+            for ( const Mark &mx : avMax[iBox] ) if ( std::abs( mx.y - m.y ) < iFontCY ) return true;
+            return false; } ), v.end() );
+        if ( bScale )
+        {
+            for ( const Mark &m : avMarks[iBox] ) iWidest = std::max( iWidest, TextCX( m.s ) );
+            for ( const Mark &m : avMax[iBox] ) iWidest = std::max( iWidest, TextCX( m.s ) );
+        }
+    }
+
+    // The boxes from the corner inwards, below (or above) the stats box when it is in the same corner
+    const int iScaleCX = bScale ? iWidest + iPad : 0;
+    const int iCX = std::min( iWidth, n + iPad * 2 + iScaleCX );
+    const bool bBottom = ( gs.iCorner & VisualSettings::StatsBottom ) != 0;
+    const int x = ( gs.iCorner & VisualSettings::StatsLeft ) ? 0 : iWidth - iCX;
+    int y = bBottom ? std::clamp( iBottomY, iCY, std::max( iCY, iHeight ) ) - iCY : 0;
+    if ( pStats && gs.iCorner == cVisual.iStatsCorner ) y = bBottom ? pStats->rc.top - iCY : pStats->rc.bottom;
+    if ( bBottom ) y -= ( iBoxes - 1 ) * iCY;     // (the top one's: in either corner the first place is at the top)
+
+    for ( int iBox = 0; iBox < iBoxes; iBox++ )
+    {
+        const int yBox = y + iBox * iCY;
+        if ( cVisual.bStatsBackground ) pRenderer->DrawRect( (float)x, (float)yBox, (float)iCX, (float)iCY, 0x80000000 );
+        const int iX0 = x + iPad + iScaleCX, iY0 = yBox + iLabelCY, iY1 = iY0 + iPlotCY;
+        const int iFirst = gs.bTogether ? 0 : iBox, iLast = gs.bTogether ? iShown : iBox + 1;
+        const std::vector< Mark > &vMarks = avMarks[iBox], &vMax = avMax[iBox];
+        for ( const Mark &m : vMarks ) pRenderer->DrawRect( (float)iX0, (float)( iY0 + m.y ), (float)n, 1.0f, Dark( 0xC0FFFFFF ) );   // (a rect's alpha: how clear)
 
         // Filled ones first, lines over them
         for ( int bLines = 0; bLines < 2; bLines++ )
@@ -1273,7 +1298,7 @@ void MainScreen::RenderGraph( Renderer *pRenderer, int iWidth, int iHeight, int 
             {
                 const int s = aiShown[k];
                 if ( gs.abLine[s] != ( bLines != 0 ) || !abHave[s] ) continue;
-                auto Y = [&]( double v ) { return YOf( s, v ); };
+                auto Y = [&]( double v ) { return iY0 + YOf( s, v ); };
                 const std::vector< double > &v = av[s];
                 if ( !gs.abLine[s] )
                 {
@@ -1305,17 +1330,8 @@ void MainScreen::RenderGraph( Renderer *pRenderer, int iWidth, int iHeight, int 
                     }
                 }
             }
-        // The lines at the highest values shown (where a line graph's top is drawn), over the graphs
-        std::vector< Mark > vMax;
-        if ( gs.bMaxLine )
-            for ( int k = iFirst; k < iLast; k++ )
-            {
-                const int s = aiShown[k];
-                if ( !abHave[s] || adMax[s] <= 0.0 ) continue;
-                const int yLine = std::min( YOf( s, adMax[s] ), iY1 - iThick );
-                pRenderer->DrawRect( (float)iX0, (float)yLine, (float)n, (float)iThick, Dark( cMax & 0x00FFFFFF ) );
-                vMax.push_back( { yLine + iThick / 2, Tick( adMax[s], 2, s ), Dark( cMax ) } );
-            }
+        // The line at the highest value shown, over the graph
+        for ( const Mark &m : vMax ) pRenderer->DrawRect( (float)iX0, (float)( iY0 + m.y - iThick / 2 ), (float)n, (float)iThick, Dark( cMax & 0x00FFFFFF ) );
         if ( gs.bMiddle ) pRenderer->DrawRect( (float)( iX0 + n / 2 ), (float)iY0, 1.0f, (float)iPlotCY, Dark( 0x80FFFFFF ) );
 
         // The text: each series' name and value now, the left ones from the left, the right ones from the
@@ -1337,35 +1353,26 @@ void MainScreen::RenderGraph( Renderer *pRenderer, int iWidth, int iHeight, int 
         // The scale's values, right up to the plot and centred on their lines (kept in the box), leaving
         // out any a highest value's would overlap; without the scale, a highest value at the plot's left,
         // above its line (below it when there is no room)
-        auto Write = [&]( const Mark &m, bool bScale ) {
-            RECT rcCalc = { 0, 0, 0, 0 };
-            pRenderer->DrawText( m.s.c_str(), Renderer::Graph, &rcCalc, DT_CALCRECT | DT_SINGLELINE, 0 );
-            const int iTextCX = rcCalc.right - rcCalc.left, iTextCY = iFontCY + 2;
+        auto Write = [&]( const Mark &m ) {
+            const int iTextCX = TextCX( m.s ), iTextCY = iFontCY + 2, yv = iY0 + m.y;
             RECT rc;
             if ( bScale )
             {
-                iWidest = std::max( iWidest, iTextCX );
                 rc.right = iX0 - iPad; rc.left = rc.right - iTextCX;
-                rc.top = std::clamp( m.y - iTextCY / 2, iY0 - iPad, yBox + iCY - iTextCY );
+                rc.top = std::clamp( yv - iTextCY / 2, iY0 - iPad, yBox + iCY - iTextCY );
             }
             else
             {
                 rc.left = iX0 + iPad; rc.right = rc.left + iTextCX;
-                rc.top = m.y - iThick - iTextCY >= iY0 ? m.y - iThick - iTextCY : m.y + iThick;
+                rc.top = yv - iThick - iTextCY >= iY0 ? yv - iThick - iTextCY : yv + iThick;
             }
             rc.bottom = rc.top + iTextCY;
             pRenderer->DrawText( m.s.c_str(), Renderer::Graph, &rc, DT_SINGLELINE, m.c );
         };
-        for ( const Mark &m : vMarks )
-        {
-            bool bHidden = false;
-            for ( const Mark &mx : vMax ) bHidden |= std::abs( mx.y - m.y ) < iFontCY;
-            if ( !bHidden ) Write( m, true );
-        }
-        for ( const Mark &m : vMax ) Write( m, gs.bScale );
+        for ( const Mark &m : vMarks ) Write( m );
+        for ( const Mark &m : vMax ) Write( m );
         pRenderer->EndText();
     }
-    scale.iScaleCX = gs.bScale ? iWidest + iPad * 2 : 0;
 }
 
 void MainScreen::RenderText()
@@ -1447,9 +1454,11 @@ MainScreen::StatsBox MainScreen::StatsLayout( int iWidth, int iHeight, int iLine
     // The size set, its height shared by the lines as the original's: 16 a line with 3 above and below,
     // Tahoma 15, 6 at the sides, the shadow 2 across and 1 down (all in proportion)
     // (the font's size set instead: the line height and the rest from it, the height following)
-    const double u = cVisual.bStatsScaled ? iHeight / 1080.0 : 1.0;
-    int iBoxCX = std::max( 1, (int)std::lround( cVisual.iStatsCX * u ) );
-    const int iSetCY = std::max( 1, (int)std::lround( cVisual.iStatsCY * u ) );
+    // (the original's size: 156 wide, 16 a line and 3 above and below, unscaled)
+    const bool bPfa = cVisual.bStatsPfaSize && !cVisual.bStatsFontSet;
+    const double u = cVisual.bStatsScaled && !bPfa ? iHeight / 1080.0 : 1.0;
+    int iBoxCX = std::max( 1, (int)std::lround( ( bPfa ? 156 : cVisual.iStatsCX ) * u ) );
+    const int iSetCY = std::max( 1, (int)std::lround( ( bPfa ? 6 + 16 * std::max( iLines, 1 ) : cVisual.iStatsCY ) * u ) );
     const double k = cVisual.bStatsFontSet ? std::max( 1.0, cVisual.iStatsFontPx * u ) / 15.0
                                            : iSetCY / ( std::max( iLines, 1 ) + 6.0 / 16.0 ) / 16.0;
     auto Px = [&]( double v ) { return std::max( 1, (int)std::lround( v * k ) ); };

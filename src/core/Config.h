@@ -155,6 +155,9 @@ struct VisualSettings
                                 // width is the least, widened to fit the text
     bool bStatsFontSet;         // the font's size set instead (iStatsFontPx), the height following it
     int iStatsFontPx;           // its height, pixels (scaled as the box is with bStatsScaled)
+    bool bStatsPfaSize;         // the original's size: 156 wide, unscaled, its height by the lines shown
+                                // (StatsDefaultCY), following them; iStatsCX/CY and bStatsScaled unused
+                                // (bStatsFontSet wins)
     int iStatsCorner;           // StatsCorner bits: where the box sits (0: top right)
     std::wstring sStatsFont;    // the box's font (the original's: Tahoma)
     bool bStatsBackground;      // the box's translucent black background

@@ -215,8 +215,7 @@ private:
     // RenderStatus's); pStats: the stats box drawn, if any (the graphs go next to it in one corner);
     // iBottomY as StatsLayout's. Each graph's top and bottom follow its values shown, eased by song time
     // (GraphScale: kept from frame to frame)
-    // (iScaleCX: the vertical scale's width, from the widest of its values last frame)
-    struct GraphScale { double adTop[3] = {}, adBottom[3] = {}; long long llLast = LLONG_MIN; int iScaleCX = 0; };
+    struct GraphScale { double adTop[3] = {}, adBottom[3] = {}; long long llLast = LLONG_MIN; };
     void RenderGraph( Renderer *pRenderer, int iWidth, int iHeight, int iBottomY, long long llTime, long long llPastEnd,
                       const StatsBox *pStats, float fDark, GraphScale &scale );
 

@@ -111,6 +111,10 @@ namespace
             g.bTogether = IsDlgButtonChecked( hWnd, IDC_GRAPH_TOGETHER ) == BST_CHECKED;
         };
         auto ShowStyles = [&]( const GS &g ) {
+            // (in one box each graph has its own scale: no scale or highest-value line)
+            EnableWindow( GetDlgItem( hWnd, IDC_GRAPH_SCALE ), !g.bTogether );
+            EnableWindow( GetDlgItem( hWnd, IDC_GRAPH_MAXLINE ), !g.bTogether );
+            EnableWindow( GetDlgItem( hWnd, IDC_GRAPH_MAXCOLOR ), !g.bTogether );
             for ( int i = 0; i < GS::SeriesCount; i++ )
             {
                 SendDlgItemMessageW( hWnd, IDC_GRAPH_STYLE0 + i, CB_SETCURSEL, g.abLine[i], 0 );
@@ -300,6 +304,24 @@ namespace
     {
         int w = rc.right - rc.left, h = rc.bottom - rc.top, c = i % PaletteCols, r = i / PaletteCols;
         return { rc.left + w * c / PaletteCols, rc.top + h * r / PaletteRows, rc.left + w * ( c + 1 ) / PaletteCols, rc.top + h * ( r + 1 ) / PaletteRows };
+    }
+
+    // The stats box's size: set, its height by the font's size, or the original's (156 wide, its height by
+    // the lines shown, unscaled: shown, greyed, in the size's boxes); the font's size or the original's,
+    // one at a time
+    VOID ShowStatsSize( HWND hWnd )
+    {
+        const bool bFont = IsDlgButtonChecked( hWnd, IDC_STATSFONTSET ) == BST_CHECKED;
+        const bool bPfa = IsDlgButtonChecked( hWnd, IDC_STATSPFASIZE ) == BST_CHECKED;
+        if ( bPfa )
+        {
+            SetDlgItemInt( hWnd, IDC_STATSSIZE, 156, FALSE );
+            SetDlgItemInt( hWnd, IDC_STATSHEIGHT, (UINT)VisualSettings::StatsDefaultCY( g_Stats.uStats ), FALSE );
+            CheckDlgButton( hWnd, IDC_STATSSCALED, BST_UNCHECKED );
+        }
+        for ( int iId : { IDC_STATSSIZE, IDC_STATSSCALED } ) EnableWindow( GetDlgItem( hWnd, iId ), !bPfa );
+        EnableWindow( GetDlgItem( hWnd, IDC_STATSHEIGHT ), !bFont && !bPfa );
+        EnableWindow( GetDlgItem( hWnd, IDC_STATSFONTPX ), bFont );
     }
 
     VOID ShowStatsCount( HWND hWnd )
@@ -541,8 +563,8 @@ namespace
         // (the font's size or the height: one or the other)
         CheckDlgButton( hWnd, IDC_STATSFONTSET, cVisual.bStatsFontSet ? BST_CHECKED : BST_UNCHECKED );
         SetDlgItemInt( hWnd, IDC_STATSFONTPX, (UINT)cVisual.iStatsFontPx, FALSE );
-        EnableWindow( GetDlgItem( hWnd, IDC_STATSHEIGHT ), !cVisual.bStatsFontSet );
-        EnableWindow( GetDlgItem( hWnd, IDC_STATSFONTPX ), cVisual.bStatsFontSet );
+        CheckDlgButton( hWnd, IDC_STATSPFASIZE, cVisual.bStatsPfaSize && !cVisual.bStatsFontSet ? BST_CHECKED : BST_UNCHECKED );
+        ShowStatsSize( hWnd );
         SendDlgItemMessageW( hWnd, IDC_STATSCORNER, CB_SETCURSEL, cVisual.iStatsCorner, 0 );
         SetDlgItemTextW( hWnd, IDC_STATSFONT, cVisual.sStatsFont.c_str() );
         CheckDlgButton( hWnd, IDC_STATSBKG, cVisual.bStatsBackground ? BST_CHECKED : BST_UNCHECKED );
@@ -788,12 +810,12 @@ namespace
                         EnableWindow( GetDlgItem( hWnd, IDC_STATSMIRROR ), IsDlgButtonChecked( hWnd, IDC_STATSSHADOW ) == BST_CHECKED );
                         return TRUE;
                     case IDC_STATSFONTSET:
-                    {
-                        const BOOL bSet = IsDlgButtonChecked( hWnd, IDC_STATSFONTSET ) == BST_CHECKED;
-                        EnableWindow( GetDlgItem( hWnd, IDC_STATSHEIGHT ), !bSet );
-                        EnableWindow( GetDlgItem( hWnd, IDC_STATSFONTPX ), bSet );
+                    case IDC_STATSPFASIZE:
+                        // (one or the other)
+                        if ( IsDlgButtonChecked( hWnd, LOWORD( wParam ) ) == BST_CHECKED )
+                            CheckDlgButton( hWnd, LOWORD( wParam ) == IDC_STATSFONTSET ? IDC_STATSPFASIZE : IDC_STATSFONTSET, BST_UNCHECKED );
+                        ShowStatsSize( hWnd );
                         return TRUE;
-                    }
                     case IDC_PFALAG:
                     {
                         BOOL bOn = IsDlgButtonChecked( hWnd, IDC_PFALAG ) == BST_CHECKED;
@@ -821,6 +843,7 @@ namespace
                         {
                             g_Stats = c;
                             ShowStatsCount( hWnd );
+                            ShowStatsSize( hWnd );
                             Changed( hWnd );
                         }
                         return TRUE;
@@ -962,6 +985,7 @@ namespace
                     bool bStatsScaled = IsDlgButtonChecked( hWnd, IDC_STATSSCALED ) == BST_CHECKED;
                     // (the width, then the height or the font's size, whichever is set: the other kept)
                     const bool bStatsFontSet = IsDlgButtonChecked( hWnd, IDC_STATSFONTSET ) == BST_CHECKED;
+                    const bool bStatsPfaSize = !bStatsFontSet && IsDlgButtonChecked( hWnd, IDC_STATSPFASIZE ) == BST_CHECKED;
                     int aiStatsSize[3] = { 0, config.GetVisualSettings().iStatsCY, config.GetVisualSettings().iStatsFontPx };
                     {
                         const int aiId[3] = { IDC_STATSSIZE, IDC_STATSHEIGHT, IDC_STATSFONTPX };
@@ -1054,6 +1078,7 @@ namespace
                     cVisual.iStatsCX = aiStatsSize[0];
                     cVisual.iStatsCY = aiStatsSize[1];
                     cVisual.bStatsFontSet = bStatsFontSet;
+                    cVisual.bStatsPfaSize = bStatsPfaSize;
                     cVisual.iStatsFontPx = aiStatsSize[2];
                     cVisual.iStatsCorner = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_STATSCORNER, CB_GETCURSEL, 0, 0 ) );
                     wchar_t sFont[LF_FACESIZE] = L"";

@@ -71,9 +71,10 @@ BEGIN
     COMBOBOX        IDC_STATSCORNER,81,198,62,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     LTEXT           "Font:",IDC_STATIC,152,201,20,8
     COMBOBOX        IDC_STATSFONT,174,198,121,200,CBS_DROPDOWN | CBS_SORT | CBS_AUTOHSCROLL | WS_VSCROLL | WS_TABSTOP
-    CONTROL         "Set the font size, the height b&y it:",IDC_STATSFONTSET,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,53,216,128,10
-    EDITTEXT        IDC_STATSFONTPX,183,214,30,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "pixels",IDC_STATIC,217,216,30,8
+    CONTROL         "Height b&y font size:",IDC_STATSFONTSET,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,53,216,78,10
+    EDITTEXT        IDC_STATSFONTPX,132,214,26,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "px",IDC_STATIC,161,216,10,8
+    CONTROL         "Size as PF&A's (follows the lines)",IDC_STATSPFASIZE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,176,216,121,10
     CONTROL         "Background",IDC_STATSBKG,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,53,232,52,10
     CONTROL         "Text sha&dow",IDC_STATSSHADOW,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,111,232,56,10
     CONTROL         "Shadow follows corner",IDC_STATSMIRROR,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,171,232,90,10
@@ -390,11 +391,11 @@ BEGIN
     LTEXT           "Sp&an:",IDC_STATIC,7,149,58,8
     EDITTEXT        IDC_GRAPH_SPAN,68,147,36,14,ES_AUTOHSCROLL | ES_NUMBER
     LTEXT           "ms (at least 1)",IDC_STATIC,108,149,60,8
-    LTEXT           "Si&ze of a box:",IDC_STATIC,7,167,58,8
+    LTEXT           "Si&ze of a graph:",IDC_STATIC,7,167,58,8
     EDITTEXT        IDC_GRAPH_CX,68,165,34,14,ES_AUTOHSCROLL | ES_NUMBER
     LTEXT           "x",IDC_STATIC,106,167,8,8
     EDITTEXT        IDC_GRAPH_CY,116,165,34,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "pixels, as at 1080p",IDC_STATIC,154,167,100,8
+    LTEXT           "pixels as at 1080p (its text and scale go around it)",IDC_STATIC,154,167,175,8
     LTEXT           "&Font size:",IDC_STATIC,7,185,58,8
     EDITTEXT        IDC_GRAPH_FONT,68,183,30,14,ES_AUTOHSCROLL | ES_NUMBER
     LTEXT           "pixels, as at 1080p",IDC_STATIC,102,185,100,8
@@ -407,7 +408,7 @@ BEGIN
     CONTROL         "Vertical &scale",IDC_GRAPH_SCALE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,7,221,70,10
     CONTROL         "A line at the &highest value shown, in",IDC_GRAPH_MAXLINE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,84,221,140,10
     CONTROL         "",IDC_GRAPH_MAXCOLOR,"Button",BS_OWNERDRAW | WS_TABSTOP,226,220,15,12,WS_EX_CLIENTEDGE
-    LTEXT           "Each graph's top follows its highest value shown. The counts are made while a song loads: one opened with the graphs and the note statistics off has none until it is opened again.",IDC_STATIC,7,239,320,24
+    LTEXT           "Each graph's top follows its highest value shown (the scale and line need a box each). The counts are made while a song loads: one opened with the graphs and the note statistics off has none until it is opened again.",IDC_STATIC,7,239,320,24
     DEFPUSHBUTTON   "OK",IDOK,223,267,50,14
     PUSHBUTTON      "Cancel",IDCANCEL,277,267,50,14
 END

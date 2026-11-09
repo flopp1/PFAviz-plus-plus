@@ -201,6 +201,7 @@ void VisualSettings::LoadDefaultValues()
     bStatsShadowMirror = false;
     bStatsFontSet = false;
     iStatsFontPx = 15;
+    bStatsPfaSize = true;
     bGraph = false;
     for ( int i = 0; i < GraphSettings::SeriesCount; i++ ) { graph.abShow[i] = true; graph.abLine[i] = graph.abRight[i] = false; graph.aiPlace[i] = i; }
     graph.aColor[GraphSettings::NPS] = 0x00FFA050;
@@ -376,6 +377,9 @@ void VisualSettings::Load( const IniFile &ini )
     bStatsShadowMirror = ini.GetBool( "Visual", "StatsShadowMirror", bStatsShadowMirror );
     bStatsFontSet = ini.GetBool( "Visual", "StatsFontSet", bStatsFontSet );
     iStatsFontPx = std::clamp( ini.GetInt( "Visual", "StatsFontPx", iStatsFontPx ), StatsFontMin, StatsFontMax );
+    // (a height saved before this option: kept as set)
+    bStatsPfaSize = ini.GetBool( "Visual", "StatsPfaSize", !ini.Has( "Visual", "StatsHeight" ) && !ini.Has( "Visual", "StatsSize" ) );
+    if ( bStatsFontSet ) bStatsPfaSize = false;
     bGraph = ini.GetBool( "Visual", "Graph", bGraph );
     for ( int i = 0; i < GraphSettings::SeriesCount; i++ )
     {
@@ -482,6 +486,7 @@ void VisualSettings::Save( IniFile &ini ) const
     ini.SetInt( "Visual", "StatsShadowMirror", bStatsShadowMirror );
     ini.SetInt( "Visual", "StatsFontSet", bStatsFontSet );
     ini.SetInt( "Visual", "StatsFontPx", iStatsFontPx );
+    ini.SetInt( "Visual", "StatsPfaSize", bStatsPfaSize );
     ini.SetInt( "Visual", "Graph", bGraph );
     for ( int i = 0; i < GraphSettings::SeriesCount; i++ )
     {
