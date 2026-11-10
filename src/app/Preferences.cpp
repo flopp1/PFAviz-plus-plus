@@ -20,6 +20,7 @@
 #include "audio/MidiOutput.h"
 #include "core/Config.h"
 #include "core/Ini.h"
+#include "app/LoadingDialog.h"
 #include "midi/Notes.h"
 #include "resource.h"
 #include "song/PfaLag.h"
@@ -84,7 +85,7 @@ namespace
                std::equal( a.aiPlace, a.aiPlace + n, b.aiPlace ) && a.bTogether == b.bTogether && a.bZero == b.bZero &&
                a.bMiddle == b.bMiddle && a.iCorner == b.iCorner && a.iSpanMs == b.iSpanMs && a.iCX == b.iCX && a.iCY == b.iCY &&
                a.iFontPx == b.iFontPx && a.iGrowMs == b.iGrowMs && a.iShrinkMs == b.iShrinkMs &&
-               a.bScale == b.bScale && a.bMaxLine == b.bMaxLine && a.uMaxColor == b.uMaxColor;
+               a.bScale == b.bScale && a.bScaleSide == b.bScaleSide && a.bMaxLine == b.bMaxLine && a.uMaxColor == b.uMaxColor;
     }
 
     // The graphs' settings, chosen in the Graphs dialog and saved with the Visual page
@@ -113,6 +114,7 @@ namespace
         auto ShowStyles = [&]( const GS &g ) {
             // (in one box each graph has its own scale: no scale or highest-value line)
             EnableWindow( GetDlgItem( hWnd, IDC_GRAPH_SCALE ), !g.bTogether );
+            EnableWindow( GetDlgItem( hWnd, IDC_GRAPH_SCALESIDE ), !g.bTogether && IsDlgButtonChecked( hWnd, IDC_GRAPH_SCALE ) == BST_CHECKED );
             EnableWindow( GetDlgItem( hWnd, IDC_GRAPH_MAXLINE ), !g.bTogether );
             EnableWindow( GetDlgItem( hWnd, IDC_GRAPH_MAXCOLOR ), !g.bTogether );
             for ( int i = 0; i < GS::SeriesCount; i++ )
@@ -165,6 +167,8 @@ namespace
                 SetDlgItemInt( hWnd, IDC_GRAPH_GROW, p->iGrowMs, FALSE );
                 SetDlgItemInt( hWnd, IDC_GRAPH_SHRINK, p->iShrinkMs, FALSE );
                 CheckDlgButton( hWnd, IDC_GRAPH_SCALE, p->bScale ? BST_CHECKED : BST_UNCHECKED );
+                CheckDlgButton( hWnd, IDC_GRAPH_SCALESIDE, p->bScaleSide ? BST_CHECKED : BST_UNCHECKED );
+                EnableWindow( GetDlgItem( hWnd, IDC_GRAPH_SCALESIDE ), p->bScale && !p->bTogether );
                 CheckDlgButton( hWnd, IDC_GRAPH_MAXLINE, p->bMaxLine ? BST_CHECKED : BST_UNCHECKED );
                 SetWindowLongPtrW( GetDlgItem( hWnd, IDC_GRAPH_MAXCOLOR ), GWLP_USERDATA, p->uMaxColor );
                 return TRUE;
@@ -185,6 +189,9 @@ namespace
                 const bool bStyle = iId >= IDC_GRAPH_STYLE0 && iId < IDC_GRAPH_STYLE0 + GS::SeriesCount && HIWORD( wParam ) == CBN_SELCHANGE;
                 const bool bShow = iId >= IDC_GRAPH_SHOW0 && iId < IDC_GRAPH_SHOW0 + GS::SeriesCount;
                 const bool bPlace = iId >= IDC_GRAPH_PLACE0 && iId < IDC_GRAPH_PLACE0 + GS::SeriesCount && HIWORD( wParam ) == CBN_SELCHANGE;
+                if ( iId == IDC_GRAPH_SCALE )
+                    EnableWindow( GetDlgItem( hWnd, IDC_GRAPH_SCALESIDE ), IsDlgButtonChecked( hWnd, IDC_GRAPH_SCALE ) == BST_CHECKED &&
+                                                                          IsDlgButtonChecked( hWnd, IDC_GRAPH_TOGETHER ) != BST_CHECKED );
                 if ( bStyle || bShow || bPlace || iId == IDC_GRAPH_TOGETHER )
                 {
                     GS g = *p;
@@ -223,6 +230,7 @@ namespace
                     p->iGrowMs = Num( IDC_GRAPH_GROW, 0, 10000, p->iGrowMs );
                     p->iShrinkMs = Num( IDC_GRAPH_SHRINK, 0, 10000, p->iShrinkMs );
                     p->bScale = IsDlgButtonChecked( hWnd, IDC_GRAPH_SCALE ) == BST_CHECKED;
+                    p->bScaleSide = IsDlgButtonChecked( hWnd, IDC_GRAPH_SCALESIDE ) == BST_CHECKED;
                     p->bMaxLine = IsDlgButtonChecked( hWnd, IDC_GRAPH_MAXLINE ) == BST_CHECKED;
                     p->uMaxColor = ( unsigned )GetWindowLongPtrW( GetDlgItem( hWnd, IDC_GRAPH_MAXCOLOR ), GWLP_USERDATA );
                     p->Fix();
@@ -1382,6 +1390,8 @@ namespace
                 for ( const FxNumber &n : aFxNumbers ) SetDlgItemInt( hWnd, n.iId, (UINT)n.Get( const_cast< EffectSettings & >( fx ) ), FALSE );
                 SendDlgItemMessageW( hWnd, IDC_FX_DECAY, CB_SETCURSEL, fx.eDecay, 0 );
                 SendDlgItemMessageW( hWnd, IDC_FX_HITCURVE, CB_SETCURSEL, fx.eHitLineCurve, 0 );
+                SendDlgItemMessageW( hWnd, IDC_FX_VIGSIDE, CB_SETCURSEL, fx.eVignetteSide, 0 );
+                CheckDlgButton( hWnd, IDC_FX_VIGNOTES, fx.bVignetteNotes ? BST_CHECKED : BST_UNCHECKED );
                 std::copy( fx.abKeyWhite, fx.abKeyWhite + EffectSettings::LookCount, g_abKeyWhite );
                 std::copy( fx.aiKeyWhite, fx.aiKeyWhite + EffectSettings::LookCount, g_aiKeyWhite );
                 g_iKeyWhiteLook = fx.eLook;
@@ -1424,6 +1434,8 @@ namespace
         fx.iHitLineColor = ( unsigned )GetWindowLongPtrW( GetDlgItem( hWnd, IDC_FX_HITCOLOR ), GWLP_USERDATA );
         fx.eDecay = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_FX_DECAY, CB_GETCURSEL, 0, 0 ) );
         fx.eHitLineCurve = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_FX_HITCURVE, CB_GETCURSEL, 0, 0 ) );
+        fx.eVignetteSide = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_FX_VIGSIDE, CB_GETCURSEL, 0, 0 ) );
+        fx.bVignetteNotes = IsDlgButtonChecked( hWnd, IDC_FX_VIGNOTES ) == BST_CHECKED;
         fxOut = fx;
         return nullptr;
     }
@@ -1466,6 +1478,9 @@ namespace
                     SendDlgItemMessageW( hWnd, IDC_FX_DECAY, CB_ADDSTRING, 0, ( LPARAM )s );
                 for ( const wchar_t *s : { L"None (off at once)", L"Linear", L"Exponential", L"Smooth" } )
                     SendDlgItemMessageW( hWnd, IDC_FX_HITCURVE, CB_ADDSTRING, 0, ( LPARAM )s );
+                // By EffectSettings::VignetteSide
+                for ( const wchar_t *s : { L"every edge", L"the top", L"the bottom", L"the left", L"the right" } )
+                    SendDlgItemMessageW( hWnd, IDC_FX_VIGSIDE, CB_ADDSTRING, 0, ( LPARAM )s );
                 CheckDlgButton( hWnd, IDC_FX_ON, cVisual.fx.bOn ? BST_CHECKED : BST_UNCHECKED );
                 g_vFxProfiles = cVisual.vFxProfiles;
                 ShowFxProfiles( hWnd, MatchingFxProfile( cVisual.fx ) );
@@ -1744,6 +1759,13 @@ namespace
                 int iCode = HIWORD( wParam );
                 if ( LOWORD( wParam ) == IDC_PERF_DEDUP && iCode == BN_CLICKED )
                     EnableWindow( GetDlgItem( hWnd, IDC_PERF_DEDUPASSUME ), IsDlgButtonChecked( hWnd, IDC_PERF_DEDUP ) == BST_CHECKED );
+                if ( LOWORD( wParam ) == IDC_PERF_SHOWSTATS && HIWORD( wParam ) == BN_CLICKED )
+                {
+                    // (a load can end while this window is open: asked now, not greyed at the start)
+                    if ( HaveLoadStats() ) ShowLoadStats();
+                    else MessageBoxW( GetParent( hWnd ), L"No song has been loaded yet.", L"Loading statistics", MB_OK | MB_ICONINFORMATION );
+                    return TRUE;
+                }
                 if ( LOWORD( wParam ) == IDC_PERF_VIDEO )
                 {
                     if ( iCode == BN_CLICKED ) DoVideoExport( GetParent( hWnd ) );
@@ -1982,15 +2004,24 @@ namespace
     }
 }
 
+static HWND g_hWndPrefs = nullptr;
+
 VOID DoPreferences( HWND hWndOwner )
 {
+    if ( g_hWndPrefs )
+    {
+        if ( IsIconic( g_hWndPrefs ) ) ShowWindow( g_hWndPrefs, SW_RESTORE );
+        SetForegroundWindow( g_hWndPrefs );
+        return;
+    }
     const int aDialogs[] = { IDD_PP1_VISUAL, IDD_PP6_EFFECTS, IDD_PP2_AUDIO, IDD_PP4_CONTROLS, IDD_PP5_PERFORMANCE };
     const DLGPROC aProcs[] = { VisualProc, EffectsProc, AudioProc, ControlsProc, PerformanceProc };
     const wchar_t *const aTitles[] = { L"Visual", L"Effects", L"Audio", L"Controls", L"Performance" };
     const int iPages = 5;
     static_assert( iPages <= MaxPages, "MaxPages" );
     PROPSHEETPAGEW psp[iPages] = {};
-    std::vector< uint8_t > vTemplates[iPages];
+    // (kept while the window is open: a page is made from its template when its tab is first shown)
+    static std::vector< uint8_t > vTemplates[iPages];
     const SIZE fit = PageFit( hWndOwner );
     for ( int i = 0; i < iPages; i++ )
     {
@@ -2024,7 +2055,7 @@ VOID DoPreferences( HWND hWndOwner )
     }
     PROPSHEETHEADERW psh = {};
     psh.dwSize = sizeof( PROPSHEETHEADERW );
-    psh.dwFlags = PSH_PROPSHEETPAGE | PSH_NOCONTEXTHELP | PSH_USECALLBACK;
+    psh.dwFlags = PSH_PROPSHEETPAGE | PSH_NOCONTEXTHELP | PSH_USECALLBACK | PSH_MODELESS;
     // The sheet's frame is the property sheet's own dialog, which DarkMode does not see made
     psh.pfnCallback = []( HWND hWnd, UINT msg, LPARAM ) -> int { if ( msg == PSCB_INITIALIZED ) DarkMode::Dialog( hWnd ); return 0; };
     psh.hwndParent = hWndOwner;
@@ -2032,5 +2063,21 @@ VOID DoPreferences( HWND hWndOwner )
     psh.pszCaption = L"Preferences";
     psh.nPages = iPages;
     psh.ppsp = psp;
-    PropertySheetW( &psh );
+    g_hWndPrefs = ( HWND )PropertySheetW( &psh );
+    if ( g_hWndPrefs == ( HWND )-1 ) g_hWndPrefs = nullptr;
+}
+
+BOOL PreferencesMessage( MSG *pMsg )
+{
+    if ( !g_hWndPrefs ) return FALSE;
+    BOOL bHandled = PropSheet_IsDialogMessage( g_hWndPrefs, pMsg );
+    // (OK, Cancel or the close button: the sheet has no page left, and is destroyed here)
+    if ( !PropSheet_GetCurrentPageHwnd( g_hWndPrefs ) )
+    {
+        HWND hWndOwner = GetWindow( g_hWndPrefs, GW_OWNER );
+        DestroyWindow( g_hWndPrefs );
+        g_hWndPrefs = nullptr;
+        if ( hWndOwner ) SetForegroundWindow( hWndOwner );
+    }
+    return bHandled;
 }

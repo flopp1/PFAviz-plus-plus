@@ -231,6 +231,9 @@ LRESULT WINAPI WndProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
                     if ( cView.GetZoomMove() ) HandOffMsg( msg, ID_VIEW_CANCELMOVEANDZOOM, lParam );
                     else if ( cView.GetFullScreen() ) cView.SetFullScreen( false, true );
                     return 0;
+                case ID_FILE_LOADSTATS:
+                    ShowLoadStats();
+                    return 0;
                 case ID_OPTIONS_PREFERENCES:
                     CheckActivity( TRUE );
                     DoPreferences( hWnd );

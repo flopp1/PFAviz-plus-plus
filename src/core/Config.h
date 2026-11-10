@@ -72,6 +72,9 @@ struct EffectSettings
     int iExposure;              // percent: how strongly (0: off)
     int iExposureMs;
     int iVignette;              // percent: the corners darkened that much more
+    enum VignetteSide { VignetteAround, VignetteTop, VignetteBottom, VignetteLeft, VignetteRight, VignetteSideCount };
+    int eVignetteSide;          // from every edge (darkest in the corners), or from one side only
+    bool bVignetteNotes;        // over the notes area only (not the keyboard, nor the rest of the picture)
     int eDecay;                 // Decay: how a played note's light falls while it is held
     int iDecayMs;               // the time it takes
     int iDecayFloor;            // percent: the light left after it
@@ -186,6 +189,8 @@ struct VisualSettings
         int iGrowMs, iShrinkMs;         // how quickly a scale follows its values up and down: the time to
                                         // get most of the way there (0: at once), ms of song time
         bool bScale;                    // a vertical scale: values at the left, lines across at them
+        bool bScaleSide;                // the scale on the side away from the boxes' corner (left corners: at the
+                                        // right), so the graph stays put as its values' width changes
         bool bMaxLine;                  // a line across at the highest value shown, with it written
         unsigned uMaxColor;             // its colour (a COLORREF)
         void Fix();                     // together: only the first filled one stays filled; places not

@@ -219,6 +219,7 @@ void VisualSettings::LoadDefaultValues()
     graph.iGrowMs = 60;
     graph.iShrinkMs = 60;
     graph.bScale = false;
+    graph.bScaleSide = true;
     graph.bMaxLine = false;
     graph.uMaxColor = 0x0000FFFF;
     fx.LoadDefaultValues();
@@ -404,6 +405,7 @@ void VisualSettings::Load( const IniFile &ini )
     graph.iGrowMs = std::clamp( ini.GetInt( "Graphs", "GrowMs", graph.iGrowMs ), 0, 10000 );
     graph.iShrinkMs = std::clamp( ini.GetInt( "Graphs", "ShrinkMs", graph.iShrinkMs ), 0, 10000 );
     graph.bScale = ini.GetBool( "Graphs", "Scale", graph.bScale );
+    graph.bScaleSide = ini.GetBool( "Graphs", "ScaleAwayFromCorner", graph.bScaleSide );
     graph.bMaxLine = ini.GetBool( "Graphs", "MaxLine", graph.bMaxLine );
     graph.uMaxColor = ParseRGB( ini.GetString( "Graphs", "MaxColor" ), graph.uMaxColor );
     graph.Fix();
@@ -511,6 +513,7 @@ void VisualSettings::Save( IniFile &ini ) const
     ini.SetInt( "Graphs", "GrowMs", graph.iGrowMs );
     ini.SetInt( "Graphs", "ShrinkMs", graph.iShrinkMs );
     ini.SetInt( "Graphs", "Scale", graph.bScale );
+    ini.SetInt( "Graphs", "ScaleAwayFromCorner", graph.bScaleSide );
     ini.SetInt( "Graphs", "MaxLine", graph.bMaxLine );
     ini.Set( "Graphs", "MaxColor", FormatRGB( graph.uMaxColor ) );
     ini.SetInt( "Visual", "HideSpeedBoxes", bHideSpeedBoxes );
@@ -551,6 +554,8 @@ void EffectSettings::LoadDefaultValues()
     iExposure = 0;
     iExposureMs = 1500;
     iVignette = 0;
+    eVignetteSide = VignetteAround;
+    bVignetteNotes = false;
     eDecay = DecayNone;
     iDecayMs = 600;
     iDecayFloor = 40;
@@ -616,6 +621,8 @@ void EffectSettings::LoadConfigValues( const IniFile &ini )
     iExposure = std::clamp( ini.GetInt( "Effects", "Exposure", iExposure ), 0, 100 );
     iExposureMs = std::clamp( ini.GetInt( "Effects", "ExposureMs", iExposureMs ), 0, 60000 );
     iVignette = std::clamp( ini.GetInt( "Effects", "Vignette", iVignette ), 0, 100 );
+    eVignetteSide = std::clamp( ini.GetInt( "Effects", "VignetteSide", eVignetteSide ), 0, VignetteSideCount - 1 );
+    bVignetteNotes = ini.GetBool( "Effects", "VignetteNotesOnly", bVignetteNotes );
     eDecay = std::clamp( ini.GetInt( "Effects", "Decay", eDecay ), 0, DecayCount - 1 );
     iDecayMs = std::clamp( ini.GetInt( "Effects", "DecayMs", iDecayMs ), 1, 60000 );
     iDecayFloor = std::clamp( ini.GetInt( "Effects", "DecayFloor", iDecayFloor ), 0, 100 );
@@ -687,6 +694,8 @@ void EffectSettings::Save( IniFile &ini ) const
     ini.SetInt( "Effects", "Exposure", iExposure );
     ini.SetInt( "Effects", "ExposureMs", iExposureMs );
     ini.SetInt( "Effects", "Vignette", iVignette );
+    ini.SetInt( "Effects", "VignetteSide", eVignetteSide );
+    ini.SetInt( "Effects", "VignetteNotesOnly", bVignetteNotes );
     ini.SetInt( "Effects", "Decay", eDecay );
     ini.SetInt( "Effects", "DecayMs", iDecayMs );
     ini.SetInt( "Effects", "DecayFloor", iDecayFloor );

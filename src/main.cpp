@@ -9,6 +9,7 @@
 
 #include "app/DarkMode.h"
 #include "app/LoadingDialog.h"
+#include "app/Preferences.h"
 #include "app/MainWindow.h"
 #include "app/VideoExport.h"
 #include "core/Config.h"
@@ -186,6 +187,8 @@ int WINAPI wWinMain( HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow )
     {
         HWND hDlg = GetLoadingDialog();
         if ( hDlg && IsDialogMessageW( hDlg, &msg ) ) continue;
+        // (before the shortcuts: keys typed into Preferences are its own)
+        if ( PreferencesMessage( &msg ) ) continue;
         if ( ( IsSpeedEdit( GetFocus() ) || !TranslateAcceleratorW( g_hWnd, hAccel, &msg ) ) && !IsDialogMessageW( g_hWnd, &msg ) )
         {
             TranslateMessage( &msg );

@@ -39,18 +39,23 @@ float4 main( float2 t : TEXCOORD0 ) : COLOR
 }
 )";
     // Composite: the frame, plus the glow times x (with z: towards at most z, as z (1 - e^(-g / z))),
-    // darkened towards the corners by y
+    // darkened by y within the area c1 (left, top, right, bottom): towards its corners (c2.w 1), or
+    // towards one side, d = c2.x r.x + c2.y r.y + c2.z of the place r in the area
     const char *CompositePS = R"(
 sampler2D s0 : register( s0 );
 sampler2D s1 : register( s1 );
 float4 c0 : register( c0 );
+float4 c1 : register( c1 );
+float4 c2 : register( c2 );
 float4 main( float2 t : TEXCOORD0 ) : COLOR
 {
     float3 g = tex2D( s1, t ).rgb * c0.x;
     if ( c0.z > 0 ) g = c0.z * ( 1 - exp( -g / c0.z ) );
     float3 a = tex2D( s0, t ).rgb + g;
-    float d = length( ( t - 0.5 ) * 2 ) * 0.70710678;
-    a *= 1 - c0.y * smoothstep( 0.25, 1.0, d );
+    float2 r = ( t - c1.xy ) / ( c1.zw - c1.xy );
+    float d = lerp( dot( c2.xy, r ) + c2.z, length( ( r - 0.5 ) * 2 ) * 0.70710678, c2.w );
+    float fIn = step( 0, r.x ) * step( r.x, 1 ) * step( 0, r.y ) * step( r.y, 1 );
+    a *= 1 - c0.y * fIn * smoothstep( 0.25, 1.0, d );
     return float4( a, 1 );
 }
 )";
@@ -471,9 +476,15 @@ void Renderer::EndPost()
     }
 
     // Into the target
-    const float aComp[4] = { bBloom ? m_Post.fBloom : 0.0f, m_Post.fVignette, m_Post.fLimit, 0.0f };
+    // (the vignette's side: d from 0 at the far side to 1 at its own; every edge: by the distance from the middle)
+    static const float aSide[5][4] = { { 0, 0, 0, 1 }, { 0, -1, 1, 0 }, { 0, 1, 0, 0 }, { -1, 0, 1, 0 }, { 1, 0, 0, 0 } };
+    const float *pArea = m_Post.afVignetteArea;
+    const float aComp[3][4] = { { bBloom ? m_Post.fBloom : 0.0f, m_Post.fVignette, m_Post.fLimit, 0.0f },
+                                { pArea[0], pArea[1], std::max( pArea[2], pArea[0] + 1e-4f ), std::max( pArea[3], pArea[1] + 1e-4f ) },
+                                { aSide[std::clamp( m_Post.iVignetteSide, 0, 4 )][0], aSide[std::clamp( m_Post.iVignetteSide, 0, 4 )][1],
+                                  aSide[std::clamp( m_Post.iVignetteSide, 0, 4 )][2], aSide[std::clamp( m_Post.iVignetteSide, 0, 4 )][3] } };
     m_pDevice->SetPixelShader( m_pCompositePS );
-    m_pDevice->SetPixelShaderConstantF( 0, aComp, 1 );
+    m_pDevice->SetPixelShaderConstantF( 0, &aComp[0][0], 3 );
     m_pDevice->SetTexture( 0, m_PostScene.pTex );
     m_pDevice->SetTexture( 1, bBloom ? m_aPostGlow[0].pTex : m_PostScene.pTex );
     PostQuad( m_pPostTarget, m_PostScene.iW, m_PostScene.iH );

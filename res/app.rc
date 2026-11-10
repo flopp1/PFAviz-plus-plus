@@ -135,7 +135,7 @@ BEGIN
     CONTROL         "Use pitch-bends tuning instead of MTS for compatibility. Broken.",IDC_PERF_TUNING31BEND,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,25,194,300,10
 END
 
-IDD_PP6_EFFECTS DIALOGEX 0, 0, 597, 266
+IDD_PP6_EFFECTS DIALOGEX 0, 0, 597, 282
 STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_DISABLED | WS_CAPTION
 CAPTION "Property Page"
 FONT 8, "MS Shell Dlg", 400, 0, 0x0
@@ -268,8 +268,10 @@ BEGIN
     COMBOBOX        IDC_FX_HITCURVE,501,224,80,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     LTEXT           "&Vignette:",IDC_STATIC,302,248,32,8
     EDITTEXT        IDC_FX_VIGNETTE,336,246,28,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "%",IDC_STATIC,367,248,8,8
-    CONTROL         "The effects also change the stats bo&x",IDC_FX_STATS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,395,248,193,10
+    LTEXT           "%, from",IDC_STATIC,367,248,30,8
+    COMBOBOX        IDC_FX_VIGSIDE,399,246,70,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    CONTROL         "Notes area only",IDC_FX_VIGNOTES,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,474,248,112,10
+    CONTROL         "The effects also change the stats bo&x",IDC_FX_STATS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,302,265,193,10
 END
 
 IDD_PP4_CONTROLS DIALOGEX 0, 0, 597, 212
@@ -303,7 +305,8 @@ BEGIN
     LTEXT           "&Threads:",IDC_STATIC,13,21,60,8
     EDITTEXT        IDC_PERF_THREADS,80,19,30,14,ES_AUTOHSCROLL | ES_NUMBER
     LTEXT           "",IDC_PERF_THREADSNOTE,114,21,174,8
-    CONTROL         "Show loading &statistics after a file is loaded",IDC_PERF_LOADSTATS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,37,200,10
+    CONTROL         "Show loading &statistics after a file is loaded",IDC_PERF_LOADSTATS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,37,180,10
+    PUSHBUTTON      "Show the last...",IDC_PERF_SHOWSTATS,213,34,72,14
     CONTROL         "C&ompact visual store (less memory, slightly slower drawing)",IDC_PERF_COMPACT,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,51,270,10
     LTEXT           "&Block cache:",IDC_STATIC,13,67,60,8
     EDITTEXT        IDC_PERF_CACHEMB,80,65,40,14,ES_AUTOHSCROLL | ES_NUMBER
@@ -357,7 +360,7 @@ BEGIN
     PUSHBUTTON      "Cancel",IDCANCEL,143,41,50,14
 END
 
-IDD_GRAPH DIALOGEX 0, 0, 334, 288
+IDD_GRAPH DIALOGEX 0, 0, 334, 302
 STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Graphs"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
@@ -408,9 +411,10 @@ BEGIN
     CONTROL         "Vertical &scale",IDC_GRAPH_SCALE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,7,221,70,10
     CONTROL         "A line at the &highest value shown, in",IDC_GRAPH_MAXLINE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,84,221,140,10
     CONTROL         "",IDC_GRAPH_MAXCOLOR,"Button",BS_OWNERDRAW | WS_TABSTOP,226,220,15,12,WS_EX_CLIENTEDGE
-    LTEXT           "Each graph's top follows its highest value shown (the scale and line need a box each). The counts are made while a song loads: one opened with the graphs and the note statistics off has none until it is opened again.",IDC_STATIC,7,239,320,24
-    DEFPUSHBUTTON   "OK",IDOK,223,267,50,14
-    PUSHBUTTON      "Cancel",IDCANCEL,277,267,50,14
+    CONTROL         "Scale on the side a&way from the corner (left corners: at the right), so the graph stays put",IDC_GRAPH_SCALESIDE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,19,235,308,10
+    LTEXT           "Each graph's top follows its highest value shown (the scale and line need a box each). The counts are made while a song loads: one opened with the graphs and the note statistics off has none until it is opened again.",IDC_STATIC,7,253,320,24
+    DEFPUSHBUTTON   "OK",IDOK,223,281,50,14
+    PUSHBUTTON      "Cancel",IDCANCEL,277,281,50,14
 END
 
 IDD_STATS DIALOGEX 0, 0, 300, 252
@@ -513,6 +517,8 @@ BEGIN
         MENUITEM "&Play Song...\tCtrl+O",       ID_FILE_PLAYSONG
         MENUITEM "&Render Song...",              ID_FILE_RENDERSONG
         MENUITEM "&Close File\tCtrl+W",         ID_FILE_CLOSEFILE
+        MENUITEM SEPARATOR
+        MENUITEM "Loading &Statistics...",       ID_FILE_LOADSTATS, GRAYED
     END
     POPUP "&Play"
     BEGIN
@@ -563,6 +569,8 @@ BEGIN
             MENUITEM "&Play Song...\tCtrl+O",       ID_FILE_PLAYSONG
             MENUITEM "&Render Song...",              ID_FILE_RENDERSONG
             MENUITEM "&Close File\tCtrl+W",         ID_FILE_CLOSEFILE
+            MENUITEM SEPARATOR
+            MENUITEM "Loading &Statistics...",       ID_FILE_LOADSTATS, GRAYED
         END
         POPUP "&View"
         BEGIN

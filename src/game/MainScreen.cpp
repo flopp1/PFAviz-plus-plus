@@ -974,6 +974,15 @@ void MainScreen::DrawFrame( Renderer *pRenderer, const FrameGlobals &g, FastEngi
         post.fSceneGlow = fx.aGlow[EffectSettings::PartBackground] / 100.0f;
     }
     post.fVignette = fx.iVignette / 100.0f;
+    post.iVignetteSide = fx.eVignetteSide;
+    if ( fx.bVignetteNotes && g.iBufferWidth > 0 && g.iBufferHeight > 0 )
+    {
+        // (the notes area only: not the keyboard)
+        post.afVignetteArea[0] = g.fNotesX / g.iBufferWidth;
+        post.afVignetteArea[1] = g.fNotesY / g.iBufferHeight;
+        post.afVignetteArea[2] = ( g.fNotesX + g.fNotesCX ) / g.iBufferWidth;
+        post.afVignetteArea[3] = ( g.fNotesY + g.fNotesCY ) / g.iBufferHeight;
+    }
     const bool bPost = ( post.fBloom > 0.0f || post.fVignette > 0.0f ) && pRenderer->BeginPost( post );
     const bool bBloom = bPost && post.fBloom > 0.0f;
 
@@ -1147,7 +1156,8 @@ void MainScreen::RenderGraph( Renderer *pRenderer, int iWidth, int iHeight, int 
     pRenderer->SetGraphFont( iFontCY, cVisual.sStatsFont );
     const NoteStats &ns = m_pSong->noteStats;
 
-    // The plot's size (the box: the text above it, and the scale, when shown, at its left)
+    // The plot's size (the box: the text above it, and the scale, when shown, at its left, or at its right
+    // in a left corner with bScaleSide: the side away from the corner, so the plot never moves)
     const int iPlotCY = std::min( Px( gs.iCY ), iHeight - iLabelCY - iPad );
     const int n = std::min( Px( gs.iCX ), iWidth - iPad * 2 );
     if ( n < 2 || iPlotCY < 2 ) return;
@@ -1289,6 +1299,7 @@ void MainScreen::RenderGraph( Renderer *pRenderer, int iWidth, int iHeight, int 
     const int iScaleCX = bScale ? iWidest + iPad : 0;
     const int iCX = std::min( iWidth, n + iPad * 2 + iScaleCX );
     const bool bBottom = ( gs.iCorner & VisualSettings::StatsBottom ) != 0;
+    const bool bScaleRight = bScale && gs.bScaleSide && ( gs.iCorner & VisualSettings::StatsLeft );
     const int x = ( gs.iCorner & VisualSettings::StatsLeft ) ? 0 : iWidth - iCX;
     int y = bBottom ? std::clamp( iBottomY, iCY, std::max( iCY, iHeight ) ) - iCY : 0;
     if ( pStats && gs.iCorner == cVisual.iStatsCorner ) y = bBottom ? pStats->rc.top - iCY : pStats->rc.bottom;
@@ -1298,7 +1309,7 @@ void MainScreen::RenderGraph( Renderer *pRenderer, int iWidth, int iHeight, int 
     {
         const int yBox = y + iBox * iCY;
         if ( cVisual.bStatsBackground ) pRenderer->DrawRect( (float)x, (float)yBox, (float)iCX, (float)iCY, 0x80000000 );
-        const int iX0 = x + iPad + iScaleCX, iY0 = yBox + iLabelCY, iY1 = iY0 + iPlotCY;
+        const int iX0 = x + iPad + ( bScaleRight ? 0 : iScaleCX ), iY0 = yBox + iLabelCY, iY1 = iY0 + iPlotCY;
         const int iFirst = gs.bTogether ? 0 : iBox, iLast = gs.bTogether ? iShown : iBox + 1;
         const std::vector< Mark > &vMarks = avMarks[iBox], &vMax = avMax[iBox];
         for ( const Mark &m : vMarks ) pRenderer->DrawRect( (float)iX0, (float)( iY0 + m.y ), (float)n, 1.0f, Dark( 0xC0FFFFFF ) );   // (a rect's alpha: how clear)
@@ -1348,7 +1359,7 @@ void MainScreen::RenderGraph( Renderer *pRenderer, int iWidth, int iHeight, int 
         // The text: each series' name and value now, the left ones from the left, the right ones from the
         // right, in their colours
         pRenderer->BeginText();
-        int xLeft = iX0, xRight = x + iCX - iPad;
+        int xLeft = iX0, xRight = iX0 + n;     // (over the plot)
         for ( int k = iFirst; k < iLast; k++ )
         {
             const int s = aiShown[k];
@@ -1369,7 +1380,9 @@ void MainScreen::RenderGraph( Renderer *pRenderer, int iWidth, int iHeight, int 
             RECT rc;
             if ( bScale )
             {
-                rc.right = iX0 - iPad; rc.left = rc.right - iTextCX;
+                // (at the right: from the plot's edge; at the left: right up to it)
+                if ( bScaleRight ) { rc.left = iX0 + n + iPad; rc.right = rc.left + iTextCX; }
+                else { rc.right = iX0 - iPad; rc.left = rc.right - iTextCX; }
                 rc.top = std::clamp( yv - iTextCY / 2, iY0 - iPad, yBox + iCY - iTextCY );
             }
             else

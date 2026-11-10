@@ -37,7 +37,8 @@ namespace
         std::atomic< bool > bWaiting{ false };
     };
 
-    LoadJob *g_pJob = nullptr;
+    LoadJob *g_pJob = nullptr;      // the load running
+    LoadJob *g_pLast = nullptr;     // the last load that ended (not cancelled): its statistics, to show again
     // Cancelled loads let go of at once: their threads stop at the loader's next check of the cancel and
     // free what they loaded, then post WM_APP_LOADDONE as usual, and FinishLoad deletes them
     std::vector< LoadJob * > g_vStopping;
@@ -404,7 +405,8 @@ namespace
 
     void ShowStats()
     {
-        LoadView::Set( View(), StatsModel( g_pJob->stats, g_pJob->sFile, g_pJob->sError ) );
+        if ( !g_pLast ) return;
+        LoadView::Set( View(), StatsModel( g_pLast->stats, g_pLast->sFile, g_pLast->sError ) );
         ShowWindow( GetDlgItem( g_hWndDlg, IDC_LOAD_COPY ), SW_SHOW );
         SetDlgItemTextW( g_hWndDlg, IDCANCEL, L"Close" );
         SetWindowTextW( g_hWndDlg, L"Loading statistics - PFAviz++" );
@@ -431,9 +433,9 @@ namespace
 
     void CopyStats()
     {
-        if ( !g_pJob ) return;
-        std::wstring s = g_pJob->stats.Format();
-        if ( !g_pJob->sError.empty() ) s = L"Load failed: " + g_pJob->sError + L"\r\n\r\n" + s;
+        if ( !g_pLast ) return;
+        std::wstring s = g_pLast->stats.Format();
+        if ( !g_pLast->sError.empty() ) s = L"Load failed: " + g_pLast->sError + L"\r\n\r\n" + s;
         if ( !OpenClipboard( g_hWndDlg ) ) return;
         EmptyClipboard();
         size_t n = s.size() + 1;
@@ -498,7 +500,6 @@ namespace
             case WM_DESTROY:
                 KillTimer( hWnd, 1 );
                 g_hWndDlg = nullptr;
-                if ( g_pJob && g_pJob->bFinished ) { delete g_pJob; g_pJob = nullptr; }
                 return TRUE;
         }
         return FALSE;
@@ -506,6 +507,19 @@ namespace
 }
 
 bool IsLoading() { return g_pJob && !g_pJob->bFinished; }
+// The last load's statistics, in their window (any window already open brought forward)
+void ShowLoadStats()
+{
+    if ( g_hWndDlg ) { SetForegroundWindow( g_hWndDlg ); return; }
+    if ( !g_pLast ) return;
+    LoadView::ClassName( g_hInstance );
+    CreateDialogParamW( g_hInstance, MAKEINTRESOURCEW( IDD_LOADING ), g_hWnd, LoadingProc, 0 );
+    if ( !g_hWndDlg ) return;
+    ShowStats();
+    ShowWindow( g_hWndDlg, SW_SHOW );
+}
+bool HaveLoadStats() { return g_pLast != nullptr; }
+
 bool LoadThreadsRunning() { return IsLoading() || !g_vStopping.empty(); }
 HWND GetLoadingDialog() { return g_hWndDlg; }
 
@@ -592,10 +606,19 @@ void FinishLoad( LPARAM lParam )
     }
     pJob->song.reset();
 
+    // Its statistics kept, to show again (File > Loading Statistics, or the Performance tab)
+    if ( g_pJob == pJob ) g_pJob = nullptr;
+    if ( bCancelled ) delete pJob;
+    else
+    {
+        if ( g_pLast && g_pLast != pJob ) delete g_pLast;
+        g_pLast = pJob;
+        EnableMenuItem( GetMainMenu(), ID_FILE_LOADSTATS, MF_BYCOMMAND | MF_ENABLED );
+    }
+
     bool bKeepOpen = !bCancelled && ( cPerf.bShowLoadStats || !bOk );
     if ( g_hWndDlg && bKeepOpen )
         ShowStats();
     else if ( g_hWndDlg )
-        DestroyWindow( g_hWndDlg ); // also frees the job
-    if ( !g_hWndDlg && g_pJob == pJob ) { delete pJob; g_pJob = nullptr; }
+        DestroyWindow( g_hWndDlg );
 }

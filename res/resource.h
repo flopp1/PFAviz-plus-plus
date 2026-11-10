@@ -65,6 +65,11 @@
 #define IDC_FX_SEMILIP                  1611
 #define IDC_FX_PROFILEKEEP              1612
 #define IDC_STATSPFASIZE                1614
+#define IDC_PERF_SHOWSTATS              1615
+#define IDC_FX_VIGSIDE                  1616
+#define IDC_FX_VIGNOTES                 1617
+#define IDC_GRAPH_SCALESIDE             1618
+#define ID_FILE_LOADSTATS               40210
 
 #define IDC_PICTURE                     1089
 #define IDC_LICENSE                     1093
