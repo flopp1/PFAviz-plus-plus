@@ -64,7 +64,7 @@ To build the rendered-audio engines in, put them in `vendor/engines/` before `ma
 
 ## License
 
-PFAviz++ is released under the [GNU General Public License v3.0](LICENSE). Piano From Above itself is © 2010 Brian Pantano and is not covered by this license; its source is not included here.
+PFAviz++ is released under the [MIT License](LICENSE). Piano From Above itself is © 2010 Brian Pantano and is not covered by this license; its source is not included here.
 
 The third-party engines are not covered by this project's license either; each keeps its own:
 
