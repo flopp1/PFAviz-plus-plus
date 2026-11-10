@@ -190,6 +190,7 @@ void VisualSettings::LoadDefaultValues()
     iPfaCpuPct = 100;
     bHideSpeedBoxes = false;
     bLoopColors = false;
+    bUniqueColors = false;
     bEdo31Keys = false;
     bStatsScaled = false;
     iStatsCX = 156;
@@ -363,6 +364,7 @@ void VisualSettings::Load( const IniFile &ini )
     iPfaSendNs = std::clamp( ini.GetInt( "Visual", "PfaLagSendCostNs", iPfaSendNs ), 0, 10000000 );
     iPfaCpuPct = std::clamp( ini.GetInt( "Visual", "PfaLagCpuPercent", iPfaCpuPct ), 10, 1000 );
     bLoopColors = ini.GetBool( "Visual", "LoopColors", bLoopColors );
+    bUniqueColors = ini.GetBool( "Visual", "UniqueColors", bUniqueColors );
     bEdo31Keys = ini.GetBool( "Visual", "Edo31Keys", bEdo31Keys );
     bStatsScaled = ini.GetBool( "Visual", "StatsScaled", bStatsScaled );
     // (saved before as a percent of the original's box, at the lines then shown: its size in pixels)
@@ -475,6 +477,7 @@ void VisualSettings::Save( IniFile &ini ) const
     ini.SetInt( "Visual", "PfaLagSendCostNs", iPfaSendNs );
     ini.SetInt( "Visual", "PfaLagCpuPercent", iPfaCpuPct );
     ini.SetInt( "Visual", "LoopColors", bLoopColors );
+    ini.SetInt( "Visual", "UniqueColors", bUniqueColors );
     ini.SetInt( "Visual", "Edo31Keys", bEdo31Keys );
     ini.SetInt( "Visual", "StatsScaled", bStatsScaled );
     ini.SetInt( "Visual", "StatsWidth", iStatsCX );

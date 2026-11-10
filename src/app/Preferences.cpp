@@ -556,7 +556,7 @@ namespace
             SetPfaBenchText( hWnd, cVisual.bPfaLag );
             for ( int iId : { IDC_PFAL2, IDC_PFAL3, IDC_PFASEND, IDC_PFASPEED, IDC_PFASTATS } ) EnableWindow( GetDlgItem( hWnd, iId ), cVisual.bPfaLag );
         }
-        CheckDlgButton( hWnd, IDC_LOOPCOLORS, cVisual.bLoopColors ? BST_CHECKED : BST_UNCHECKED );
+        SendDlgItemMessageW( hWnd, IDC_LOOPCOLORS, CB_SETCURSEL, cVisual.bLoopColors ? 0 : cVisual.bUniqueColors ? 2 : 1, 0 );
         CheckDlgButton( hWnd, IDC_STATSSCALED, cVisual.bStatsScaled ? BST_CHECKED : BST_UNCHECKED );
         SetDlgItemInt( hWnd, IDC_STATSSIZE, (UINT)cVisual.iStatsCX, FALSE );
         SetDlgItemInt( hWnd, IDC_STATSHEIGHT, (UINT)cVisual.iStatsCY, FALSE );
@@ -737,6 +737,10 @@ namespace
                 // By Renderer::ImageFit
                 for ( const wchar_t *s : { L"Fill (cropped)", L"Fit (whole image)", L"Stretch", L"Center", L"Tile" } )
                     SendDlgItemMessageW( hWnd, IDC_BKGFIT, CB_ADDSTRING, 0, ( LPARAM )s );
+                // After the track colours: the colours again, random ones, or random ones each different
+                for ( const wchar_t *s : { L"then loop", L"then random", L"then unique" } )
+                    SendDlgItemMessageW( hWnd, IDC_LOOPCOLORS, CB_ADDSTRING, 0, ( LPARAM )s );
+                SendDlgItemMessageW( hWnd, IDC_LOOPCOLORS, CB_SETDROPPEDWIDTH, 200, 0 );
                 // By VisualSettings::StatsCorner bits
                 for ( const wchar_t *s : { L"Top right", L"Top left", L"Bottom right", L"Bottom left" } )
                     SendDlgItemMessageW( hWnd, IDC_STATSCORNER, CB_ADDSTRING, 0, ( LPARAM )s );
@@ -1073,7 +1077,11 @@ namespace
                         UINT uPct = GetDlgItemInt( hWnd, IDC_PFASPEED, &bNum, FALSE );
                         cVisual.iPfaCpuPct = bNum ? std::clamp( (int)uPct, 10, 1000 ) : 100;
                     }
-                    cVisual.bLoopColors = IsDlgButtonChecked( hWnd, IDC_LOOPCOLORS ) == BST_CHECKED;
+                    {
+                        int iAfter = (int)SendDlgItemMessageW( hWnd, IDC_LOOPCOLORS, CB_GETCURSEL, 0, 0 );
+                        cVisual.bLoopColors = iAfter == 0;
+                        if ( iAfter > 0 ) cVisual.bUniqueColors = iAfter == 2;     // (looping keeps the random kind for later)
+                    }
                     cVisual.bStatsScaled = bStatsScaled;
                     cVisual.iStatsCX = aiStatsSize[0];
                     cVisual.iStatsCY = aiStatsSize[1];

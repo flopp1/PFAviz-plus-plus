@@ -17,6 +17,7 @@ bool StartLoad( const std::wstring &sFile, bool bRenderOnly = false );
 void FinishLoad( LPARAM lParam );
 void ChooseMidiEntry( LPARAM lParam );     // WM_APP_CHOOSEMIDI
 bool IsLoading();
+bool LoadThreadsRunning();      // a load running, or cancelled ones still stopping (at exit: they are not waited for)
 // The full path of the song last opened (empty before the first)
 const std::wstring &GetOpenedFile();
 HWND GetLoadingDialog();

@@ -149,6 +149,7 @@ struct VisualSettings
     int iPfaCpuPct;             // its CPU's speed, percent of this computer's (100: this one, as benchmarked)
     bool bHideSpeedBoxes;       // the toolbar as the original's: sliders only, without the exact speed boxes
     bool bLoopColors;           // the track colors repeat (channel n gets colors[n % iColorCount]); off: random after them
+    bool bUniqueColors;         // (not looping) the random colours each different, from each other and the track colours (Util::UniqueColors)
     bool bEdo31Keys;            // the 256-key view in the 31-EDO layout (31 keys an octave; Scene.cpp)
     bool bStatsScaled;          // the stats box's size is as at 1080p, scaled with the picture's height (off: pixels)
     int iStatsCX, iStatsCY;     // the box's size: its height over its lines sets the line height and font; the

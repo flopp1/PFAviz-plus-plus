@@ -305,7 +305,8 @@ private:
     SceneColors m_Colors;
     std::vector< TrackSettings > m_vTrackSettings;
     unsigned m_uTracksGen = 0;      // counts changes to m_vTrackSettings (the effects copy its colours)
-    std::vector< unsigned > m_vPalette;     // the track colours (and bLoopColors, last) the song was coloured from (empty: not seen yet)
+    std::vector< unsigned > m_vPalette;     // the track colours (and bLoopColors, bUniqueColors, last) the song was coloured from (empty: not seen yet)
+    Util::UniqueColors *m_pUnique = nullptr;    // SetChannelColors, unique random colours: their source while it colours
     Effects::Look m_Look;
     Effects::KeyLights m_KeyLights;
     GraphScale m_GraphScale;

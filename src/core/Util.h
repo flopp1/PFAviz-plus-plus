@@ -5,6 +5,7 @@
 #include <atomic>
 #include <cstdint>
 #include <string>
+#include <vector>
 
 // High-precision timer (QueryPerformanceCounter). Replaces the original's 1 ms timeGetTime timer.
 class Timer
@@ -27,6 +28,24 @@ namespace Util
 
     // Exact copies of the original colour helpers: note colours depend on their integer rounding.
     unsigned RandColor();
+
+    // Random colours none of which repeats: each new one differs from every one before it and from the
+    // colours it was reset with (the palette's). Drawn from RandColor's own range while it has colours
+    // left, then from all 16.7 million.
+    class UniqueColors
+    {
+    public:
+        void Reset( const unsigned *aUsed, int iUsed );
+        unsigned Next();
+    private:
+        std::vector< unsigned > m_vPool;    // RandColor's colours, the first m_iLeft not yet drawn
+        size_t m_iLeft = 0;
+        std::vector< uint64_t > m_vUsed;    // a bit per 24-bit colour (2 MB)
+        uint32_t m_uUsed = 0;
+        uint64_t m_llState = 0;
+        uint32_t Rand();
+        bool Take( unsigned c );            // false: already used
+    };
     void RGBtoHSV( int R, int G, int B, int &H, int &S, int &V );
     void HSVtoRGB( int H, int S, int V, int &R, int &G, int &B );
     void CommaPrintf( wchar_t buf[32], long long iVal );

@@ -77,6 +77,79 @@ unsigned Util::RandColor()
     return ( B << 16 ) | ( G << 8 ) | R;
 }
 
+// RandColor's range (hue 0-359, saturation 60-99, value 80-99), each RGB colour once
+static const std::vector< unsigned > &RandColorPool()
+{
+    static const std::vector< unsigned > v = [] {
+        std::vector< unsigned > vAll;
+        vAll.reserve( 360 * 40 * 20 );
+        for ( int H = 0; H < 360; H++ )
+            for ( int S = 60; S < 100; S++ )
+                for ( int V = 80; V < 100; V++ )
+                {
+                    int R, G, B;
+                    Util::HSVtoRGB( H, S, V, R, G, B );
+                    vAll.push_back( ( B << 16 ) | ( G << 8 ) | R );
+                }
+        std::sort( vAll.begin(), vAll.end() );
+        vAll.erase( std::unique( vAll.begin(), vAll.end() ), vAll.end() );
+        return vAll;
+    }();
+    return v;
+}
+
+void Util::UniqueColors::Reset( const unsigned *aUsed, int iUsed )
+{
+    m_vPool = RandColorPool();
+    m_iLeft = m_vPool.size();
+    m_vUsed.assign( ( 1u << 24 ) / 64, 0 );
+    m_uUsed = 0;
+    for ( int i = 0; i < iUsed; i++ ) Take( aUsed[i] );
+    // (seeded from rand(), as RandColor is: srand at the start)
+    m_llState = ( (uint64_t)rand() << 32 ) ^ ( (uint64_t)rand() << 16 ) ^ (uint64_t)rand() ^ (uint64_t)Timer::NowMicroSecs();
+}
+
+bool Util::UniqueColors::Take( unsigned c )
+{
+    c &= 0xFFFFFF;
+    uint64_t &w = m_vUsed[c >> 6], b = 1ull << ( c & 63 );
+    if ( w & b ) return false;
+    w |= b;
+    m_uUsed++;
+    return true;
+}
+
+uint32_t Util::UniqueColors::Rand()
+{
+    // splitmix64
+    uint64_t z = ( m_llState += 0x9E3779B97F4A7C15ull );
+    z = ( z ^ ( z >> 30 ) ) * 0xBF58476D1CE4E5B9ull;
+    z = ( z ^ ( z >> 27 ) ) * 0x94D049BB133111EBull;
+    return (uint32_t)( ( z ^ ( z >> 31 ) ) >> 32 );
+}
+
+unsigned Util::UniqueColors::Next()
+{
+    if ( m_vUsed.empty() ) Reset( nullptr, 0 );
+    // RandColor's range first, each colour drawn once (a palette colour in it skipped)
+    while ( m_iLeft )
+    {
+        size_t j = Rand() % m_iLeft;
+        unsigned c = m_vPool[j];
+        std::swap( m_vPool[j], m_vPool[--m_iLeft] );
+        if ( Take( c ) ) return c;
+    }
+    // Then any colour not yet used (all 16.7 million used: one repeats, as nothing else can)
+    for ( int i = 0; m_uUsed < ( 1u << 24 ); i++ )
+    {
+        unsigned c = Rand() & 0xFFFFFF;
+        if ( i >= 64 )  // (nearly full: the next free one after it)
+            while ( m_vUsed[c >> 6] & ( 1ull << ( c & 63 ) ) ) c = ( c + 1 ) & 0xFFFFFF;
+        if ( Take( c ) ) return c;
+    }
+    return Rand() & 0xFFFFFF;
+}
+
 void Util::RGBtoHSV( int R, int G, int B, int &H, int &S, int &V )
 {
     double dR = R / 255.0, dG = G / 255.0, dB = B / 255.0;

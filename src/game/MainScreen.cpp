@@ -132,7 +132,8 @@ void MainScreen::MuteChannel( int iTrack, int iChannel, bool bMuted )
 
 void MainScreen::ColorChannel( int iTrack, int iChannel, unsigned int iColor, bool bRandom )
 {
-    if ( bRandom ) m_vTrackSettings[iTrack].aChannels[iChannel].SetColor();
+    if ( bRandom && m_pUnique ) m_vTrackSettings[iTrack].aChannels[iChannel].SetColor( m_pUnique->Next(), 0.6, 0.2 );
+    else if ( bRandom ) m_vTrackSettings[iTrack].aChannels[iChannel].SetColor();
     else m_vTrackSettings[iTrack].aChannels[iChannel].SetColor( iColor );
     m_uTracksGen++;
 }
@@ -163,6 +164,14 @@ void MainScreen::SetChannelColors( const unsigned *aColor, int iColors )
     bool bLoop = Config::GetConfig().GetVisualSettings().bLoopColors;
     m_uTracksGen++;
     size_t iPos = 0, n = (size_t)std::max( 1, iColors );
+    // Unique random colours: none the same as another, or as a track colour
+    std::unique_ptr< Util::UniqueColors > pUnique;
+    if ( !bLoop && Config::GetConfig().GetVisualSettings().bUniqueColors )
+    {
+        pUnique.reset( new Util::UniqueColors() );
+        pUnique->Reset( aColor, iColors );
+    }
+    m_pUnique = pUnique.get();
     // Deduplicated (Song::vLogicalTracks): every track of the file counts, and a track takes the colours
     // of the place of its last copy (the one drawn), as it would without deduplication
     const std::vector< uint32_t > &vLogical = m_pSong->vLogicalTracks;
@@ -183,7 +192,7 @@ void MainScreen::SetChannelColors( const unsigned *aColor, int iColors )
                     if ( iPos < n || bLoop ) ColorChannel( (int)i, j, aColor[iPos % n] );
                     else ColorChannel( (int)i, j, 0, true );
                 }
-                else if ( iPos >= n && !bLoop )
+                else if ( iPos >= n && !bLoop && !pUnique )
                 {
                     ChannelSettings cs;     // (a copy not drawn still draws its random colour, so the ones after are as without deduplication)
                     cs.SetColor();
@@ -191,6 +200,7 @@ void MainScreen::SetChannelColors( const unsigned *aColor, int iColors )
                 iPos++;
             }
     }
+    m_pUnique = nullptr;
 }
 
 GameState::GameError MainScreen::MsgProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
@@ -427,6 +437,7 @@ GameState::GameError MainScreen::Logic()
     // loaded; channels coloured by hand too)
     std::vector< unsigned > vPalette( cVisual.colors, cVisual.colors + cVisual.iColorCount );
     vPalette.push_back( cVisual.bLoopColors );
+    vPalette.push_back( cVisual.bUniqueColors );
     if ( !m_vPalette.empty() && vPalette != m_vPalette ) SetChannelColors( cVisual.colors, cVisual.iColorCount );
     m_vPalette.swap( vPalette );
     m_Colors.SetBar( cVisual.iBarColor );

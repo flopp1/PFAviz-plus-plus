@@ -205,6 +205,9 @@ int WINAPI wWinMain( HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow )
     while ( !g_MsgQueue.Push( msg ) && GetTickCount() - dwQuit < 5000 ) Sleep( 1 );    // (its queue full: the game thread is stuck)
     if ( WaitForSingleObject( hThread, 5000 - std::min< DWORD >( 5000, GetTickCount() - dwQuit ) ) == WAIT_TIMEOUT )
         TerminateProcess( GetCurrentProcess(), 0 );
+    // A load still running (or cancelled and still stopping) is not waited for: it would use what the
+    // exit frees, and nothing of it is kept
+    if ( LoadThreadsRunning() ) TerminateProcess( GetCurrentProcess(), 0 );
 
     UnregisterClassW( CLASSNAME, hInstance );
     CoUninitialize();

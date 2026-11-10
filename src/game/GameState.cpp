@@ -192,6 +192,9 @@ void SplashScreen::SetChannelColors( const std::vector< unsigned > &vColor )
 {
     const std::vector< RefTrackInfo > &vTracks = m_MIDI.GetTracks();
     bool bLoop = Config::GetConfig().GetVisualSettings().bLoopColors;
+    Util::UniqueColors unique;
+    bool bUnique = !bLoop && Config::GetConfig().GetVisualSettings().bUniqueColors;
+    if ( bUnique ) unique.Reset( vColor.data(), (int)vColor.size() );
     size_t iPos = 0;
     for ( size_t i = 0; i < vTracks.size(); i++ )
         for ( int j = 0; j < 16; j++ )
@@ -199,6 +202,8 @@ void SplashScreen::SetChannelColors( const std::vector< unsigned > &vColor )
             {
                 if ( iPos < vColor.size() || ( bLoop && !vColor.empty() ) )
                     m_vTrackSettings[i].aChannels[j].SetColor( vColor[iPos % vColor.size()] );
+                else if ( bUnique )
+                    m_vTrackSettings[i].aChannels[j].SetColor( unique.Next(), 0.6, 0.2 );
                 else
                     m_vTrackSettings[i].aChannels[j].SetColor();
                 iPos++;

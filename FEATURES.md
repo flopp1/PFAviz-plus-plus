@@ -82,8 +82,9 @@ What each part of PFAviz++ does, with the measurements behind it. For a short ov
 **Interface**
 - **Dark mode** (Preferences, Visual tab: Light, Dark or Follow Windows), dialogs and menus included.
 - Preferences fit the screen: the tall tabs are laid out in two columns, and a tab that still does not fit (a large display scaling, a small screen) scrolls, so OK and Apply stay in reach.
-- Colours of the background, the red bar and the tracks are set in Preferences > Visual; the colour dialog takes hex codes (`#RRGGBB` or `#RGB`), as do colour settings in the config file. A changed track palette recolours the open song at once. Track palettes can be saved under a name and picked again.
-- The loading popup shows how long each stage took.
+- Colours of the background, the red bar and the tracks are set in Preferences > Visual; the colour dialog takes hex codes (`#RRGGBB` or `#RGB`), as do colour settings in the config file. A changed track palette recolours the open song at once. Track palettes can be saved under a name and picked again. After the palette's colours, channels take them again (*then loop*), random ones as the original does (*then random*), or random ones that never repeat (*then unique*): each differs from every other and from the palette's, drawn from the original's range of bright colours while it has some left, then from all 16.7 million.
+- The loading window shows each stage's progress and time, and, when the load is done (Performance tab, "Show loading statistics after a file is loaded"), a report: the load time, notes, speed and peak memory up top, then the time by stage, the song's contents, its memory by part, the process's memory and how the file was read, in two columns (one when the window is narrower; narrower than that, it keeps its width and scrolls sideways). Copy stats copies it as text.
+- Cancel closes the loading window at once, at any stage. The load stops in the background and frees its memory; a song opened meanwhile waits for that, then loads.
 
 **Video rendering** (Performance tab, "Render video...")
 - Renders the open song from start to end to an MP4, off-screen at any resolution up to 8192 × 8192 and 1–240 fps, with x264 (CPU) or a hardware encoder (NVIDIA NVENC, AMD AMF or Intel QSV; H.264 or HEVC), a quality setting (CRF, CQ or QP; default 20) and a speed preset.

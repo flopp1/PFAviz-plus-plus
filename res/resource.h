@@ -283,15 +283,8 @@
 #define IDC_FX_MERGESHORTLONG           1553
 
 // Loading popup
-#define IDC_LOAD_FILE                   1200
-#define IDC_LOAD_STAGE0                 1210
-#define IDC_LOAD_BAR0                   1220
-#define IDC_LOAD_TIME0                  1230
-#define IDC_LOAD_OVERALL                1240
-#define IDC_LOAD_COUNTERS               1241
-#define IDC_LOAD_STATS                  1242
 #define IDC_LOAD_COPY                   1243
-#define IDC_LOAD_OVERALLLABEL           1244
+#define IDC_LOAD_VIEW                   1245
 #define IDC_THEME                       1250
 #define IDC_GRAPHON                     1251
 #define IDC_PERF_ENDOPEN                1252
