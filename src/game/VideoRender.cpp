@@ -2,16 +2,79 @@
 // and streamed to ffmpeg (app/VideoExport.h). A frame is the live window's scene at the video's size
 // (background, measure lines, notes, keyboard, border) plus, optionally, the top-right stats area;
 // the notes come from an engine of its own, so the live view is left as it was. Frames are read back
-// a few frames late (render/FrameCapture.h), packed as YUV 4:2:0 on the GPU where possible.
+// a few frames late (render/FrameCapture.h), packed as YUV 4:2:0 on the GPU where possible. With the
+// rendered audio, the song's audio is made meanwhile by an offline audio renderer of its own, from the
+// first frame's time on, and put into the video at the end.
 #include "game/GameState.h"
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
+#include <thread>
 
 #include "app/VideoExport.h"
+#include "audio/RenderAhead.h"
 #include "core/Config.h"
 #include "render/FrameCapture.h"
+
+namespace
+{
+    // The rendered audio of a video: an offline renderer writing raw stereo floats to a temporary file on
+    // a thread of its own. Ended (and the live audio rendered ahead let go) however the render ends
+    struct VideoAudio
+    {
+        PlaybackEngine *pPlayback = nullptr;
+        std::unique_ptr< RenderAhead > pRender;
+        std::thread thread;
+        std::atomic< bool > bStop{ false };
+        std::atomic< long long > llUntil{ LLONG_MAX };
+        std::wstring sRaw, sError;
+        bool bOk = false;
+        static const unsigned Rate = 48000;
+
+        ~VideoAudio()
+        {
+            bStop = true;
+            if ( thread.joinable() ) thread.join();
+            if ( pRender ) pRender->Stop();
+            pRender.reset();
+            if ( pPlayback ) pPlayback->HoldRendered( false );
+            if ( !sRaw.empty() ) DeleteFileW( sRaw.c_str() );
+        }
+        bool Start( PlaybackEngine *pEngine, VideoJob &job, long long llFromUs, long long llToUs )
+        {
+            RenderAhead::Settings rs = RenderAhead::FromConfig();
+            rs.bOn = true;
+            rs.bAutoDegrade = false;            // (nothing is ever late: the audio waits for itself)
+            rs.iAheadSecs = RenderAhead::Settings::MaxAheadSecs;   // (room for every piece, the whole song's included)
+            rs.bWhole = true;                   // (Kestrel and Merlin: their own whole renders)
+            wchar_t sDir[MAX_PATH + 1] = {};
+            GetTempPathW( MAX_PATH + 1, sDir );
+            sRaw = std::wstring( sDir ) + L"PFAviz++ video audio " + std::to_wstring( GetCurrentProcessId() ) + L".f32";
+            FILE *f = _wfopen( sRaw.c_str(), L"wb" );
+            if ( !f ) { sError = L"Could not write the audio's temporary file:\n" + sRaw; return false; }
+            // Whatever was rendered ahead for playback goes; it is made again after the video
+            pPlayback = pEngine;
+            pPlayback->HoldRendered( true );
+            pRender = pPlayback->MakeOfflineRender( Rate );
+            job.sAudioEngine = RenderBackends::EngineName( rs.eEngine );
+            job.llAudioFrames = pRender->OfflineFrames( llFromUs, llToUs );
+            job.eAudio = VideoJob::AudioLoading;
+            pRender->OnOfflineLoaded( [&job]() { job.eAudio = VideoJob::AudioMaking; } );
+            pRender->Start( rs );
+            thread = std::thread( [this, f, &job, llFromUs, llToUs]() {
+                bOk = pRender->RenderOffline( llFromUs, llToUs, [&]( const float *p, unsigned n ) {
+                    return fwrite( p, sizeof( float ) * 2, n, f ) == n;
+                }, &job.llAudioFrame, &llUntil, &bStop, sError );
+                bOk = fclose( f ) == 0 && bOk;
+                job.eAudio = bOk ? VideoJob::AudioDone : VideoJob::AudioFailed;
+            } );
+            return true;
+        }
+    };
+}
 
 void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
 {
@@ -66,6 +129,17 @@ void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
     // For the audio: the first note sounds when it reaches the keyboard, at its start time
     job.dFirstNoteSecs = ( m_pSong->info.llFirstNote - llFirst ) / 1e6;
     job.dDurationSecs = (double)llFrames / job.iFPS;
+    // The rendered audio: the video is encoded on its own (next to the output), the audio made meanwhile,
+    // from the first frame's time to the last's
+    VideoAudio audio;
+    if ( job.bRenderedAudio )
+    {
+        if ( !m_pPlayback ) return job.Finish( false, L"No song is open to make the audio of." );
+        const size_t iDot = job.sOutFile.find_last_of( L'.' ), iSlash = job.sOutFile.find_last_of( L"\\/" );
+        const bool bExt = iDot != std::wstring::npos && ( iSlash == std::wstring::npos || iDot > iSlash );
+        job.sEncodeTo = bExt ? job.sOutFile.substr( 0, iDot ) + L" (video only)" + job.sOutFile.substr( iDot ) : job.sOutFile + L" (video only)";
+        if ( !audio.Start( m_pPlayback.get(), job, llFirst, llFirst + (long long)std::llround( job.dDurationSecs * 1e6 ) ) ) return job.Finish( false, audio.sError );
+    }
     FfmpegPipe pipe;
     if ( !pipe.Start( job, sError ) ) return job.Finish( false, sError );
     job.eState = VideoJob::Rendering;
@@ -177,6 +251,33 @@ void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
         return job.Finish( false, sFfmpegError );
     }
     if ( pipe.Failed() ) return job.Finish( false, L"ffmpeg stopped reading frames." );
+
+    // The rendered audio: as long as the video (stopped early: up to there), then put into it
+    if ( job.bRenderedAudio )
+    {
+        const double dSecs = (double)llSent / job.iFPS;
+        if ( job.bCancel ) audio.llUntil = (long long)std::ceil( dSecs * VideoAudio::Rate );
+        job.eState = VideoJob::AudioWait;
+        while ( job.eAudio != VideoJob::AudioDone && job.eAudio != VideoJob::AudioFailed )
+        {
+            if ( job.bAbort ) audio.bStop = true;
+            Sleep( 50 );
+        }
+        if ( audio.thread.joinable() ) audio.thread.join();
+        if ( !audio.bOk )
+        {
+            // The video is kept without it
+            std::wstring sWhy = job.bAbort ? std::wstring( L"it was stopped" ) : audio.sError;
+            const bool bKept = MoveFileExW( job.sEncodeTo.c_str(), job.sOutFile.c_str(), MOVEFILE_REPLACE_EXISTING ) != 0;
+            return job.Finish( false, L"The audio could not be made (" + sWhy + L"), so the video was " +
+                                          ( bKept ? L"saved without it:\n" + job.sOutFile : L"left without it:\n" + job.sEncodeTo ) );
+        }
+        job.eState = VideoJob::Muxing;
+        std::wstring sMuxError;
+        if ( !FfmpegPipe::Mux( job, job.sEncodeTo, audio.sRaw, VideoAudio::Rate, dSecs, sMuxError ) )
+            return job.Finish( false, sMuxError + L"\n\nThe video without the audio is kept:\n" + job.sEncodeTo );
+        DeleteFileW( job.sEncodeTo.c_str() );
+    }
 
     WIN32_FILE_ATTRIBUTE_DATA fad = {};
     double dMB = GetFileAttributesExW( job.sOutFile.c_str(), GetFileExInfoStandard, &fad ) ? ( ( (ULONGLONG)fad.nFileSizeHigh << 32 ) | fad.nFileSizeLow ) / 1048576.0 : 0.0;

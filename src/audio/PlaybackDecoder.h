@@ -53,6 +53,9 @@ public:
         // happen, so a tick of a hundred thousand note-offs goes out over the seconds the original takes
         // to walk them, in its order, instead of all at the moment the clock passes it
         bool bShares = false;
+        // Fill gathers messages due within this many microseconds of real time of the first (x speed);
+        // 0: only those of its tick, so each comes with its exact time (audio rendered ahead)
+        long long llGroupUs = 500;
     };
 
     struct Counters

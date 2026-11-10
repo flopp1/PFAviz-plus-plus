@@ -22,6 +22,7 @@
 #include "audio/Clock.h"
 #include "audio/MidiOutput.h"
 #include "audio/PlaybackDecoder.h"
+#include "audio/RenderAhead.h"
 #include "song/Song.h"
 
 class PlaybackEngine
@@ -52,6 +53,8 @@ public:
     // Opens the configured output (on the sender thread) and starts both threads
     void Start( long long llStartTime );
     void Stop();
+    // Nothing more played or sent from now, at once (a closed song; Stop, on another thread, follows)
+    void Silence() { m_bStop = true; if ( m_pAhead ) m_pAhead->Silence(); }
 
     // Jump: AllNotesOff, chase, then play from llTarget. llClamped is the new clock time and
     // llPrevTime the playback time before the jump.
@@ -59,9 +62,11 @@ public:
     void AllNotesOff();                 // pause and mute
     void ReopenOutput();                // the device list changed
 
-    void SetMute( bool bMute ) { m_bMute.store( bMute, std::memory_order_relaxed ); }
+    void SetMute( bool bMute );
     void SetVolumeCorrect( double d ) { m_dVolumeCorrect.store( d, std::memory_order_relaxed ); }
-    void SetMetronome( int iMode ) { m_iMetronome.store( iMode, std::memory_order_relaxed ); }
+    // Audio rendered ahead takes the volume as a gain, and only the song's evening out of the velocities
+    void SetVolume( double dVolume, double dEvenOut );
+    void SetMetronome( int iMode );
     void SetChannelMuted( int iTrack, int iChannel, bool bMuted );
     void SetSkipping( bool bVelocitySkip, int iSkipLagMs );
     // Stack collapsing and the send budget (messages per second, 0: none); see PlaybackDecoder::Params
@@ -70,9 +75,21 @@ public:
     // (the caller then seeks to the current time, so the new output gets the controllers there).
     // True when it changed
     bool SetTuning( bool bTuning31, bool bPitchBend );
-    void SetMinVelocity( int iMinVelocity ) { m_iMinVelocity.store( iMinVelocity, std::memory_order_relaxed ); }     // 0: none
+    void SetMinVelocity( int iMinVelocity );    // 0: none
     // The most threads decoding may use (0: the logical core count); takes effect at the next decode
     void SetMaxThreads( int iThreads );
+
+    // Audio rendered ahead (Preferences > Rendered audio) instead of the MIDI output, on or off: the
+    // decoder and sender rest while it plays. True when it switched (the caller then seeks to where it
+    // is, so the MIDI output gets the controllers there)
+    bool SetRendered( const RenderAhead::Settings &s );
+    bool Rendered() const { return m_pAhead != nullptr; }
+    RenderAhead::Status RenderStatus() { return m_pAhead ? m_pAhead->GetStatus() : RenderAhead::Status(); }
+    // The video renderer: the audio rendered ahead is thrown away and held while it makes its own
+    void HoldRendered( bool bHold ) { if ( m_pAhead ) m_pAhead->Hold( bHold ); }
+    // An offline renderer (RenderAhead) of this song at uRate, the hidden channels muted, the sound as
+    // playback sends it and the volume; started by the caller
+    std::unique_ptr< RenderAhead > MakeOfflineRender( unsigned uRate );
 
     std::wstring OutputName() const;
     bool HasOutput() const { return m_bHasOutput.load( std::memory_order_acquire ); }
@@ -141,6 +158,15 @@ private:
     std::atomic< bool > m_bHasOutput{ false }, m_bNotesOff{ false }, m_bReopen{ true }, m_bStop{ false };
 
     std::thread m_DecoderThread, m_SenderThread;
+
+    // Audio rendered ahead (the caller's thread only, but m_bIdle)
+    std::unique_ptr< RenderAhead > m_pAhead;
+    std::atomic< bool > m_bIdle{ false };
+    bool m_bStarted = false;
+    RenderAhead::Settings m_AheadSettings;
+    double m_dVolume = 1.0, m_dEvenOut = 1.0;
+    void UpdateAheadSound();
+    RenderAhead::Sound AheadSound() const;
 
     // Parallel decoding (decoder thread; lane k > 0 runs on helper thread k)
     std::atomic< int > m_iMaxLanes{ 1 };

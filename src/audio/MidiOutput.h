@@ -22,7 +22,11 @@ public:
     virtual bool IsKdmapi() const { return false; }
 
     // The original's AllNotesOff: All Notes Off and Sustain off on all 16 channels
-    void AllNotesOff();
+    void AllNotesOff()
+    {
+        for ( uint32_t ch = 0; ch < 16; ch++ ) Send( 0xB0 | ch | ( 0x7B << 8 ) );  // All notes off
+        for ( uint32_t ch = 0; ch < 16; ch++ ) Send( 0xB0 | ch | ( 0x40 << 8 ) );  // Sustain off
+    }
 };
 
 // For an output that wraps another and turns each message into others (the 31-EDO outputs): while a

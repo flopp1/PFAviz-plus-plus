@@ -10,7 +10,10 @@
 #include <shlobj.h>
 
 #include "app/LoadingDialog.h"
+#include "app/LoadView.h"
 #include "app/MainWindow.h"
+#include "app/Tips.h"
+#include "audio/RenderAhead.h"
 #include "core/Config.h"
 #include "core/Util.h"
 #include "resource.h"
@@ -161,7 +164,8 @@ std::wstring FfmpegPipe::EncoderArgs( const VideoJob &job )
     }
 }
 
-int FfmpegPipe::Run( const std::wstring &sFfmpeg, const std::wstring &sArgs, std::string &sOutput, DWORD dwTimeoutMs )
+int FfmpegPipe::Run( const std::wstring &sFfmpeg, const std::wstring &sArgs, std::string &sOutput, DWORD dwTimeoutMs,
+                     std::atomic< double > *pProgress, double dTotalSecs )
 {
     sOutput.clear();
     SECURITY_ATTRIBUTES sa = { sizeof( sa ), nullptr, TRUE };
@@ -187,6 +191,7 @@ int FfmpegPipe::Run( const std::wstring &sFfmpeg, const std::wstring &sArgs, std
     ULONGLONG llEnd = GetTickCount64() + dwTimeoutMs;
     bool bTimedOut = false;
     char buf[4096];
+    size_t iScan = 0;       // (the progress lines looked at up to here)
     for ( ;; )
     {
         DWORD dwAvail = 0;
@@ -196,6 +201,15 @@ int FfmpegPipe::Run( const std::wstring &sFfmpeg, const std::wstring &sArgs, std
             DWORD dwRead = 0;
             if ( !ReadFile( hRead, buf, std::min< DWORD >( dwAvail, sizeof( buf ) ), &dwRead, nullptr ) ) break;
             if ( sOutput.size() < ( 1u << 20 ) ) sOutput.append( buf, dwRead );
+            // ffmpeg's -progress lines: "out_time_us=<microseconds written>"
+            for ( size_t i; pProgress && dTotalSecs > 0 && ( i = sOutput.find( "out_time_us=", iScan ) ) != std::string::npos; )
+            {
+                const size_t iEnd = sOutput.find( '\n', i );
+                if ( iEnd == std::string::npos ) break;
+                const double d = atof( sOutput.c_str() + i + 12 ) / 1e6 / dTotalSecs;
+                if ( d > pProgress->load() ) pProgress->store( std::min( d, 1.0 ) );
+                iScan = iEnd;
+            }
             continue;
         }
         if ( GetTickCount64() > llEnd ) { bTimedOut = true; TerminateProcess( pi.hProcess, 1 ); break; }
@@ -247,6 +261,46 @@ double FfmpegPipe::FirstSound( const std::wstring &sFfmpeg, const std::wstring &
     return j == std::string::npos ? 0.0 : std::max( 0.0, atof( sOut.c_str() + j + 13 ) );
 }
 
+std::wstring FfmpegPipe::AudioArgs( const VideoJob &job )
+{
+    // Each format's usual audio: AAC in MP4 (and MOV, but for ProRes), FLAC (up to 24-bit) in MKV, PCM in AVI
+    typedef ExportSettings ES;
+    switch ( job.iContainer )
+    {
+        case ES::Mkv: return L" -c:a flac -sample_fmt s32";
+        case ES::Avi: return L" -c:a pcm_s24le";
+        case ES::Mov: return job.iCodec == ES::ProRes ? L" -c:a pcm_s24le" : L" -c:a aac -b:a 320k";
+        default: return L" -c:a aac -b:a 320k";
+    }
+}
+
+bool FfmpegPipe::Mux( const VideoJob &job, const std::wstring &sVideo, const std::wstring &sRaw, unsigned uRate, double dSecs, std::wstring &sError )
+{
+    std::wstring sArgs = L"-hide_banner -loglevel warning -nostats -progress pipe:1 -i " + Quoted( sVideo ) + Format( L" -f f32le -ar %u -ac 2 -i ", uRate ) + Quoted( sRaw ) +
+                         L" -map 0:v:0 -map 1:a:0 -c:v copy" + AudioArgs( job ) + Format( L" -t %.6f", dSecs );
+    if ( job.iContainer == ExportSettings::Mp4 || job.iContainer == ExportSettings::Mov ) sArgs += L" -movflags +faststart";
+    sArgs += L" -y " + Quoted( job.sOutFile );
+    std::string sOut;
+    job.dMuxDone = 0.0;
+    int iExit = Run( job.sFfmpeg, sArgs, sOut, 0xFFFFFFFF, &job.dMuxDone, dSecs );
+    if ( iExit == 0 ) { job.dMuxDone = 1.0; return true; }
+    // (what ffmpeg said, without its progress lines: key=value)
+    std::string sSaid;
+    for ( size_t i = 0; i < sOut.size(); )
+    {
+        size_t j = sOut.find( '\n', i );
+        if ( j == std::string::npos ) j = sOut.size();
+        const std::string sLine = sOut.substr( i, j - i );
+        const size_t iEq = sLine.find( '=' );
+        if ( iEq == std::string::npos || sLine.find( ' ' ) < iEq ) sSaid += sLine + "\n";
+        i = j + 1;
+    }
+    sOut = sSaid;
+    sError = L"ffmpeg could not add the audio to the video";
+    sError += iExit == NotRun ? L": it did not start." : L".\n\nffmpeg said:\n" + LastLines( sOut, 6 );
+    return false;
+}
+
 bool FfmpegPipe::Start( const VideoJob &job, std::wstring &sError )
 {
     typedef ExportSettings ES;
@@ -292,21 +346,14 @@ bool FfmpegPipe::Start( const VideoJob &job, std::wstring &sError )
     if ( !bRgb ) sArgs += L" -colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv";
     if ( bAudio )
     {
-        // Each format's usual audio: AAC in MP4 (and MOV, but for ProRes), FLAC (up to 24-bit) in MKV, PCM in AVI
         if ( dAudioDelay > 0.0 ) sArgs += Format( L" -af adelay=delays=%lld:all=1", (long long)std::llround( dAudioDelay * 1000.0 ) );
-        switch ( job.iContainer )
-        {
-            case ES::Mkv: sArgs += L" -c:a flac -sample_fmt s32"; break;
-            case ES::Avi: sArgs += L" -c:a pcm_s24le"; break;
-            case ES::Mov: sArgs += job.iCodec == ES::ProRes ? L" -c:a pcm_s24le" : L" -c:a aac -b:a 320k"; break;
-            default: sArgs += L" -c:a aac -b:a 320k"; break;
-        }
+        sArgs += AudioArgs( job );
         // No longer than the video
         sArgs += Format( L" -t %.6f", job.dDurationSecs );
     }
     else sArgs += L" -an";
     if ( job.iContainer == ES::Mp4 || job.iContainer == ES::Mov ) sArgs += L" -movflags +faststart";
-    std::wstring sCmd = Quoted( job.sFfmpeg ) + L" " + sArgs + L" -y " + Quoted( job.sOutFile );
+    std::wstring sCmd = Quoted( job.sFfmpeg ) + L" " + sArgs + L" -y " + Quoted( job.sEncodeTo.empty() ? job.sOutFile : job.sEncodeTo );
     std::vector< wchar_t > vCmd( sCmd.begin(), sCmd.end() );
     vCmd.push_back( 0 );
 
@@ -513,8 +560,10 @@ namespace
     void UpdateAudioControls( HWND hWnd )
     {
         BOOL bOn = IsDlgButtonChecked( hWnd, IDC_VID_AUDIOON ) == BST_CHECKED;
-        for ( int id : { IDC_VID_AUDIOLABEL, IDC_VID_AUDIO, IDC_VID_AUDIOBROWSE, IDC_VID_AUDIOALIGN, IDC_VID_AUDIOMOVE, IDC_VID_AUDIOOFFSET, IDC_VID_AUDIOMS } )
-            EnableWindow( GetDlgItem( hWnd, id ), bOn );
+        BOOL bFile = bOn && IsDlgButtonChecked( hWnd, IDC_VID_AUDIORENDERED ) != BST_CHECKED;
+        for ( int id : { IDC_VID_AUDIOFROMFILE, IDC_VID_AUDIORENDERED } ) EnableWindow( GetDlgItem( hWnd, id ), bOn );
+        for ( int id : { IDC_VID_AUDIO, IDC_VID_AUDIOBROWSE, IDC_VID_AUDIOALIGN, IDC_VID_AUDIOMOVE, IDC_VID_AUDIOOFFSET, IDC_VID_AUDIOMS } )
+            EnableWindow( GetDlgItem( hWnd, id ), bFile );
     }
 
     // The encoder list for the codec: the hardware encoders only for H.264, HEVC and AV1
@@ -568,6 +617,7 @@ namespace
         s.sAudioFile = sAudio;
         s.bAudio = IsDlgButtonChecked( hWnd, IDC_VID_AUDIOON ) == BST_CHECKED;
         s.bAudioAlign = IsDlgButtonChecked( hWnd, IDC_VID_AUDIOALIGN ) == BST_CHECKED;
+        s.bRenderedAudio = IsDlgButtonChecked( hWnd, IDC_VID_AUDIORENDERED ) == BST_CHECKED;
 
         auto Bad = [&]( int iId, const wchar_t *sError ) {
             if ( bValidate )
@@ -609,6 +659,13 @@ namespace
         s.iCRF = (int)u;
         int iOffset = (int)GetDlgItemInt( hWnd, IDC_VID_AUDIOOFFSET, &bOk, TRUE );
         bool bOffsetOk = bOk && iOffset >= -3600000 && iOffset <= 3600000;
+        if ( s.bAudio && s.bRenderedAudio )
+        {
+            if ( bOffsetOk ) s.iAudioOffsetMs = iOffset;
+            if ( RenderAhead::FromConfig().vFonts.empty() )
+                return Bad( IDC_VID_AUDIORENDERED, L"The audio renderer has no soundfont yet. Please add one in Preferences > Rendered audio, or choose an audio file." );
+            return true;
+        }
         if ( !bOffsetOk && s.bAudio ) return Bad( IDC_VID_AUDIOOFFSET, L"Please specify the audio's move in milliseconds (negative: earlier)." );
         if ( bOffsetOk ) s.iAudioOffsetMs = iOffset;     // (audio off: a bad one is left as it was)
         if ( s.bAudio && s.sAudioFile.empty() ) return Bad( IDC_VID_AUDIO, L"Please choose an audio file, or uncheck Add audio for a silent video." );
@@ -634,47 +691,159 @@ namespace
         return buf;
     }
 
-    // Progress popup: polls the job, shows the latest frame scaled down
+    // Progress popup: polls the job and shows it as the loading window does (the drawn view: a heading,
+    // the latest frame scaled down, figures in tiles, a bar each for the video and the audio)
     VideoJob *g_pProgress = nullptr;
-    long long g_llProgressStart = 0;
-    unsigned g_uShownGen = 0;
+    long long g_llProgressStart = 0, g_llDoneAt = 0, g_llVideoDoneAt = 0, g_llAudioDoneAt = 0;
     bool g_bUnattended = false;         // PFAVIZ_RENDER: close when done
-
-    // The popup can be resized: its size and its controls' places as it opened, which the preview's
-    // growth moves (the file name, bar and status widen; the preview takes the rest; Cancel stays at
-    // the bottom right). The size it was left at is kept for the next render
-    struct ProgressLayout { SIZE szMin; SIZE szClient; RECT aCtl[5]; };
-    const int aProgressIds[5] = { IDC_VIDP_FILE, IDC_VIDP_PREVIEW, IDC_VIDP_BAR, IDC_VIDP_STATUS, IDCANCEL };
-    ProgressLayout g_Layout;
+    SIZE g_szMin = {};                  // the dialog's own size: the least it is made
     SIZE g_szProgress = {};             // the window size last used (0: the dialog's own)
 
-    VOID LayoutProgress( HWND hWnd, VideoJob *pJob )
+    std::wstring Pct( double d ) { wchar_t s[32]; swprintf( s, 32, L"%.1f%%", 100.0 * std::clamp( d, 0.0, 1.0 ) ); return s; }
+    std::wstring Num( long long ll ) { wchar_t s[32]; Util::CommaPrintf( s, ll ); return s; }
+
+    // The view above, Cancel at the bottom right
+    VOID LayoutProgress( HWND hWnd )
     {
-        RECT rc;
+        RECT rc, rcBtn;
         GetClientRect( hWnd, &rc );
-        int dx = rc.right - g_Layout.szClient.cx, dy = rc.bottom - g_Layout.szClient.cy;
-        HDWP hDwp = BeginDeferWindowPos( 5 );
-        for ( int i = 0; i < 5 && hDwp; i++ )
-        {
-            RECT r = g_Layout.aCtl[i];
-            switch ( aProgressIds[i] )
-            {
-                case IDC_VIDP_FILE: r.right += dx; break;
-                case IDC_VIDP_PREVIEW: r.right += dx; r.bottom += dy; break;
-                case IDC_VIDP_BAR: case IDC_VIDP_STATUS: r.right += dx; OffsetRect( &r, 0, dy ); break;
-                default: OffsetRect( &r, dx, dy ); break;
-            }
-            hDwp = DeferWindowPos( hDwp, GetDlgItem( hWnd, aProgressIds[i] ), nullptr, r.left, r.top, r.right - r.left, r.bottom - r.top,
-                                   SWP_NOZORDER | SWP_NOACTIVATE );
-        }
-        if ( hDwp ) EndDeferWindowPos( hDwp );
-        // The preview is made as wide as it is shown (letterboxed to the frame's shape)
-        RECT rp = g_Layout.aCtl[1];
-        int cx = rp.right - rp.left + dx, cy = rp.bottom - rp.top + dy;
-        if ( pJob && pJob->iWidth > 0 && pJob->iHeight > 0 )
-            pJob->iPreviewWant = std::max( 1, std::min( cx, (int)( (long long)cy * pJob->iWidth / pJob->iHeight ) ) );
+        HWND hCancel = GetDlgItem( hWnd, IDCANCEL );
+        GetWindowRect( hCancel, &rcBtn );
+        const int cxBtn = rcBtn.right - rcBtn.left, cyBtn = rcBtn.bottom - rcBtn.top;
+        const int iPad = cyBtn / 2 + 2, yBtn = rc.bottom - iPad - cyBtn;
+        SetWindowPos( GetDlgItem( hWnd, IDC_VIDP_VIEW ), nullptr, 0, 0, rc.right, std::max< int >( 0, yBtn - iPad ), SWP_NOZORDER | SWP_NOACTIVATE );
+        SetWindowPos( hCancel, nullptr, rc.right - iPad - cxBtn, yBtn, 0, 0, SWP_NOZORDER | SWP_NOSIZE | SWP_NOACTIVATE );
         InvalidateRect( hWnd, nullptr, TRUE );
-        InvalidateRect( GetDlgItem( hWnd, IDC_VIDP_PREVIEW ), nullptr, FALSE );
+    }
+
+    // The latest frame, letterboxed to its shape in the picture's place (and the size it is wanted at)
+    void DrawPreview( VideoJob *pJob, HDC hdc, const RECT &rc )
+    {
+        const int cx = rc.right - rc.left, cy = rc.bottom - rc.top;
+        FillRect( hdc, &rc, ( HBRUSH )GetStockObject( BLACK_BRUSH ) );
+        if ( pJob->iWidth <= 0 || pJob->iHeight <= 0 ) return;
+        int w = cx, h = (int)( (long long)cx * pJob->iHeight / pJob->iWidth );
+        if ( h > cy ) { h = cy; w = (int)( (long long)cy * pJob->iWidth / pJob->iHeight ); }
+        pJob->iPreviewWant = std::max( 1, w );
+        std::lock_guard< std::mutex > lk( pJob->mx );
+        if ( pJob->vPreview.empty() ) return;
+        BITMAPINFO bmi = {};
+        bmi.bmiHeader.biSize = sizeof( bmi.bmiHeader );
+        bmi.bmiHeader.biWidth = pJob->iPreviewW;
+        bmi.bmiHeader.biHeight = -pJob->iPreviewH;
+        bmi.bmiHeader.biPlanes = 1;
+        bmi.bmiHeader.biBitCount = 32;
+        bmi.bmiHeader.biCompression = BI_RGB;
+        SetStretchBltMode( hdc, HALFTONE );
+        SetBrushOrgEx( hdc, 0, 0, nullptr );
+        StretchDIBits( hdc, rc.left + ( cx - w ) / 2, rc.top + ( cy - h ) / 2, w, h, 0, 0, pJob->iPreviewW, pJob->iPreviewH,
+                       pJob->vPreview.data(), &bmi, DIB_RGB_COLORS, SRCCOPY );
+    }
+
+    void UpdateProgressView( HWND hWnd, VideoJob *pJob )
+    {
+        const long long llNow = Timer::NowMicroSecs();
+        const int eState = pJob->eState, eAudio = pJob->eAudio;
+        // Each part's time stops when it is done (so its speed stays as it was): the video's when its frames
+        // are all sent, the audio's when it is made, the whole job's when it ends
+        const bool bVideoDone = eState != VideoJob::Starting && eState != VideoJob::Rendering;
+        const bool bAudioDone = eAudio == VideoJob::AudioDone || eAudio == VideoJob::AudioFailed || ( eState == VideoJob::Done && pJob->bRenderedAudio );
+        if ( bVideoDone && !g_llVideoDoneAt ) g_llVideoDoneAt = llNow;
+        if ( bAudioDone && !g_llAudioDoneAt ) g_llAudioDoneAt = llNow;
+        if ( eState == VideoJob::Done && !g_llDoneAt ) g_llDoneAt = llNow;
+        auto Secs = [&]( long long llAt ) { return ( ( llAt ? llAt : llNow ) - g_llProgressStart ) / 1e6; };
+        const double dElapsed = Secs( g_llDoneAt ), dVideoSecs = Secs( g_llVideoDoneAt ), dAudioElapsed = Secs( g_llAudioDoneAt );
+        const long long llFrame = pJob->llFrame, llFrames = std::max< long long >( 1, pJob->llFrames );
+        const double dFps = dVideoSecs > 0 ? llFrame / dVideoSecs : 0;
+        bool bOk = false;
+        std::wstring sResult;
+        { std::lock_guard< std::mutex > lk( pJob->mx ); sResult = pJob->sResult; bOk = pJob->bOk; }
+
+        LoadView::Model m;
+        m.bSmooth = true;
+        const size_t iSlash = pJob->sOutFile.find_last_of( L"\\/" );
+        m.sTitle = iSlash == std::wstring::npos ? pJob->sOutFile : pJob->sOutFile.substr( iSlash + 1 );
+        m.sSub = iSlash == std::wstring::npos ? L"" : pJob->sOutFile.substr( 0, iSlash );
+        const wchar_t *sStop = pJob->bCancel ? L" (stopping: the part made so far is kept)" : L"";
+        switch ( eState )
+        {
+            case VideoJob::Starting: m.sStatus = L"Starting..."; break;
+            case VideoJob::Rendering: m.sStatus = std::wstring( L"Rendering frames..." ) + sStop; break;
+            case VideoJob::Finishing: m.sStatus = L"ffmpeg is finishing the file..."; break;
+            case VideoJob::AudioWait: m.sStatus = std::wstring( L"The video is done; the audio is still being made..." ) + sStop; break;
+            case VideoJob::Muxing: m.sStatus = L"Putting the audio into the video..."; break;
+            default: m.sStatus = bOk ? sResult : L"Failed"; break;
+        }
+        if ( eState == VideoJob::Done && !bOk ) m.sAlert = sResult;
+        m.fnImage = [pJob]( HDC hdc, const RECT &rc ) { DrawPreview( pJob, hdc, rc ); };
+        m.iImageMinCY = 120;
+
+        // The audio's own progress (made from the start, in song time)
+        const long long llA = pJob->llAudioFrame, llAll = std::max< long long >( 1, pJob->llAudioFrames );
+        const double dRate = pJob->llAudioFrames > 0 && pJob->dDurationSecs > 0 ? llAll / pJob->dDurationSecs : 48000.0;
+        const double dAudioSecs = llA / dRate, dAudioSpeed = dAudioElapsed > 0 ? dAudioSecs / dAudioElapsed : 0;
+        const double dMux = pJob->dMuxDone.load();
+
+        // Left: the video's frames at its pace, then the audio's at its own (putting them together is quick)
+        double dLeft = -1.0;
+        if ( eState == VideoJob::Rendering && dFps > 0 ) dLeft = ( llFrames - llFrame ) / dFps;
+        if ( pJob->bRenderedAudio && !bAudioDone && llA > 0 && dAudioSpeed > 0 && ( eState == VideoJob::Rendering || eState == VideoJob::AudioWait || eState == VideoJob::Finishing ) )
+            dLeft = std::max( dLeft, ( llAll - llA ) / dRate / dAudioSpeed );
+        std::wstring sLeft = eState == VideoJob::Done ? std::wstring( L"-" ) : dLeft >= 0 ? Clock( dLeft ) : std::wstring( L"..." );
+        m.vTiles = { { Clock( dElapsed ), L"Elapsed" },
+                     { Format( L"%.1f", dFps ), L"Video fps" },
+                     { Format( L"%.2fx", pJob->iFPS > 0 ? dFps / pJob->iFPS : 0.0 ), L"Video speed" } };
+        if ( pJob->bRenderedAudio ) m.vTiles.push_back( { llA > 0 ? Format( L"%.2fx", dAudioSpeed ) : std::wstring( L"..." ), L"Audio speed" } );
+        m.vTiles.push_back( { sLeft, L"Left (about)" } );
+
+        LoadView::Section prog;
+        prog.sTitle = L"PROGRESS";
+        LoadView::Row video;
+        video.sLabel = L"Video";
+        video.dBar = (double)llFrame / llFrames;
+        video.sValue = Pct( video.dBar );
+        video.sNote = Num( llFrame ) + L" / " + Num( llFrames );
+        video.bActive = eState == VideoJob::Rendering;
+        prog.vRows.push_back( video );
+        LoadView::Section det;
+        det.sTitle = L"DETAILS";
+        det.vRows.push_back( { L"Song time", SongClock( pJob->llSongTime ) + L" of " + SongClock( pJob->llSongEnd ) } );
+        det.vRows.push_back( { L"Frame", Format( L"%d x %d at %d fps", pJob->iWidth, pJob->iHeight, pJob->iFPS ) } );
+        det.vRows.push_back( { L"Encoder", std::wstring( ExportSettings::EncoderName( pJob->iCodec, pJob->iBackend ) ) + ( pJob->bYuv ? L" (YUV frames)" : L"" ) } );
+        if ( bVideoDone ) det.vRows.push_back( { L"Video", Format( L"%lld frames in ", llFrame ) + Clock( dVideoSecs ) } );
+        double dOverall = video.dBar;
+        if ( pJob->bRenderedAudio )
+        {
+            LoadView::Row audio;
+            audio.sLabel = L"Audio";
+            audio.dBar = (double)llA / llAll;
+            audio.sValue = Pct( audio.dBar );
+            audio.sNote = Clock( dAudioSecs ) + L" / " + Clock( llAll / dRate );
+            audio.bActive = eAudio == VideoJob::AudioLoading || eAudio == VideoJob::AudioMaking;
+            prog.vRows.push_back( audio );
+            LoadView::Row mux;
+            mux.sLabel = L"Adding the audio";
+            mux.dBar = eState == VideoJob::Done && bOk ? 1.0 : dMux;
+            mux.sValue = Pct( mux.dBar );
+            mux.bActive = eState == VideoJob::Muxing;
+            prog.vRows.push_back( mux );
+            std::wstring s = pJob->sAudioEngine + L": ";
+            if ( eAudio == VideoJob::AudioFailed ) s += L"failed";
+            else if ( bAudioDone ) s += L"done in " + Clock( dAudioElapsed ) + Format( L", %.2fx real time", dAudioSpeed );
+            else if ( eAudio == VideoJob::AudioLoading ) s += L"loading the soundfonts...";
+            else if ( llA == 0 ) s += L"reading the song...";
+            else s += Format( L"%.2fx real time", dAudioSpeed );
+            det.vRows.push_back( { L"Audio", s } );
+            // (putting them together: the last tenth)
+            dOverall = 0.9 * std::min( video.dBar, audio.dBar ) + 0.1 * mux.dBar;
+        }
+        LoadView::Row overall;
+        overall.sLabel = L"Overall";
+        overall.dBar = eState == VideoJob::Done && bOk ? 1.0 : dOverall;
+        overall.sValue = Pct( overall.dBar );
+        prog.vRows.push_back( overall );
+        m.vSections = { prog, det };
+        LoadView::Set( GetDlgItem( hWnd, IDC_VIDP_VIEW ), std::move( m ) );
     }
 
     INT_PTR CALLBACK ProgressProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
@@ -683,35 +852,33 @@ namespace
         switch ( msg )
         {
             case WM_INITDIALOG:
+            {
                 g_pProgress = pJob = reinterpret_cast< VideoJob * >( lParam );
                 g_llProgressStart = Timer::NowMicroSecs();
-                g_uShownGen = 0;
-                SetDlgItemTextW( hWnd, IDC_VIDP_FILE, pJob->sOutFile.c_str() );
-                SendDlgItemMessageW( hWnd, IDC_VIDP_BAR, PBM_SETRANGE32, 0, 1000 );
-                {
-                    RECT rc;
-                    GetWindowRect( hWnd, &rc );
-                    g_Layout.szMin = { rc.right - rc.left, rc.bottom - rc.top };
-                    GetClientRect( hWnd, &rc );
-                    g_Layout.szClient = { rc.right, rc.bottom };
-                    for ( int i = 0; i < 5; i++ )
-                    {
-                        GetWindowRect( GetDlgItem( hWnd, aProgressIds[i] ), &g_Layout.aCtl[i] );
-                        MapWindowPoints( nullptr, hWnd, reinterpret_cast< POINT * >( &g_Layout.aCtl[i] ), 2 );
-                    }
-                    if ( g_szProgress.cx >= g_Layout.szMin.cx && g_szProgress.cy >= g_Layout.szMin.cy )
-                        SetWindowPos( hWnd, nullptr, 0, 0, g_szProgress.cx, g_szProgress.cy, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE );
-                    LayoutProgress( hWnd, pJob );
-                }
+                g_llDoneAt = g_llVideoDoneAt = g_llAudioDoneAt = 0;
+                RECT rc;
+                GetWindowRect( hWnd, &rc );
+                g_szMin = { rc.right - rc.left, rc.bottom - rc.top };
+                if ( g_szProgress.cx >= g_szMin.cx && g_szProgress.cy >= g_szMin.cy )
+                    SetWindowPos( hWnd, nullptr, 0, 0, g_szProgress.cx, g_szProgress.cy, SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE );
+                LayoutProgress( hWnd );
+                // (centred on the main window)
+                RECT rcDlg, rcMain;
+                GetWindowRect( hWnd, &rcDlg );
+                GetWindowRect( GetParent( hWnd ) ? GetParent( hWnd ) : g_hWnd, &rcMain );
+                SetWindowPos( hWnd, nullptr, rcMain.left + ( rcMain.right - rcMain.left - ( rcDlg.right - rcDlg.left ) ) / 2,
+                              rcMain.top + ( rcMain.bottom - rcMain.top - ( rcDlg.bottom - rcDlg.top ) ) / 2, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE );
+                UpdateProgressView( hWnd, pJob );
                 SetTimer( hWnd, 1, 100, nullptr );
                 return TRUE;
+            }
             case WM_GETMINMAXINFO:
-                if ( g_Layout.szMin.cx ) reinterpret_cast< MINMAXINFO * >( lParam )->ptMinTrackSize = { g_Layout.szMin.cx, g_Layout.szMin.cy };
+                if ( g_szMin.cx ) reinterpret_cast< MINMAXINFO * >( lParam )->ptMinTrackSize = { g_szMin.cx * 3 / 4, g_szMin.cy * 3 / 4 };
                 return TRUE;
             case WM_SIZE:
-                if ( pJob && g_Layout.szClient.cx )
+                if ( pJob && g_szMin.cx )
                 {
-                    LayoutProgress( hWnd, pJob );
+                    LayoutProgress( hWnd );
                     RECT rc;
                     GetWindowRect( hWnd, &rc );
                     if ( wParam == SIZE_RESTORED ) g_szProgress = { rc.right - rc.left, rc.bottom - rc.top };
@@ -719,92 +886,34 @@ namespace
                 return TRUE;
             case WM_TIMER:
             {
-                double dElapsed = ( Timer::NowMicroSecs() - g_llProgressStart ) / 1e6;
-                long long llFrame = pJob->llFrame, llFrames = std::max< long long >( 1, pJob->llFrames );
-                int eState = pJob->eState;
+                UpdateProgressView( hWnd, pJob );
+                if ( pJob->eState != VideoJob::Done ) return TRUE;
+                KillTimer( hWnd, 1 );
+                std::wstring sResult;
+                bool bOk;
+                { std::lock_guard< std::mutex > lk( pJob->mx ); sResult = pJob->sResult; bOk = pJob->bOk; }
+                const double dElapsed = ( ( g_llVideoDoneAt ? g_llVideoDoneAt : g_llDoneAt ) - g_llProgressStart ) / 1e6;
+                const long long llFrame = pJob->llFrame;
+                const double dFps = dElapsed > 0 ? llFrame / dElapsed : 0;
+                SetDlgItemTextW( hWnd, IDCANCEL, L"Close" );
+                EnableWindow( GetDlgItem( hWnd, IDCANCEL ), TRUE );
+                SetFocus( GetDlgItem( hWnd, IDCANCEL ) );
+                if ( g_bUnattended )
                 {
-                    std::lock_guard< std::mutex > lk( pJob->mx );
-                    if ( pJob->uPreviewGen != g_uShownGen )
-                    {
-                        g_uShownGen = pJob->uPreviewGen;
-                        InvalidateRect( GetDlgItem( hWnd, IDC_VIDP_PREVIEW ), nullptr, FALSE );
-                    }
-                }
-                wchar_t buf[512];
-                double dFps = dElapsed > 0 ? llFrame / dElapsed : 0;
-                if ( eState == VideoJob::Done )
-                {
-                    KillTimer( hWnd, 1 );
-                    std::wstring sResult;
-                    bool bOk;
-                    { std::lock_guard< std::mutex > lk( pJob->mx ); sResult = pJob->sResult; bOk = pJob->bOk; }
-                    if ( bOk ) SendDlgItemMessageW( hWnd, IDC_VIDP_BAR, PBM_SETPOS, (WPARAM)( 1000 * llFrame / llFrames ), 0 );
-                    swprintf( buf, 512, L"%ls\n%lld frames in %ls (%.1f fps).", sResult.c_str(), llFrame, Clock( dElapsed ).c_str(), dFps );
-                    SetDlgItemTextW( hWnd, IDC_VIDP_STATUS, bOk ? buf : L"Failed. See the message for details." );
-                    SetDlgItemTextW( hWnd, IDCANCEL, L"Close" );
-                    EnableWindow( GetDlgItem( hWnd, IDCANCEL ), TRUE );
-                    SetFocus( GetDlgItem( hWnd, IDCANCEL ) );
-                    if ( g_bUnattended )
-                    {
-                        if ( const char *sLog = getenv( "PFAVIZ_FRAMELOG" ) )
-                            if ( FILE *f = fopen( sLog, "a" ) )
-                            {
-                                fprintf( f, "render %s: %s | %lld frames in %.2f s (%.1f fps), %s frames, encoder %s\n", bOk ? "ok" : "FAILED",
-                                         Util::WideToUtf8( sResult ).c_str(), llFrame, dElapsed, dFps, pJob->bYuv ? "YUV" : "BGRX",
-                                         Util::WideToUtf8( ExportSettings::EncoderName( pJob->iCodec, pJob->iBackend ) ).c_str() );
-                                fclose( f );
-                            }
-                        g_pProgress = nullptr;
-                        EndDialog( hWnd, IDOK );
-                        return TRUE;
-                    }
-                    if ( !bOk ) MessageBoxW( hWnd, sResult.c_str(), L"Render Video", MB_OK | MB_ICONEXCLAMATION );
-                    else MessageBeep( MB_OK );
+                    if ( const char *sLog = getenv( "PFAVIZ_FRAMELOG" ) )
+                        if ( FILE *f = fopen( sLog, "a" ) )
+                        {
+                            fprintf( f, "render %s: %s | %lld frames in %.2f s (%.1f fps), %s frames, encoder %s\n", bOk ? "ok" : "FAILED",
+                                     Util::WideToUtf8( sResult ).c_str(), llFrame, dElapsed, dFps, pJob->bYuv ? "YUV" : "BGRX",
+                                     Util::WideToUtf8( ExportSettings::EncoderName( pJob->iCodec, pJob->iBackend ) ).c_str() );
+                            fclose( f );
+                        }
+                    g_pProgress = nullptr;
+                    EndDialog( hWnd, IDOK );
                     return TRUE;
                 }
-                SendDlgItemMessageW( hWnd, IDC_VIDP_BAR, PBM_SETPOS, (WPARAM)( 1000 * llFrame / llFrames ), 0 );
-                if ( eState == VideoJob::Starting )
-                    swprintf( buf, 512, L"Starting..." );
-                else if ( eState == VideoJob::Finishing )
-                    swprintf( buf, 512, L"ffmpeg is finishing the file...\n%lld frames rendered in %ls.", llFrame, Clock( dElapsed ).c_str() );
-                else
-                {
-                    double dLeft = dFps > 0 ? ( llFrames - llFrame ) / dFps : 0;
-                    swprintf( buf, 512, L"Frame %lld of %lld (%.1f %%), song time %ls of %ls\n%.1f fps (%.2fx real time), elapsed %ls, about %ls left%ls",
-                              llFrame, llFrames, 100.0 * llFrame / llFrames, SongClock( pJob->llSongTime ).c_str(), SongClock( pJob->llSongEnd ).c_str(),
-                              dFps, dFps / pJob->iFPS, Clock( dElapsed ).c_str(), Clock( dLeft ).c_str(),
-                              pJob->bCancel ? L"\nStopping: ffmpeg will finish the part rendered so far." : L"" );
-                }
-                SetDlgItemTextW( hWnd, IDC_VIDP_STATUS, buf );
-                return TRUE;
-            }
-            case WM_DRAWITEM:
-            {
-                LPDRAWITEMSTRUCT pdis = ( LPDRAWITEMSTRUCT )lParam;
-                if ( pdis->CtlID != IDC_VIDP_PREVIEW ) return FALSE;
-                RECT rc = pdis->rcItem;
-                std::lock_guard< std::mutex > lk( pJob->mx );
-                if ( pJob->vPreview.empty() ) { FillRect( pdis->hDC, &rc, ( HBRUSH )GetStockObject( BLACK_BRUSH ) ); return TRUE; }
-                // Letterboxed to the frame's shape; only the bars are cleared, so the picture does not
-                // flicker black between frames
-                int cx = rc.right - rc.left, cy = rc.bottom - rc.top;
-                int w = cx, h = (int)( (long long)cx * pJob->iHeight / pJob->iWidth );
-                if ( h > cy ) { h = cy; w = (int)( (long long)cy * pJob->iWidth / pJob->iHeight ); }
-                int x0 = rc.left + ( cx - w ) / 2, y0 = rc.top + ( cy - h ) / 2;
-                SaveDC( pdis->hDC );
-                ExcludeClipRect( pdis->hDC, x0, y0, x0 + w, y0 + h );
-                FillRect( pdis->hDC, &rc, ( HBRUSH )GetStockObject( BLACK_BRUSH ) );
-                RestoreDC( pdis->hDC, -1 );
-                BITMAPINFO bmi = {};
-                bmi.bmiHeader.biSize = sizeof( bmi.bmiHeader );
-                bmi.bmiHeader.biWidth = pJob->iPreviewW;
-                bmi.bmiHeader.biHeight = -pJob->iPreviewH;
-                bmi.bmiHeader.biPlanes = 1;
-                bmi.bmiHeader.biBitCount = 32;
-                bmi.bmiHeader.biCompression = BI_RGB;
-                SetStretchBltMode( pdis->hDC, HALFTONE );
-                StretchDIBits( pdis->hDC, x0, y0, w, h, 0, 0, pJob->iPreviewW, pJob->iPreviewH,
-                               pJob->vPreview.data(), &bmi, DIB_RGB_COLORS, SRCCOPY );
+                if ( !bOk ) MessageBoxW( hWnd, sResult.c_str(), L"Render Video", MB_OK | MB_ICONEXCLAMATION );
+                else MessageBeep( MB_OK );
                 return TRUE;
             }
             case WM_COMMAND:
@@ -812,7 +921,7 @@ namespace
                 {
                     int eState = pJob->eState;
                     if ( eState == VideoJob::Done ) { g_pProgress = nullptr; EndDialog( hWnd, IDCANCEL ); }
-                    else if ( eState == VideoJob::Finishing || pJob->bCancel )
+                    else if ( eState == VideoJob::Finishing || eState == VideoJob::AudioWait || eState == VideoJob::Muxing || pJob->bCancel )
                     {
                         pJob->bAbort = true;
                         pJob->bCancel = true;
@@ -823,6 +932,7 @@ namespace
                         pJob->bCancel = true;
                         SetDlgItemTextW( hWnd, IDCANCEL, L"Abort" );
                     }
+                    UpdateProgressView( hWnd, pJob );
                     return TRUE;
                 }
                 break;
@@ -839,7 +949,8 @@ namespace
         pJob->iCodec = s.iCodec;
         pJob->iBackend = s.iBackend;
         pJob->iContainer = s.iContainer;
-        pJob->sAudioFile = s.bAudio ? s.sAudioFile : std::wstring();   // empty: a silent video
+        pJob->bRenderedAudio = s.bAudio && s.bRenderedAudio;
+        pJob->sAudioFile = s.bAudio && !s.bRenderedAudio ? s.sAudioFile : std::wstring();   // empty: a silent video (or the rendered audio)
         pJob->bAudioAlign = s.bAudioAlign;
         pJob->iAudioOffsetMs = s.iAudioOffsetMs;
         if ( s.bUseWindowSize ) WindowSize( pJob->iWidth, pJob->iHeight );
@@ -855,6 +966,7 @@ namespace
     {
         Config::GetConfig().GetPlaybackSettings().SetPaused( true, true );
         HandOffMsg( WM_COMMAND, ID_VIDEO_RENDER, ( LPARAM )new std::shared_ptr< VideoJob >( pJob ) );
+        LoadView::ClassName( g_hInstance );     // (the popup's view, registered)
         DialogBoxParamW( g_hInstance, MAKEINTRESOURCEW( IDD_VIDEOPROGRESS ), hWndOwner, ProgressProc, ( LPARAM )pJob.get() );
     }
 
@@ -954,6 +1066,9 @@ namespace
                 CheckDlgButton( hWnd, IDC_VID_AUDIOON, s.bAudio ? BST_CHECKED : BST_UNCHECKED );
                 SetDlgItemTextW( hWnd, IDC_VID_AUDIO, s.sAudioFile.c_str() );
                 CheckDlgButton( hWnd, IDC_VID_AUDIOALIGN, s.bAudioAlign ? BST_CHECKED : BST_UNCHECKED );
+                CheckRadioButton( hWnd, IDC_VID_AUDIOFROMFILE, IDC_VID_AUDIORENDERED, s.bRenderedAudio ? IDC_VID_AUDIORENDERED : IDC_VID_AUDIOFROMFILE );
+                AddTips( hWnd, { { IDC_VID_AUDIORENDERED, L"Made from the video's first frame on with Preferences > Rendered audio's engine, soundfonts and "
+                                                          L"settings (and the playback sound settings), always from scratch, with its own progress bar." } } );
                 SetDlgItemInt( hWnd, IDC_VID_AUDIOOFFSET, (UINT)s.iAudioOffsetMs, TRUE );
                 UpdateSizeControls( hWnd );
                 UpdateEncoderControls( hWnd );
@@ -966,7 +1081,7 @@ namespace
                     case IDC_VID_WINDOWSIZE:
                         UpdateSizeControls( hWnd );
                         return TRUE;
-                    case IDC_VID_AUDIOON:
+                    case IDC_VID_AUDIOON: case IDC_VID_AUDIOFROMFILE: case IDC_VID_AUDIORENDERED:
                         UpdateAudioControls( hWnd );
                         return TRUE;
                     case IDC_VID_RES:
@@ -1049,6 +1164,7 @@ namespace
                             s.bAudio = sRead.bAudio;
                             s.sAudioFile = sRead.sAudioFile;
                             s.bAudioAlign = sRead.bAudioAlign;
+                            s.bRenderedAudio = sRead.bRenderedAudio;
                         }
                         config.SetExportSettings( s );
                         EndDialog( hWnd, IDCANCEL );

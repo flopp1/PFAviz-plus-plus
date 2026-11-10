@@ -38,6 +38,8 @@ void MainScreen::InitSong()
     m_pMeter = new MeterTracker( m_pSong->vMeta, m_pSong->info );
     m_vTrackSettings.resize( m_pSong->info.iNumTracks );
     if ( m_pSong && m_bWithPlayback ) m_pPlayback = std::make_unique< PlaybackEngine >( m_pSong, m_Clock, Config::GetConfig().GetPerformanceSettings().iPlaybackThreads );
+    // (for the Rendered audio page: what of this song Merlin does not do properly)
+    if ( m_pSong && m_bWithPlayback ) RenderBackends::SetNote( RenderBackends::NoteSong, RenderAhead::MerlinIssues( *m_pSong ) );
 
     std::vector< TextPath::TextPathVertex > vPath;
     vPath.push_back( { 0.0f, 0.0f, 0.0f, 0xFF } );
@@ -107,11 +109,14 @@ GameState::GameError MainScreen::Init()
         m_pPlayback->SetMetronome( cPlayback.GetMetronome() );
         m_Clock.SetSpeed( cPlayback.GetSpeed() );
         m_Clock.SetPaused( cPlayback.GetPaused() );
+        m_pPlayback->SetRendered( RenderAhead::FromConfig() );
         m_pPlayback->Start( m_llStartTime );
     }
     else m_Clock.Set( m_llStartTime );
     // Developer switch PFAVIZ_START=S: start S seconds into the song
     if ( const char *sStart = getenv( "PFAVIZ_START" ) ) JumpTo( (long long)( atof( sStart ) * 1e6 ) );
+    // ... PFAVIZ_SPEED=x: playback at x times (for load tests)
+    if ( const char *sSpeed = getenv( "PFAVIZ_SPEED" ) ) Config::GetConfig().GetPlaybackSettings().SetSpeed( std::clamp( atof( sSpeed ), 0.01, 10.0 ), true );
     m_Timer.Start();
     return Success;
 }
@@ -480,11 +485,15 @@ GameState::GameError MainScreen::Logic()
         static const PerformanceSettings &cPerf = config.GetPerformanceSettings();
         m_pPlayback->SetMute( m_bMute );
         m_pPlayback->SetVolumeCorrect( m_dVolumeCorrect );
+        m_pPlayback->SetVolume( m_dVolume, min( dVolumeCorrect, dMaxCorrect ) );
         m_pPlayback->SetMetronome( cPlayback.GetMetronome() );
         m_pPlayback->SetSkipping( cPerf.bVelocitySkip, cPerf.iSkipLagMs );
         m_pPlayback->SetSendLimits( cPerf.bCollapseStacks, cPerf.bSendLimit ? cPerf.iMaxSendsPerSec : 0 );
         m_pPlayback->SetMinVelocity( cPerf.bVelocityFloor ? cPerf.iMinVelocity : 0 );
         m_pPlayback->SetMaxThreads( cPerf.iPlaybackThreads );
+        // Audio rendered ahead on or off: back on the MIDI output, it gets the controllers where the song is
+        if ( m_pPlayback->SetRendered( RenderAhead::FromConfig() ) )
+            m_pPlayback->Seek( m_llStartTime, m_llStartTime, m_llStartTime );
         // 31-EDO changed: the output reopens in the new mode, and playback seeks to where it is so the
         // new output gets the controllers there
         MidiOutputs::SetKdmapiLongSends( cPerf.bKdmapiLongSends );
@@ -594,6 +603,47 @@ GameState::GameError MainScreen::Logic()
         }
         m_iSynthVoices = -1;
         m_dSynthCpu = -1.0;
+        // Audio rendered ahead: how far it has got, and a problem told once when it appears
+        if ( m_pPlayback->Rendered() )
+        {
+            const RenderAhead::Status st = m_pPlayback->RenderStatus();
+            if ( !st.sState.empty() ) swprintf( m_sRendered, 48, L"%ls", st.sState.c_str() );
+            else if ( st.dAheadSecs < 600 ) swprintf( m_sRendered, 48, L"%.1f of %.0f s (%ls)", st.dReadySecs, st.dAheadSecs, st.sEngine.c_str() );
+            else
+            {
+                // (a long buffer as minutes and seconds, or hours)
+                auto Hms = []( double d, wchar_t *s ) {
+                    const long long t = (long long)d;
+                    if ( t >= 3600 ) swprintf( s, 16, L"%lld:%02lld:%02lld", t / 3600, t / 60 % 60, t % 60 );
+                    else swprintf( s, 16, L"%lld:%02lld", t / 60, t % 60 );
+                };
+                wchar_t a[16], b[16];
+                Hms( st.dReadySecs, a );
+                Hms( st.dAheadSecs, b );
+                swprintf( m_sRendered, 48, L"%ls of %ls (%ls)", a, b, st.sEngine.c_str() );
+            }
+            const bool bProblem = !st.sState.empty() && st.sState != L"loading the soundfonts";
+            if ( bProblem && st.sState != m_sRenderedShown )
+            {
+                swprintf( m_sBuf, 128, L"Rendered audio: %ls", st.sState.c_str() );
+                m_tpMessage.Reset( m_pRenderer->GetBufferWidth() / 2.0f, m_pRenderer->GetBufferHeight() * ( 1.0f - KBPercent ) / 2.0f - 35.0f / 2.0f, 0xFFFFFFFF, m_sBuf );
+            }
+            m_sRenderedShown = bProblem ? st.sState : std::wstring();
+            swprintf( m_sDegrade, 48, L"%ls", st.sDegrade.c_str() );
+            // What loading the soundfonts reported (Merlin refusing them, unsupported SFZ opcodes, ...): its
+            // first line, once
+            if ( st.sWarning != m_sWarningShown )
+            {
+                m_sWarningShown = st.sWarning;
+                if ( !st.sWarning.empty() )
+                {
+                    std::wstring sFirst = st.sWarning.substr( 0, st.sWarning.find( L'\n' ) );
+                    swprintf( m_sBuf, 128, L"Rendered audio: %ls", sFirst.c_str() );
+                    m_tpMessage.Reset( m_pRenderer->GetBufferWidth() / 2.0f, m_pRenderer->GetBufferHeight() * ( 1.0f - KBPercent ) / 2.0f - 35.0f / 2.0f, 0xFFFFFFFF, m_sBuf );
+                }
+            }
+        }
+        else { wcscpy( m_sRendered, L"off (MIDI output)" ); wcscpy( m_sDegrade, L"off" ); }
         if ( ( m_uStats & VisualSettings::VoiceStats ) && m_pPlayback->OutputName() == MidiOutputs::KdmapiName() )
         {
             unsigned uVoices = 0;
@@ -975,6 +1025,7 @@ void MainScreen::DrawFrame( Renderer *pRenderer, const FrameGlobals &g, FastEngi
     }
     post.fVignette = fx.iVignette / 100.0f;
     post.iVignetteSide = fx.eVignetteSide;
+    post.fVignetteFade = fx.iVignetteFade / 100.0f;
     if ( fx.bVignetteNotes && g.iBufferWidth > 0 && g.iBufferHeight > 0 )
     {
         // (the notes area only: not the keyboard)
@@ -1452,7 +1503,7 @@ MainScreen::StatsBox MainScreen::FitStats( Renderer *pRenderer, int iWidth, int 
         L"00:00.0 / 00:00.0", L"000.0", L"N/A", L"000,000,000", L"00,000,000", L"000,000", L"000.0K", L"000.0K", L"000.0K",
         L"0000.0 ms", L"< 000, 000 at 000%", L"00.00 / 00.00", L"00.00 / 00.00", L"00.00 / 00.00", L"00.00 / 00.00",
         L"000.00M", L"000% \u00d700", L"000%", L"000% avg, 000% max", L"0000.0 ns/msg", L"000.00 BPM", L"0000", L"000.0%",
-        L"000,000,000", L"00,000,000", L"000,000" };
+        L"000,000,000", L"00,000,000", L"000,000", L"000.0 of 000 s (BASSMIDI)", L"000000 voices (0000 so far)" };
     static std::wstring sFace;
     static int iFontCY = -1, iTextCX = 0;
     static unsigned uMeasured = 0;
@@ -1608,6 +1659,8 @@ void MainScreen::RenderStatus( Renderer *pRenderer, const StatsBox &box, long lo
         else wcscpy( aValue[VS::StatVoices], L"N/A" );
         if ( m_dSynthCpu >= 0.0 ) swprintf( aValue[VS::StatSynthCpu], 48, L"%.1f%%", m_dSynthCpu );
         else wcscpy( aValue[VS::StatSynthCpu], L"N/A" );
+        wcscpy( aValue[VS::StatRendered], m_sRendered );
+        wcscpy( aValue[VS::StatDegrade], m_sDegrade );
     }
 
     RECT rcLine = box.rc;

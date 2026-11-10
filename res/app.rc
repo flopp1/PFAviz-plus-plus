@@ -135,7 +135,103 @@ BEGIN
     CONTROL         "Use pitch-bends tuning instead of MTS for compatibility. Broken.",IDC_PERF_TUNING31BEND,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,25,194,300,10
 END
 
-IDD_PP6_EFFECTS DIALOGEX 0, 0, 597, 282
+IDD_PP7_RENDER DIALOGEX 0, 0, 597, 236
+STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_DISABLED | WS_CAPTION
+CAPTION "Property Page"
+FONT 8, "MS Shell Dlg", 400, 0, 0x0
+BEGIN
+    CONTROL         "&Play audio rendered ahead, instead of sending MIDI to the output on the Audio tab",IDC_RA_ON,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,7,6,400,10
+    GROUPBOX        "Synth",IDC_STATIC,7,22,583,98
+    LTEXT           "&Engine:",IDC_STATIC,13,37,28,8
+    COMBOBOX        IDC_RA_ENGINE,43,35,150,60,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "&Voices:",IDC_STATIC,203,37,26,8
+    EDITTEXT        IDC_RA_VOICES,231,35,56,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "",IDC_RA_VOICESNOTE,292,37,140,8
+    LTEXT           "&Threads per piece:",IDC_RA_THREADSLBL,436,37,64,8
+    EDITTEXT        IDC_RA_THREADS,502,35,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "(1 to 64)",IDC_RA_THREADSNOTE,534,37,50,8
+    CONTROL         "Re&verb and chorus (BASSMIDI)",IDC_RA_FX,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,55,122,10
+    CONTROL         "&Limiter",IDC_RA_LIMITER,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,140,55,50,10
+    CONTROL         "Split BASSMIDI by &channel as well as key",IDC_RA_BYCHANNEL,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,200,55,160,10
+    LTEXT           "&NPS limit per instance:",IDC_RA_NPSLBL,380,55,78,8
+    EDITTEXT        IDC_RA_NPS,460,53,56,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "(0: none)",IDC_RA_NPSNOTE,520,55,60,8
+    LTEXT           "&Graphics card (Kestrel, Merlin), at most:",IDC_STATIC,13,72,140,8
+    EDITTEXT        IDC_RA_GPUSHARE,155,70,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "% of the time",IDC_STATIC,187,72,60,8
+    PUSHBUTTON      "Kestrel and Merlin a&dvanced...",IDC_RA_ADVANCED,474,69,110,14
+    CONTROL         "Collapse stacked notes l&osslessly",IDC_RA_LOSSLESS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,89,140,10
+    CONTROL         "&Auto-degrade when the audio would run out",IDC_RA_DEGRADE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,160,89,170,10
+    CONTROL         "Di&scard the old engine's audio on a switch",IDC_RA_DISCARD,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,340,89,200,10
+    LTEXT           "Render a&head:",IDC_STATIC,13,104,50,8
+    EDITTEXT        IDC_RA_AHEAD,65,102,36,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "seconds; keep what was made",IDC_STATIC,105,104,100,8
+    EDITTEXT        IDC_RA_BEHIND,207,102,36,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "seconds &behind",IDC_STATIC,247,104,80,8
+    GROUPBOX        "Soundfonts: SF2 or SFZ, each replacing what the ones above it define",IDC_STATIC,7,124,583,52
+    LISTBOX         IDC_RA_FONTS,13,136,470,34,LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_HSCROLL | WS_TABSTOP | WS_BORDER
+    PUSHBUTTON      "Add...",IDC_RA_ADD,489,135,46,14
+    PUSHBUTTON      "Re&move",IDC_RA_REMOVE,539,135,46,14
+    PUSHBUTTON      "&Up",IDC_RA_UP,489,155,46,14
+    PUSHBUTTON      "Do&wn",IDC_RA_DOWN,539,155,46,14
+    GROUPBOX        "Notes",IDC_STATIC,7,180,583,40
+    LTEXT           "",IDC_RA_NOTES,13,191,571,26
+    LTEXT           "",IDC_RA_DLLSTATUS,7,224,583,10
+END
+
+IDD_KESTRELADV DIALOGEX 0, 0, 316, 292
+STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "Kestrel and Merlin: advanced"
+FONT 8, "MS Shell Dlg", 400, 0, 0x1
+BEGIN
+    LTEXT           "Kestrel's own defaults to begin with, but for the block (Kestrel's is 4096; 1024 shares the card with the picture better). Merlin reads the soundfont and output settings, not the voice ones.",IDC_STATIC,7,7,302,18
+    GROUPBOX        "Voices (Kestrel)",IDC_STATIC,7,26,302,74
+    LTEXT           "&Interpolation:",IDC_STATIC,13,40,90,8
+    COMBOBOX        IDC_KA_INTERP,105,38,90,60,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "At the voice limit, &take:",IDC_STATIC,13,56,90,8
+    COMBOBOX        IDC_KA_STEAL,105,54,90,60,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "at most",IDC_STATIC,201,56,28,8
+    EDITTEXT        IDC_KA_STEALPCT,231,54,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "% a block",IDC_STATIC,262,56,44,8
+    LTEXT           "A burst's voices &go to:",IDC_STATIC,13,72,90,8
+    COMBOBOX        IDC_KA_ADMIT,105,70,90,60,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "A releasing voice ends below",IDC_STATIC,13,86,100,8
+    EDITTEXT        IDC_KA_FLOOR,113,84,32,14,ES_AUTOHSCROLL
+    LTEXT           "dB (-160 to -20)",IDC_STATIC,149,86,80,8
+    GROUPBOX        "Soundfont and output (Kestrel and Merlin)",IDC_STATIC,7,104,302,68
+    CONTROL         "&Filters (the soundfonts load again)",IDC_KA_FILTER,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,116,140,10
+    CONTROL         "&LFOs",IDC_KA_LFO,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,160,116,40,10
+    CONTROL         "&Modulation envelopes",IDC_KA_MODENV,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,206,116,96,10
+    LTEXT           "Most la&yers a note sounds:",IDC_STATIC,13,132,90,8
+    EDITTEXT        IDC_KA_LAYERS,105,130,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "(1 to 64)",IDC_STATIC,137,132,40,8
+    CONTROL         "&DC blocker at",IDC_KA_DC,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,150,60,10
+    EDITTEXT        IDC_KA_DCHZ,75,148,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "Hz",IDC_STATIC,107,150,12,8
+    LTEXT           "Bloc&k:",IDC_STATIC,160,150,24,8
+    COMBOBOX        IDC_KA_BLOCK,186,148,60,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "frames",IDC_STATIC,250,150,30,8
+    GROUPBOX        "Performance (Kestrel)",IDC_STATIC,7,176,302,88
+    LTEXT           "&Gate resolution:",IDC_STATIC,13,190,60,8
+    COMBOBOX        IDC_KA_GATE,75,188,46,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "frames (note-offs, controllers, LFOs)",IDC_STATIC,125,190,140,8
+    LTEXT           "W&orkgroup size:",IDC_STATIC,13,206,60,8
+    COMBOBOX        IDC_KA_WORKGROUP,75,204,46,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT           "Render &workgroups:",IDC_STATIC,135,206,66,8
+    EDITTEXT        IDC_KA_RENDERWG,203,204,46,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "&Voices per submission:",IDC_STATIC,13,222,80,8
+    EDITTEXT        IDC_KA_SUBMIT,95,220,56,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "Voice &building threads:",IDC_STATIC,165,222,80,8
+    EDITTEXT        IDC_KA_THREADS,247,220,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    CONTROL         "&Sort voices (by far the biggest speedup)",IDC_KA_SORT,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,238,150,10
+    CONTROL         "Compensated su&mmation",IDC_KA_KAHAN,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,170,238,100,10
+    CONTROL         "&Unchecked shaders (faster; a bug becomes a GPU memory error)",IDC_KA_UNCHECKED,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,250,250,10
+    PUSHBUTTON      "D&efaults",IDC_KA_DEFAULTS,7,272,50,14
+    DEFPUSHBUTTON   "OK",IDOK,205,272,50,14
+    PUSHBUTTON      "Cancel",IDCANCEL,259,272,50,14
+END
+
+IDD_PP6_EFFECTS DIALOGEX 0, 0, 597, 284
 STYLE DS_SETFONT | DS_FIXEDSYS | WS_CHILD | WS_DISABLED | WS_CAPTION
 CAPTION "Property Page"
 FONT 8, "MS Shell Dlg", 400, 0, 0x0
@@ -271,7 +367,10 @@ BEGIN
     LTEXT           "%, from",IDC_STATIC,367,248,30,8
     COMBOBOX        IDC_FX_VIGSIDE,399,246,70,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     CONTROL         "Notes area only",IDC_FX_VIGNOTES,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,474,248,112,10
-    CONTROL         "The effects also change the stats bo&x",IDC_FX_STATS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,302,265,193,10
+    LTEXT           "Fade-out:",IDC_STATIC,302,266,32,8
+    EDITTEXT        IDC_FX_VIGFADE,336,264,28,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "% of the way in (more: softer, reaching further)",IDC_STATIC,367,266,190,8
+    CONTROL         "The effects also change the stats bo&x",IDC_FX_STATS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,7,269,193,10
 END
 
 IDD_PP4_CONTROLS DIALOGEX 0, 0, 597, 212
@@ -440,7 +539,7 @@ BEGIN
     PUSHBUTTON      "Cancel",IDCANCEL,243,231,50,14
 END
 
-IDD_VIDEOEXPORT DIALOGEX 0, 0, 300, 292
+IDD_VIDEOEXPORT DIALOGEX 0, 0, 300, 306
 STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "Render Video"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
@@ -472,29 +571,27 @@ BEGIN
     COMBOBOX        IDC_VID_PRESET,80,149,72,120,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
     CONTROL         "Show the &stats area",IDC_VID_STATS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,160,151,126,10
     LTEXT           "The whole song is rendered off-screen at this size (with the current view and note speed) and encoded by ffmpeg, from the PATH or the current folder. The encoder is tried at this size first, so its own limits apply.",IDC_STATIC,13,167,274,26
-    GROUPBOX        "",IDC_STATIC,7,201,286,64
+    GROUPBOX        "",IDC_STATIC,7,201,286,78
     CONTROL         "Add a&udio",IDC_VID_AUDIOON,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,200,46,10
-    LTEXT           "Audio file (WAV, FLAC, ...):",IDC_VID_AUDIOLABEL,13,213,220,8
-    EDITTEXT        IDC_VID_AUDIO,13,224,218,14,ES_AUTOHSCROLL
-    PUSHBUTTON      "Bro&wse...",IDC_VID_AUDIOBROWSE,236,224,50,14
-    CONTROL         "&Align its first sound with the first note",IDC_VID_AUDIOALIGN,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,246,150,10
-    LTEXT           "Then &move by:",IDC_VID_AUDIOMOVE,168,247,50,8
-    EDITTEXT        IDC_VID_AUDIOOFFSET,220,244,40,14,ES_AUTOHSCROLL
-    LTEXT           "ms",IDC_VID_AUDIOMS,264,247,20,8
-    DEFPUSHBUTTON   "&Start rendering",IDOK,7,271,80,14
-    PUSHBUTTON      "Close",IDCANCEL,243,271,50,14
+    CONTROL         "From a f&ile (WAV, FLAC, ...):",IDC_VID_AUDIOFROMFILE,"Button",BS_AUTORADIOBUTTON | WS_GROUP | WS_TABSTOP,13,213,220,10
+    EDITTEXT        IDC_VID_AUDIO,23,225,208,14,ES_AUTOHSCROLL | WS_GROUP
+    PUSHBUTTON      "Bro&wse...",IDC_VID_AUDIOBROWSE,236,225,50,14
+    CONTROL         "&Align its first sound with the first note",IDC_VID_AUDIOALIGN,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,23,245,145,10
+    LTEXT           "Then &move by:",IDC_VID_AUDIOMOVE,168,246,50,8
+    EDITTEXT        IDC_VID_AUDIOOFFSET,220,243,40,14,ES_AUTOHSCROLL
+    LTEXT           "ms",IDC_VID_AUDIOMS,264,246,20,8
+    CONTROL         "Made by the audio &renderer, in time with the video",IDC_VID_AUDIORENDERED,"Button",BS_AUTORADIOBUTTON | WS_TABSTOP,13,261,274,10
+    DEFPUSHBUTTON   "&Start rendering",IDOK,7,285,80,14
+    PUSHBUTTON      "Close",IDCANCEL,243,285,50,14
 END
 
-IDD_VIDEOPROGRESS DIALOGEX 0, 0, 300, 236
-STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_THICKFRAME
+IDD_VIDEOPROGRESS DIALOGEX 0, 0, 380, 400
+STYLE DS_SETFONT | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_THICKFRAME
 CAPTION "Rendering Video - PFAviz++"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
-    LTEXT           "",IDC_VIDP_FILE,7,7,286,8,SS_PATHELLIPSIS | SS_NOPREFIX
-    CONTROL         "",IDC_VIDP_PREVIEW,"Static",SS_OWNERDRAW,7,19,286,148
-    CONTROL         "",IDC_VIDP_BAR,"msctls_progress32",WS_BORDER,7,172,286,10
-    LTEXT           "Starting...",IDC_VIDP_STATUS,7,186,286,26,SS_NOPREFIX
-    PUSHBUTTON      "Cancel",IDCANCEL,243,215,50,14
+    CONTROL         "",IDC_VIDP_VIEW,"PFAvizLoadView",WS_VSCROLL | WS_HSCROLL,0,0,380,376
+    PUSHBUTTON      "Cancel",IDCANCEL,323,381,50,14
 END
 
 IDD_LOADING DIALOGEX 0, 0, 380, 345
@@ -642,6 +739,17 @@ IDB_MEDIAICONSSMALL     BITMAP                  "Images/mediaiconssmall.bmp"
 IDB_SPLASH              BITMAP                  "Images/Mirror Small.bmp"
 IDI_PFAICON             ICON                    "Images/PFA Icon.ico"
 IDI_WELCOME             ICON                    "Images/Welcome.ico"
+
+#ifdef EMBED_BASS
+IDR_ENGINE_BASS         RCDATA                  "../vendor/engines/bass.dll"
+IDR_ENGINE_BASSMIDI     RCDATA                  "../vendor/engines/bassmidi.dll"
+#endif
+#ifdef EMBED_BASSFLAC
+IDR_ENGINE_BASSFLAC     RCDATA                  "../vendor/engines/bassflac.dll"
+#endif
+#ifdef EMBED_KESTREL
+IDR_ENGINE_KESTREL      RCDATA                  "../vendor/engines/kestrel_bridge.dll"
+#endif
 IDR_SPLASHMIDI          MIDI                    "Images/Godowsky - Study of Chopin Etude Op. 10, No. 1.mid"
 
 /////////////////////////////////////////////////////////////////////////////

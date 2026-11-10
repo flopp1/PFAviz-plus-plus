@@ -76,6 +76,7 @@ namespace
 void GameState::Dispose( GameState *pState )
 {
     Disposal &d = TheDisposal();
+    pState->SilenceAudio();
     {
         std::lock_guard< std::mutex > lock( d.mx );
         d.q.push_back( pState );
@@ -84,14 +85,22 @@ void GameState::Dispose( GameState *pState )
         {
             d.bThread = true;
             std::thread( [&d] {
+                // (every screen's audio released before any is deleted: a big song's deletion can take
+                // seconds, and the next screen's audio is not kept waiting behind it)
+                std::deque< GameState * > qDelete;
                 for ( ;; )
                 {
-                    GameState *p;
+                    GameState *p = nullptr;
                     {
                         std::unique_lock< std::mutex > lock( d.mx );
-                        d.cv.wait( lock, [&] { return !d.q.empty(); } );
-                        p = d.q.front();
-                        d.q.pop_front();
+                        if ( qDelete.empty() ) d.cv.wait( lock, [&] { return !d.q.empty(); } );
+                        if ( !d.q.empty() ) { p = d.q.front(); d.q.pop_front(); }
+                    }
+                    if ( !p )
+                    {
+                        delete qDelete.front();
+                        qDelete.pop_front();
+                        continue;
                     }
                     p->ReleaseAudio();
                     {
@@ -99,7 +108,7 @@ void GameState::Dispose( GameState *pState )
                         d.iAudio--;
                     }
                     d.cv.notify_all();
-                    delete p;
+                    qDelete.push_back( p );
                 }
             } ).detach();
         }

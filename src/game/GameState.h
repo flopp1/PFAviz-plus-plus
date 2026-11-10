@@ -49,6 +49,8 @@ public:
     virtual void RenderVideo( const std::shared_ptr< VideoJob > &pJob );
     // Stops the screen's audio and closes its MIDI output (Dispose, before deleting it)
     virtual void ReleaseAudio() {}
+    // Its sound stopped at once, on the window's thread, as it is closed (ReleaseAudio follows)
+    virtual void SilenceAudio() {}
     // Whether Init opens a MIDI output: it then waits for the screens before it to close theirs
     virtual bool UsesAudio() const { return false; }
 
@@ -144,6 +146,7 @@ public:
     MainScreen( std::shared_ptr< const Song > pSong, HWND hWnd, Renderer *pRenderer, bool bPlayback = true );
     ~MainScreen();
     void ReleaseAudio() override { m_pPlayback.reset(); }
+    void SilenceAudio() override { if ( m_pPlayback ) m_pPlayback->Silence(); }
     bool UsesAudio() const override { return m_bWithPlayback; }
 
     GameError MsgProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam ) override;
@@ -268,6 +271,10 @@ private:
     long long m_llEnvRunUs = 0;         // PFAVIZ_EXIT_AFTER
     PlaybackEngine::Stats m_Stats;
     int m_iSynthVoices = -1;            // KDMAPI's GetActiveVoices and GetRenderingTime (-1: not available)
+    wchar_t m_sRendered[48] = L"";      // audio rendered ahead: how far it has got, or its problem
+    std::wstring m_sRenderedShown;      // the problem last told on screen
+    wchar_t m_sDegrade[48] = L"";       // how much lighter the rendered audio playing is
+    std::wstring m_sWarningShown;       // the rendered audio's load warnings last told
     double m_dSynthCpu = -1.0;
 
     // Audio: the clock drives both the visuals (sampled once per frame) and the playback threads

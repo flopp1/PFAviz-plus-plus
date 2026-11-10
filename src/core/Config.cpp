@@ -145,23 +145,23 @@ const int VisualSettings::StatSections[StatCount] = {
     SectionSynth, SectionSynth, SectionSynth, SectionSynth, SectionSynth,
     SectionFrame, SectionFrame, SectionFrame, SectionFrame,
     SectionPipeline, SectionPipeline, SectionPipeline, SectionPipeline, SectionPipeline,
-    SectionGeneral, SectionSynth, SectionSynth, SectionNotes, SectionNotes, SectionNotes };
+    SectionGeneral, SectionSynth, SectionSynth, SectionNotes, SectionNotes, SectionNotes, SectionSynth, SectionSynth };
 const wchar_t *const VisualSettings::StatLabels[StatCount] = {
     L"Time:", L"FPS:", L"Score:", L"Notes:", L"NPS:", L"Polyphony:",
     L"Sent/s:", L"Skipped/s:", L"Collapsed/s:", L"Lag:", L"Skipping:",
     L"Other ms:", L"Notes ms:", L"Scene ms:", L"Present ms:",
     L"Decoded/s:", L"Decoder busy:", L"Sender busy:", L"Ring:", L"Send cost:",
-    L"Tempo:", L"Voices:", L"Synth CPU:", L"CC events:", L"Max NPS:", L"Max Poly:" };
+    L"Tempo:", L"Voices:", L"Synth CPU:", L"CC events:", L"Max NPS:", L"Max Poly:", L"Rendered:", L"Degraded:" };
 const wchar_t *const VisualSettings::StatNames[StatCount] = {
     L"Time", L"Frame rate", L"Score", L"Notes passed", L"NPS", L"Polyphony",
     L"Messages sent", L"Skipped", L"Collapsed", L"Lag", L"Skipping threshold",
     L"Other (frame ms)", L"Notes (frame ms)", L"Scene (frame ms)", L"Present (frame ms)",
     L"Messages decoded", L"Decoder busy", L"Sender busy", L"Ring fill", L"Send cost",
-    L"Tempo (BPM)", L"Synth voices (KDMAPI)", L"Synth CPU (KDMAPI)", L"CC events passed", L"Max NPS (so far)", L"Max Poly (so far)" };
+    L"Tempo (BPM)", L"Synth voices (KDMAPI)", L"Synth CPU (KDMAPI)", L"CC events passed", L"Max NPS (so far)", L"Max Poly (so far)", L"Audio rendered ahead", L"Rendered audio made lighter" };
 // The order the lines had before they could be moved: general, notes, synth, pipeline, frame time
 const unsigned char VisualSettings::DefaultStatOrder[StatCount] = {
     StatTime, StatFPS, StatScore, StatTempo, StatNotes, StatNPS, StatMaxNPS, StatPolyphony, StatMaxPoly, StatCC,
-    StatSent, StatSkipped, StatCollapsed, StatLag, StatSkipping, StatVoices, StatSynthCpu,
+    StatSent, StatSkipped, StatCollapsed, StatLag, StatRendered, StatDegrade, StatSkipping, StatVoices, StatSynthCpu,
     StatDecoded, StatDecoderBusy, StatSenderBusy, StatRing, StatSendCost,
     StatOtherMs, StatNotesMs, StatSceneMs, StatPresentMs };
 
@@ -556,6 +556,7 @@ void EffectSettings::LoadDefaultValues()
     iVignette = 0;
     eVignetteSide = VignetteAround;
     bVignetteNotes = false;
+    iVignetteFade = 75;
     eDecay = DecayNone;
     iDecayMs = 600;
     iDecayFloor = 40;
@@ -623,6 +624,7 @@ void EffectSettings::LoadConfigValues( const IniFile &ini )
     iVignette = std::clamp( ini.GetInt( "Effects", "Vignette", iVignette ), 0, 100 );
     eVignetteSide = std::clamp( ini.GetInt( "Effects", "VignetteSide", eVignetteSide ), 0, VignetteSideCount - 1 );
     bVignetteNotes = ini.GetBool( "Effects", "VignetteNotesOnly", bVignetteNotes );
+    iVignetteFade = std::clamp( ini.GetInt( "Effects", "VignetteFade", iVignetteFade ), 1, 100 );
     eDecay = std::clamp( ini.GetInt( "Effects", "Decay", eDecay ), 0, DecayCount - 1 );
     iDecayMs = std::clamp( ini.GetInt( "Effects", "DecayMs", iDecayMs ), 1, 60000 );
     iDecayFloor = std::clamp( ini.GetInt( "Effects", "DecayFloor", iDecayFloor ), 0, 100 );
@@ -696,6 +698,7 @@ void EffectSettings::Save( IniFile &ini ) const
     ini.SetInt( "Effects", "Vignette", iVignette );
     ini.SetInt( "Effects", "VignetteSide", eVignetteSide );
     ini.SetInt( "Effects", "VignetteNotesOnly", bVignetteNotes );
+    ini.SetInt( "Effects", "VignetteFade", iVignetteFade );
     ini.SetInt( "Effects", "Decay", eDecay );
     ini.SetInt( "Effects", "DecayMs", iDecayMs );
     ini.SetInt( "Effects", "DecayFloor", iDecayFloor );
@@ -721,6 +724,23 @@ void EffectSettings::Save( IniFile &ini ) const
 void AudioSettings::LoadDefaultValues()
 {
     iOutDevice = -1;
+    bRendered = false;
+    eRenderEngine = 0;
+    sSoundfonts.clear();
+    bRenderLossless = true;
+    bRenderDegrade = false;
+    bRenderDiscard = false;
+    iBassVoices = 1000;
+    iKestrelVoices = 1 << 20;
+    iBassThreads = 1;
+    iGpuShare = 50;
+    kb = RenderBackends::KestrelOpts();
+    iAheadSecs = 30;
+    iBehindSecs = 300;
+    iBassNps = 0;
+    bBassByChannel = false;
+    bLimiter = true;
+    bRenderFx = true;
     LoadMIDIDevices();
 }
 
@@ -753,12 +773,84 @@ void AudioSettings::Load( const IniFile &ini )
             if ( vMIDIOutDevices[i] == sDesiredOut )
                 iOutDevice = (int)i;
     }
+    bRendered = ini.GetBool( "Audio", "Rendered", bRendered );
+    eRenderEngine = std::clamp( ini.GetInt( "Audio", "RenderEngine", eRenderEngine ), 0, 2 );
+    if ( ini.Has( "Audio", "Soundfonts" ) ) sSoundfonts = Util::Utf8ToWide( ini.GetString( "Audio", "Soundfonts" ) );
+    bRenderLossless = ini.GetBool( "Audio", "RenderLossless", bRenderLossless );
+    bRenderDegrade = ini.GetBool( "Audio", "RenderAutoDegrade", bRenderDegrade );
+    bRenderDiscard = ini.GetBool( "Audio", "RenderDiscardOnSwitch", bRenderDiscard );
+    iBassVoices = std::clamp( ini.GetInt( "Audio", "BassVoices", iBassVoices ), 1, 100000 );
+    iKestrelVoices = std::clamp( ini.GetInt( "Audio", "KestrelVoices", iKestrelVoices ), 1, 1 << 24 );
+    iAheadSecs = std::clamp( ini.GetInt( "Audio", "RenderAheadSecs", iAheadSecs ), 5, 43200 );     // (RenderAhead::Settings::MinAheadSecs, MaxAheadSecs)
+    iBehindSecs = std::clamp( ini.GetInt( "Audio", "RenderBehindSecs", iBehindSecs ), 0, 43200 );
+    iBassNps = std::clamp( ini.GetInt( "Audio", "BassNpsLimit", iBassNps ), 0, 1000000000 );
+    bBassByChannel = ini.GetBool( "Audio", "BassByChannel", bBassByChannel );
+    iBassThreads = std::clamp( ini.GetInt( "Audio", "BassThreads", iBassThreads ), 1, 64 );
+    iGpuShare = std::clamp( ini.GetInt( "Audio", "GpuShare", iGpuShare ), 10, 100 );
+    kb.iInterpolation = std::clamp( ini.GetInt( "Audio", "KestrelInterpolation", kb.iInterpolation ), 0, 2 );
+    kb.iStealRule = std::clamp( ini.GetInt( "Audio", "KestrelStealRule", kb.iStealRule ), 0, 2 );
+    kb.iAdmitRule = std::clamp( ini.GetInt( "Audio", "KestrelAdmitRule", kb.iAdmitRule ), 0, 1 );
+    kb.iMaxStealPercent = std::clamp( ini.GetInt( "Audio", "KestrelMaxStealPercent", kb.iMaxStealPercent ), 1, 100 );
+    kb.iReleaseFloorDb = std::clamp( ini.GetInt( "Audio", "KestrelReleaseFloorDb", kb.iReleaseFloorDb ), -160, -20 );
+    kb.iMaxLayers = std::clamp( ini.GetInt( "Audio", "KestrelMaxLayers", kb.iMaxLayers ), 1, 64 );
+    kb.bFilter = ini.GetBool( "Audio", "KestrelFilter", kb.bFilter );
+    kb.bLfo = ini.GetBool( "Audio", "KestrelLfo", kb.bLfo );
+    kb.bModEnv = ini.GetBool( "Audio", "KestrelModEnv", kb.bModEnv );
+    kb.bDcBlocker = ini.GetBool( "Audio", "KestrelDcBlocker", kb.bDcBlocker );
+    kb.iDcBlockerHz = std::clamp( ini.GetInt( "Audio", "KestrelDcBlockerHz", kb.iDcBlockerHz ), 1, 200 );
+    kb.iBlockFrames = std::clamp( ini.GetInt( "Audio", "KestrelBlockFrames", kb.iBlockFrames ), 64, 16384 );
+    kb.iGateFrames = std::clamp( ini.GetInt( "Audio", "KestrelGateFrames", kb.iGateFrames ), 4, 1024 );
+    kb.iWorkgroupSize = std::clamp( ini.GetInt( "Audio", "KestrelWorkgroupSize", kb.iWorkgroupSize ), 32, 1024 );
+    kb.iRenderWorkgroups = std::clamp( ini.GetInt( "Audio", "KestrelRenderWorkgroups", kb.iRenderWorkgroups ), 1, 1 << 24 );
+    kb.iSubmitVoices = std::clamp( ini.GetInt( "Audio", "KestrelSubmitVoices", kb.iSubmitVoices ), 1024, 1 << 30 );
+    kb.iVoiceThreads = std::clamp( ini.GetInt( "Audio", "KestrelVoiceThreads", kb.iVoiceThreads ), 1, 64 );
+    kb.bSortVoices = ini.GetBool( "Audio", "KestrelSortVoices", kb.bSortVoices );
+    kb.bKahan = ini.GetBool( "Audio", "KestrelKahan", kb.bKahan );
+    kb.bUnchecked = ini.GetBool( "Audio", "KestrelUncheckedShaders", kb.bUnchecked );
+    bLimiter = ini.GetBool( "Audio", "RenderLimiter", bLimiter );
+    bRenderFx = ini.GetBool( "Audio", "RenderEffects", bRenderFx );
 }
 
 void AudioSettings::Save( IniFile &ini ) const
 {
     if ( !sDesiredOut.empty() )
         ini.Set( "Audio", "MIDIOutDevice", Util::WideToUtf8( sDesiredOut ) );
+    ini.SetInt( "Audio", "Rendered", bRendered );
+    ini.SetInt( "Audio", "RenderEngine", eRenderEngine );
+    ini.Set( "Audio", "Soundfonts", Util::WideToUtf8( sSoundfonts ) );
+    ini.SetInt( "Audio", "RenderLossless", bRenderLossless );
+    ini.SetInt( "Audio", "RenderAutoDegrade", bRenderDegrade );
+    ini.SetInt( "Audio", "RenderDiscardOnSwitch", bRenderDiscard );
+    ini.SetInt( "Audio", "BassVoices", iBassVoices );
+    ini.SetInt( "Audio", "KestrelVoices", iKestrelVoices );
+    ini.SetInt( "Audio", "RenderAheadSecs", iAheadSecs );
+    ini.SetInt( "Audio", "RenderBehindSecs", iBehindSecs );
+    ini.SetInt( "Audio", "BassNpsLimit", iBassNps );
+    ini.SetInt( "Audio", "BassByChannel", bBassByChannel );
+    ini.SetInt( "Audio", "BassThreads", iBassThreads );
+    ini.SetInt( "Audio", "GpuShare", iGpuShare );
+    ini.SetInt( "Audio", "KestrelInterpolation", kb.iInterpolation );
+    ini.SetInt( "Audio", "KestrelStealRule", kb.iStealRule );
+    ini.SetInt( "Audio", "KestrelAdmitRule", kb.iAdmitRule );
+    ini.SetInt( "Audio", "KestrelMaxStealPercent", kb.iMaxStealPercent );
+    ini.SetInt( "Audio", "KestrelReleaseFloorDb", kb.iReleaseFloorDb );
+    ini.SetInt( "Audio", "KestrelMaxLayers", kb.iMaxLayers );
+    ini.SetInt( "Audio", "KestrelFilter", kb.bFilter );
+    ini.SetInt( "Audio", "KestrelLfo", kb.bLfo );
+    ini.SetInt( "Audio", "KestrelModEnv", kb.bModEnv );
+    ini.SetInt( "Audio", "KestrelDcBlocker", kb.bDcBlocker );
+    ini.SetInt( "Audio", "KestrelDcBlockerHz", kb.iDcBlockerHz );
+    ini.SetInt( "Audio", "KestrelBlockFrames", kb.iBlockFrames );
+    ini.SetInt( "Audio", "KestrelGateFrames", kb.iGateFrames );
+    ini.SetInt( "Audio", "KestrelWorkgroupSize", kb.iWorkgroupSize );
+    ini.SetInt( "Audio", "KestrelRenderWorkgroups", kb.iRenderWorkgroups );
+    ini.SetInt( "Audio", "KestrelSubmitVoices", kb.iSubmitVoices );
+    ini.SetInt( "Audio", "KestrelVoiceThreads", kb.iVoiceThreads );
+    ini.SetInt( "Audio", "KestrelSortVoices", kb.bSortVoices );
+    ini.SetInt( "Audio", "KestrelKahan", kb.bKahan );
+    ini.SetInt( "Audio", "KestrelUncheckedShaders", kb.bUnchecked );
+    ini.SetInt( "Audio", "RenderLimiter", bLimiter );
+    ini.SetInt( "Audio", "RenderEffects", bRenderFx );
 }
 
 //-----------------------------------------------------------------------------
@@ -856,6 +948,7 @@ void ExportSettings::LoadDefaultValues()
     sAudioFile.clear();
     bAudioAlign = true;
     iAudioOffsetMs = 0;
+    bRenderedAudio = false;
 }
 
 void ExportSettings::Load( const IniFile &ini )
@@ -888,6 +981,7 @@ void ExportSettings::Load( const IniFile &ini )
     bAudio = ini.GetBool( "Export", "Audio", !sAudioFile.empty() );     // before the switch: on when a file was set
     bAudioAlign = ini.GetBool( "Export", "AudioAlign", bAudioAlign );
     iAudioOffsetMs = std::clamp( ini.GetInt( "Export", "AudioOffsetMs", iAudioOffsetMs ), -3600000, 3600000 );
+    bRenderedAudio = ini.GetBool( "Export", "RenderedAudio", bRenderedAudio );
 }
 
 void ExportSettings::Save( IniFile &ini ) const
@@ -907,6 +1001,7 @@ void ExportSettings::Save( IniFile &ini ) const
     ini.Set( "Export", "AudioFile", Util::WideToUtf8( sAudioFile ) );
     ini.SetInt( "Export", "AudioAlign", bAudioAlign );
     ini.SetInt( "Export", "AudioOffsetMs", iAudioOffsetMs );
+    ini.SetInt( "Export", "RenderedAudio", bRenderedAudio );
 }
 
 void PerformanceSettings::LoadDefaultValues()

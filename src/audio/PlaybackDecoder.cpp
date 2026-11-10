@@ -579,7 +579,7 @@ size_t PlaybackDecoder::Fill( uint32_t *pOut, size_t iCap, long long llHorizon, 
     llDue = DueTime( p );
     if ( llDue > llHorizon ) return 0;
     // (by shares, the horizon is already close: the clock a millisecond of real time on)
-    long long llLimit = p.bShares ? llHorizon : std::min( llHorizon, llDue + std::max< long long >( 1, (long long)( 500 * p.dSpeed ) ) );
+    long long llLimit = p.bShares ? llHorizon : std::min( llHorizon, llDue + std::max< long long >( 1, (long long)( p.llGroupUs * p.dSpeed ) ) );
 
     const RefMidiInfo &info = m_Song.info;
     // Switching collapsing on or off: the held counts start over (a voice still sounding gets the off

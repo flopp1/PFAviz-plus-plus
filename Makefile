@@ -47,9 +47,14 @@ $(OUT)/obj/%.o: src/%.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
 
-$(OUT)/obj/app.res.o: res/app.rc res/resource.h res/app.manifest
+# The rendered-audio engines, built in when vendor/engines holds them (RenderBackends.cpp writes them
+# out on first use): bass.dll + bassmidi.dll (and bassflac.dll, for SFZ soundfonts with FLAC samples), kestrel_bridge.dll
+ENGINES := $(wildcard vendor/engines/bass.dll vendor/engines/bassmidi.dll vendor/engines/bassflac.dll vendor/engines/kestrel_bridge.dll)
+EMBED   := $(if $(and $(wildcard vendor/engines/bass.dll),$(wildcard vendor/engines/bassmidi.dll)),-DEMBED_BASS)            $(if $(wildcard vendor/engines/bassflac.dll),-DEMBED_BASSFLAC)            $(if $(wildcard vendor/engines/kestrel_bridge.dll),-DEMBED_KESTREL)
+
+$(OUT)/obj/app.res.o: res/app.rc res/resource.h res/app.manifest $(ENGINES)
 	@mkdir -p $(dir $@)
-	$(WINDRES) --codepage=65001 -Ires -O coff $< $@
+	$(WINDRES) --codepage=65001 -Ires $(EMBED) -O coff $< $@
 
 clean:
 	rm -rf build
@@ -59,7 +64,7 @@ clean:
 $(OUT)/extended_keys.exe: tests/extended_keys.cpp $(OBJS)
 	$(CXX) $(CXXFLAGS) $(filter-out -mwindows,$(LDFLAGS)) -mconsole $^ -o $@ $(LDLIBS)
 
-$(OUT)/tuning31-routing.exe: tests/tuning31-routing.cpp src/audio/MidiOutput.cpp src/audio/MidiOutput.h src/audio/Tuning31.h
+$(OUT)/tuning31-routing.exe: tests/tuning31-routing.cpp src/audio/MidiOutput.cpp src/audio/MidiOutput.h src/audio/Tuning31.h src/audio/ScaleTuning.h
 	$(CXX) $(filter-out -municode,$(CXXFLAGS)) -static $< -o $@ -lwinmm
 
 -include $(OUT)/tuning31-routing.d

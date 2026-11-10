@@ -55,7 +55,7 @@ float4 main( float2 t : TEXCOORD0 ) : COLOR
     float2 r = ( t - c1.xy ) / ( c1.zw - c1.xy );
     float d = lerp( dot( c2.xy, r ) + c2.z, length( ( r - 0.5 ) * 2 ) * 0.70710678, c2.w );
     float fIn = step( 0, r.x ) * step( r.x, 1 ) * step( 0, r.y ) * step( r.y, 1 );
-    a *= 1 - c0.y * fIn * smoothstep( 0.25, 1.0, d );
+    a *= 1 - c0.y * fIn * smoothstep( c0.w, 1.0, d );
     return float4( a, 1 );
 }
 )";
@@ -479,7 +479,8 @@ void Renderer::EndPost()
     // (the vignette's side: d from 0 at the far side to 1 at its own; every edge: by the distance from the middle)
     static const float aSide[5][4] = { { 0, 0, 0, 1 }, { 0, -1, 1, 0 }, { 0, 1, 0, 0 }, { -1, 0, 1, 0 }, { 1, 0, 0, 0 } };
     const float *pArea = m_Post.afVignetteArea;
-    const float aComp[3][4] = { { bBloom ? m_Post.fBloom : 0.0f, m_Post.fVignette, m_Post.fLimit, 0.0f },
+    // (c0.w: where the fade starts, d from 0 to 1; 0.25 = fading over three quarters of the way in)
+    const float aComp[3][4] = { { bBloom ? m_Post.fBloom : 0.0f, m_Post.fVignette, m_Post.fLimit, 1.0f - std::clamp( m_Post.fVignetteFade, 0.01f, 1.0f ) },
                                 { pArea[0], pArea[1], std::max( pArea[2], pArea[0] + 1e-4f ), std::max( pArea[3], pArea[1] + 1e-4f ) },
                                 { aSide[std::clamp( m_Post.iVignetteSide, 0, 4 )][0], aSide[std::clamp( m_Post.iVignetteSide, 0, 4 )][1],
                                   aSide[std::clamp( m_Post.iVignetteSide, 0, 4 )][2], aSide[std::clamp( m_Post.iVignetteSide, 0, 4 )][3] } };

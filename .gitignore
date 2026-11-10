@@ -26,3 +26,6 @@
 *.log
 *.mp4
 *.mkv
+
+# The Kestrel connector's build output
+/engines/kestrel_bridge/target/

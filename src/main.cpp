@@ -11,6 +11,8 @@
 #include "app/LoadingDialog.h"
 #include "app/Preferences.h"
 #include "app/MainWindow.h"
+#include "audio/RenderAhead.h"
+#include "audio/RenderBackends.h"
 #include "app/VideoExport.h"
 #include "core/Config.h"
 #include "game/GameState.h"
@@ -70,6 +72,7 @@ static DWORD WINAPI GameThread( LPVOID lpParameter )
     GameState::WaitForReleasedAudio();
     delete pGameState;
     MidiOutputs::CloseShared();     // (the synth stayed open across songs; the last screen's handle is gone)
+    RenderBackends::CloseShared();  // (the soundfonts audio rendered ahead loaded, likewise)
     delete pRenderer;
     return 0;
 }
@@ -123,6 +126,9 @@ int WINAPI wWinMain( HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow )
     if ( getenv( "PFAVIZ_UNCAPPED" ) ) { VideoSettings v = config.GetVideoSettings(); v.bLimitFPS = false; config.SetVideoSettings( v ); }
     if ( getenv( "PFAVIZ_NOTESPEED" ) ) cPlayback.SetNSpeed( atof( getenv( "PFAVIZ_NOTESPEED" ) ), false );
     if ( getenv( "PFAVIZ_MAXIMIZE" ) ) nCmdShow = SW_MAXIMIZE;
+
+    // Audio rendered ahead: its soundfonts start loading now, in the background, so the first song plays at once
+    RenderAhead::PreloadFromConfig();
 
     // A saved position that is on no monitor (an old minimized position, or a disconnected screen)
     // falls back to the default position
@@ -198,6 +204,9 @@ int WINAPI wWinMain( HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow )
 
     // The configuration is saved first: a synth plugin can deadlock the shutdown below
     if ( !getenv( "PFAVIZ_EXIT_AFTER" ) ) config.SaveConfigValues();     // a timed developer run leaves the config alone
+    // The rendered audio's soundfonts still loading in the background (a close right after the start): the
+    // process ends now, as the load would hold the exit up for seconds, and nothing of it is kept
+    if ( RenderBackends::Preloading() ) TerminateProcess( GetCurrentProcess(), 0 );
 
     // Signal the game thread to exit and wait for it. If it does not finish, the process ends anyway:
     // a DLL that waits inside its DllMain while holding the loader lock (seen with OmniMIDI's

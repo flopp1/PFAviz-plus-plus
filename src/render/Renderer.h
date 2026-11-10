@@ -104,6 +104,7 @@ public:
         float fSceneGlow = 0.0f;
         float fLimit = 0.0f;            // the glow added to a pixel tends to at most this, softly (0: no limit)
         float fVignette = 0.0f;         // the corners darkened that much (0 to 1)
+        float fVignetteFade = 0.75f;    // the part of the way in from its edge over which it fades out (0 to 1)
         int iVignetteSide = 0;          // EffectSettings::VignetteSide: from every edge, or from one side
         float afVignetteArea[4] = { 0.0f, 0.0f, 1.0f, 1.0f };    // where it darkens: left, top, right, bottom, as parts of the frame
     };

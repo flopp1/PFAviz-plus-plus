@@ -35,7 +35,7 @@ int main()
 {
     Capture capture;
     {
-        TunedOutput output( std::make_unique< CaptureOutput >( capture ) );
+        ScaleTunedOutput output( std::make_unique< CaptureOutput >( capture ) );
         assert( output.Init() && capture.sysex.size() == 3 );
         const unsigned cases[][4] = {
             { 0, 124, 0, 48 }, { 0, 125, 1, 48 }, { 0, 127, 1, 49 }, { 0, 128, 2, 50 },

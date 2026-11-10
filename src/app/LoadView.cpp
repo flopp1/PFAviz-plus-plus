@@ -4,14 +4,29 @@
 #include <algorithm>
 
 #include "app/DarkMode.h"
+#include "core/Util.h"
 
 namespace
 {
     const wchar_t *const Class = L"PFAvizLoadView";
 
+    // A bar gliding from one value to the next (Model::bSmooth): from at t0 to to at t0 + dur
+    struct Glide { double from = 0, to = 0; long long t0 = 0, dur = 1; std::wstring sKey; };
+    double GlideAt( const Glide &g, long long llNow )
+    {
+        const double t = std::clamp( (double)( llNow - g.t0 ) / (double)g.dur, 0.0, 1.0 );
+        return g.from + ( g.to - g.from ) * t;
+    }
+    const UINT_PTR GlideTimer = 1;
+    const UINT GlideMs = 15;                // (about 60 a second while a bar moves)
+
     struct State
     {
         LoadView::Model m;
+        std::vector< Glide > vGlide;        // the rows' bars, in order (smooth models)
+        long long llLastSet = 0;
+        bool bGliding = false;
+        int iImageCY = 0;                   // the picture's height, as laid out
         int iScroll = 0, iScrollX = 0;
         int iContent = 0;           // the content's height, laid out iContentCX wide
         int iContentCX = 0;         // the view's width, or MinContentCX when narrower (then scrolled sideways)
@@ -70,8 +85,9 @@ namespace
 
     const UINT Line = DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS;
 
-    // Lays the model out from y0 (scrolled), drawing when bDraw; returns its height
-    int Layout( HDC hdc, const LoadView::Model &m, int cx, int y0, bool bDraw )
+    // Lays the model out from y0 (scrolled), drawing when bDraw; returns its height. pBars: the bars as
+    // shown, row by row (null: as the model has them); iImageCY: the picture's height
+    int Layout( HDC hdc, const LoadView::Model &m, int cx, int y0, bool bDraw, const std::vector< double > *pBars = nullptr, int iImageCY = 0 )
     {
         const Colors c = GetColors();
         const Fonts &f = GetFonts();
@@ -108,6 +124,20 @@ namespace
         }
         y += 14;
 
+        // The picture, as wide as the content and as tall as it was given
+        if ( m.fnImage && iImageCY > 0 )
+        {
+            if ( bDraw )
+            {
+                RECT rc = { Margin, y, Margin + W, y + iImageCY };
+                SaveDC( hdc );
+                IntersectClipRect( hdc, rc.left, rc.top, rc.right, rc.bottom );
+                m.fnImage( hdc, rc );
+                RestoreDC( hdc, -1 );
+            }
+            y += iImageCY + 14;
+        }
+
         // The figures, in tiles across
         if ( !m.vTiles.empty() )
         {
@@ -124,6 +154,7 @@ namespace
         }
 
         // The sections: a heading over a hairline, then the rows; at x, cw wide
+        size_t iRow = 0;
         auto DrawSection = [&]( const LoadView::Section &s, const int X, const int CW, int y ) -> int
         {
             if ( s.vRows.empty() ) return y;
@@ -145,6 +176,8 @@ namespace
             {
                 const bool bPart = r.iIndent > 0;
                 const int cy = bPart ? PartCY : RowCY;
+                const double dBar = pBars && iRow < pBars->size() && r.dBar >= 0.0 ? ( *pBars )[iRow] : r.dBar;
+                iRow++;
                 if ( bDraw )
                 {
                     const int iIndent = r.iIndent * 14;
@@ -153,11 +186,11 @@ namespace
                     Text( hdc, r.sLabel, hLabel, cLabel, X + iIndent, y, iLabelCX - iIndent - 8, cy, Line );
                     if ( bBars )
                     {
-                        if ( r.dBar >= 0.0 && iBarCX > 20 )
+                        if ( dBar >= 0.0 && iBarCX > 20 )
                         {
                             const int h = bPart ? 4 : 6, by = y + ( cy - h ) / 2;
                             Fill( hdc, iBarX, by, iBarCX, h, c.track, h );
-                            int iFill = (int)( std::clamp( r.dBar, 0.0, 1.0 ) * iBarCX + 0.5 );
+                            int iFill = (int)( std::clamp( dBar, 0.0, 1.0 ) * iBarCX + 0.5 );
                             if ( iFill > 0 ) Fill( hdc, iBarX, by, std::max( iFill, h ), h, bPart ? c.accentSoft : c.accent, h );
                         }
                         Text( hdc, r.sValue, bPart ? f.hSmall : f.hBody, bPart ? c.dim : c.text, iBarX + std::max( iBarCX, 0 ) + 8, y, iValueCX, cy,
@@ -200,6 +233,13 @@ namespace
             p->iContentCX = std::max< int >( rc.right, MinContentCX );
             HDC hdc = GetDC( hWnd );
             p->iContent = Layout( hdc, p->m, p->iContentCX, 0, false );
+            // (the picture takes the height the rest leaves, at least its least)
+            p->iImageCY = 0;
+            if ( p->m.fnImage )
+            {
+                p->iImageCY = std::max( p->m.iImageMinCY, (int)rc.bottom - p->iContent - 14 );
+                p->iContent += p->iImageCY + 14;
+            }
             ReleaseDC( hWnd, hdc );
             p->iScroll = std::clamp( p->iScroll, 0, std::max( 0, p->iContent - (int)rc.bottom ) );
             p->iScrollX = std::clamp( p->iScrollX, 0, std::max( 0, p->iContentCX - (int)rc.right ) );
@@ -285,8 +325,20 @@ namespace
                 Fill( hMem, 0, 0, rc.right, rc.bottom, GetColors().back, 0 );
                 if ( p )
                 {
+                    std::vector< double > vBars;
+                    bool bMoving = false;
+                    if ( p->m.bSmooth )
+                    {
+                        const long long llNow = Timer::NowMicroSecs();
+                        for ( const Glide &g : p->vGlide )
+                        {
+                            vBars.push_back( GlideAt( g, llNow ) );
+                            bMoving |= llNow < g.t0 + g.dur && g.from != g.to;
+                        }
+                    }
+                    if ( !bMoving && p->bGliding ) { KillTimer( hWnd, GlideTimer ); p->bGliding = false; }
                     SetViewportOrgEx( hMem, -p->iScrollX, 0, nullptr );
-                    Layout( hMem, p->m, std::max< int >( p->iContentCX, rc.right ), -p->iScroll, true );
+                    Layout( hMem, p->m, std::max< int >( p->iContentCX, rc.right ), -p->iScroll, true, p->m.bSmooth ? &vBars : nullptr, p->iImageCY );
                     SetViewportOrgEx( hMem, 0, 0, nullptr );
                 }
                 BitBlt( hdc, 0, 0, rc.right, rc.bottom, hMem, 0, 0, SRCCOPY );
@@ -296,6 +348,9 @@ namespace
                 EndPaint( hWnd, &ps );
                 return 0;
             }
+            case WM_TIMER:
+                if ( wParam == GlideTimer ) { InvalidateRect( hWnd, nullptr, FALSE ); return 0; }
+                break;
             case WM_VSCROLL:
             case WM_HSCROLL:
                 if ( !p ) break;
@@ -333,6 +388,37 @@ void LoadView::Set( HWND hView, Model &&m )
 {
     State *p = reinterpret_cast< State * >( GetWindowLongPtrW( hView, GWLP_USERDATA ) );
     if ( !p ) return;
+    // The bars glide from where they are shown to the new values, over the time since the last values
+    // came (so steady progress moves at an even pace, a step behind); one going back, or a new row, jumps
+    const long long llNow = Timer::NowMicroSecs();
+    std::vector< Glide > vGlide;
+    if ( m.bSmooth )
+    {
+        const long long llDur = std::clamp< long long >( llNow - p->llLastSet, 30000, 600000 );
+        size_t i = 0;
+        bool bMoving = false;
+        for ( const Section &s : m.vSections )
+            for ( const Row &r : s.vRows )
+            {
+                Glide g;
+                g.sKey = s.sTitle + L"\x1f" + r.sLabel;
+                g.to = std::clamp( r.dBar, 0.0, 1.0 );
+                g.t0 = llNow;
+                g.dur = llDur;
+                g.from = g.to;
+                if ( p->m.bSmooth && i < p->vGlide.size() && p->vGlide[i].sKey == g.sKey )
+                {
+                    const double dNow = GlideAt( p->vGlide[i], llNow );
+                    if ( g.to >= dNow ) g.from = dNow;
+                }
+                bMoving |= g.from != g.to;
+                vGlide.push_back( g );
+                i++;
+            }
+        if ( bMoving && !p->bGliding ) p->bGliding = SetTimer( hView, GlideTimer, GlideMs, nullptr ) != 0;
+    }
+    p->vGlide = std::move( vGlide );
+    p->llLastSet = llNow;
     p->m = std::move( m );
     UpdateScroll( hView, p );
     InvalidateRect( hView, nullptr, FALSE );

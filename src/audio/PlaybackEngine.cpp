@@ -66,12 +66,87 @@ void PlaybackEngine::Start( long long llStartTime )
     }
     m_bStop = false;
     m_bReopen = true;
+    m_bStarted = true;
     m_SenderThread = std::thread( &PlaybackEngine::SenderThread, this );
     m_DecoderThread = std::thread( &PlaybackEngine::DecoderThread, this );
+    if ( m_pAhead ) m_pAhead->Start( m_AheadSettings );
+}
+
+bool PlaybackEngine::SetRendered( const RenderAhead::Settings &s )
+{
+    if ( !s.bOn )
+    {
+        if ( !m_pAhead ) return false;
+        m_pAhead.reset();
+        m_bReopen.store( true, std::memory_order_release );
+        m_bIdle.store( false, std::memory_order_release );
+        return true;
+    }
+    m_AheadSettings = s;
+    if ( m_pAhead ) { m_pAhead->SetSettings( s ); return false; }
+    m_bIdle.store( true, std::memory_order_release );
+    m_pAhead = std::make_unique< RenderAhead >( m_pSong, m_Clock, m_pMuteMask.get() );
+    m_pAhead->SetMute( m_bMute.load( std::memory_order_relaxed ) );
+    m_pAhead->SetVolume( m_dVolume );
+    UpdateAheadSound();
+    if ( m_bStarted ) m_pAhead->Start( s );
+    return true;
+}
+
+RenderAhead::Sound PlaybackEngine::AheadSound() const
+{
+    RenderAhead::Sound snd;
+    snd.dVelocityCorrect = m_dEvenOut;
+    snd.iMetronome = m_iMetronome.load( std::memory_order_relaxed );
+    snd.iMinVelocity = m_iMinVelocity.load( std::memory_order_relaxed );
+    snd.bCollapse = m_bCollapse.load( std::memory_order_relaxed );
+    snd.llMaxSendsPerSec = m_llMaxSendsPerSec.load( std::memory_order_relaxed );
+    snd.bTuning31 = m_bTuning31.load( std::memory_order_relaxed );
+    snd.bTuningBend = m_bTuningBend.load( std::memory_order_relaxed );
+    return snd;
+}
+
+void PlaybackEngine::UpdateAheadSound()
+{
+    if ( m_pAhead ) m_pAhead->SetSound( AheadSound() );
+}
+
+std::unique_ptr< RenderAhead > PlaybackEngine::MakeOfflineRender( unsigned uRate )
+{
+    auto p = std::make_unique< RenderAhead >( m_pSong, m_pMuteMask.get(), uRate );
+    p->SetVolume( m_dVolume );
+    p->SetSound( AheadSound() );
+    return p;
+}
+
+void PlaybackEngine::SetMute( bool bMute )
+{
+    m_bMute.store( bMute, std::memory_order_relaxed );
+    if ( m_pAhead ) m_pAhead->SetMute( bMute );
+}
+
+void PlaybackEngine::SetVolume( double dVolume, double dEvenOut )
+{
+    m_dVolume = dVolume;
+    m_dEvenOut = dEvenOut;
+    if ( m_pAhead ) { m_pAhead->SetVolume( dVolume ); UpdateAheadSound(); }
+}
+
+void PlaybackEngine::SetMetronome( int iMode )
+{
+    m_iMetronome.store( iMode, std::memory_order_relaxed );
+    UpdateAheadSound();
+}
+
+void PlaybackEngine::SetMinVelocity( int iMinVelocity )
+{
+    m_iMinVelocity.store( iMinVelocity, std::memory_order_relaxed );
+    UpdateAheadSound();
 }
 
 void PlaybackEngine::Stop()
 {
+    m_pAhead.reset();
     m_bStop = true;
     if ( m_DecoderThread.joinable() ) m_DecoderThread.join();
     if ( m_SenderThread.joinable() ) m_SenderThread.join();
@@ -103,6 +178,7 @@ bool PlaybackEngine::SetTuning( bool bTuning31, bool bPitchBend )
     m_bTuning31.store( bTuning31, std::memory_order_relaxed );
     m_bTuningBend.store( bPitchBend, std::memory_order_relaxed );
     m_bReopen.store( true, std::memory_order_release );
+    UpdateAheadSound();
     return true;
 }
 
@@ -122,6 +198,7 @@ void PlaybackEngine::SetChannelMuted( int iTrack, int iChannel, bool bMuted )
     uint16_t uBit = (uint16_t)( 1u << iChannel );
     if ( bMuted ) m_pMuteMask[iTrack].fetch_or( uBit, std::memory_order_relaxed );
     else m_pMuteMask[iTrack].fetch_and( (uint16_t)~uBit, std::memory_order_relaxed );
+    if ( m_pAhead ) m_pAhead->MuteChanged();
 }
 
 void PlaybackEngine::SetMaxThreads( int iThreads )
@@ -141,10 +218,12 @@ void PlaybackEngine::SetSendLimits( bool bCollapse, long long llMaxSendsPerSec )
 {
     m_bCollapse.store( bCollapse, std::memory_order_relaxed );
     m_llMaxSendsPerSec.store( std::max< long long >( 0, llMaxSendsPerSec ), std::memory_order_relaxed );
+    UpdateAheadSound();
 }
 
 std::wstring PlaybackEngine::OutputName() const
 {
+    if ( m_pAhead ) return std::wstring( L"Rendered ahead (" ) + RenderBackends::EngineName( m_AheadSettings.eEngine ) + L")";
     std::lock_guard< std::mutex > lock( m_mxName );
     return m_sOutputName;
 }
@@ -207,6 +286,13 @@ void PlaybackEngine::DecoderThread()
 
     while ( !m_bStop.load( std::memory_order_relaxed ) )
     {
+        // Audio rendered ahead plays instead: rest (and seek afresh after)
+        if ( m_bIdle.load( std::memory_order_acquire ) )
+        {
+            uEpoch = m_Clock.Epoch() - 1;
+            WaitUs( hTimer, 5000 );
+            continue;
+        }
         // A seek (or the start) bumped the epoch
         unsigned e;
         bool bReset;
@@ -497,6 +583,22 @@ void PlaybackEngine::SenderThread()
 
     while ( !m_bStop.load( std::memory_order_relaxed ) )
     {
+        // Audio rendered ahead plays instead: the output closes (its synth's notes off), nothing is sent
+        if ( m_bIdle.load( std::memory_order_acquire ) )
+        {
+            if ( m_pOut )
+            {
+                m_pOut->AllNotesOff();
+                m_pOut.reset();
+                std::lock_guard< std::mutex > lock( m_mxName );
+                m_sOutputName.clear();
+            }
+            m_bHasOutput.store( false, std::memory_order_release );
+            m_iRead.store( m_iWrite.load( std::memory_order_acquire ), std::memory_order_release );
+            WakeByAddressSingle( &m_iRead );
+            WaitUs( hTimer, 5000 );
+            continue;
+        }
         Reopen();
         if ( m_bNotesOff.exchange( false, std::memory_order_acq_rel ) && m_pOut )
             m_pOut->AllNotesOff();

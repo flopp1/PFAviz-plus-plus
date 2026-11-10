@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <colordlg.h>
+#include <shobjidl.h>
 #include <commctrl.h>
 #include <commdlg.h>
 #include <cstdio>
@@ -18,6 +19,9 @@
 #include "app/MainWindow.h"
 #include "app/VideoExport.h"
 #include "audio/MidiOutput.h"
+#include "app/Tips.h"
+#include "audio/RenderAhead.h"
+#include "audio/RenderBackends.h"
 #include "core/Config.h"
 #include "core/Ini.h"
 #include "app/LoadingDialog.h"
@@ -1211,6 +1215,388 @@ namespace
     }
 
     //-------------------------------------------------------------------------
+    // Rendered audio (AudioSettings; audio/RenderAhead.h)
+    //-------------------------------------------------------------------------
+
+    // The voices typed for each engine (the field shows the chosen engine's)
+    int g_aRenderVoices[2] = { 1000, 1 << 20 };
+    int g_iRenderEngineShown = 0;
+    RenderBackends::KestrelOpts g_RenderKb;     // the advanced dialog's, applied with the page
+
+    INT_PTR CALLBACK KestrelAdvProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
+    {
+        static const int aBlocks[] = { 512, 1024, 2048, 4096, 8192, 16384 };
+        static const int aGates[] = { 8, 16, 32, 64, 128, 256 };
+        static const int aGroups[] = { 32, 64, 128, 256, 512, 1024 };
+        auto Pick = []( const int *a, int n, int v, int d ) { for ( int i = 0; i < n; i++ ) if ( a[i] == v ) return i; return d; };
+        auto Show = [&]( const RenderBackends::KestrelOpts &k ) {
+            SendDlgItemMessageW( hWnd, IDC_KA_INTERP, CB_SETCURSEL, k.iInterpolation, 0 );
+            SendDlgItemMessageW( hWnd, IDC_KA_STEAL, CB_SETCURSEL, k.iStealRule, 0 );
+            SendDlgItemMessageW( hWnd, IDC_KA_ADMIT, CB_SETCURSEL, k.iAdmitRule, 0 );
+            SetDlgItemInt( hWnd, IDC_KA_STEALPCT, k.iMaxStealPercent, FALSE );
+            SetDlgItemInt( hWnd, IDC_KA_FLOOR, k.iReleaseFloorDb, TRUE );
+            SetDlgItemInt( hWnd, IDC_KA_LAYERS, k.iMaxLayers, FALSE );
+            CheckDlgButton( hWnd, IDC_KA_FILTER, k.bFilter ? BST_CHECKED : BST_UNCHECKED );
+            CheckDlgButton( hWnd, IDC_KA_LFO, k.bLfo ? BST_CHECKED : BST_UNCHECKED );
+            CheckDlgButton( hWnd, IDC_KA_MODENV, k.bModEnv ? BST_CHECKED : BST_UNCHECKED );
+            CheckDlgButton( hWnd, IDC_KA_DC, k.bDcBlocker ? BST_CHECKED : BST_UNCHECKED );
+            SetDlgItemInt( hWnd, IDC_KA_DCHZ, k.iDcBlockerHz, FALSE );
+            EnableWindow( GetDlgItem( hWnd, IDC_KA_DCHZ ), k.bDcBlocker );
+            int iBlock = 3;
+            for ( int i = 0; i < 6; i++ ) if ( aBlocks[i] == k.iBlockFrames ) iBlock = i;
+            SendDlgItemMessageW( hWnd, IDC_KA_BLOCK, CB_SETCURSEL, iBlock, 0 );
+            SendDlgItemMessageW( hWnd, IDC_KA_GATE, CB_SETCURSEL, Pick( aGates, 6, k.iGateFrames, 2 ), 0 );
+            SendDlgItemMessageW( hWnd, IDC_KA_WORKGROUP, CB_SETCURSEL, Pick( aGroups, 6, k.iWorkgroupSize, 3 ), 0 );
+            SetDlgItemInt( hWnd, IDC_KA_RENDERWG, k.iRenderWorkgroups, FALSE );
+            SetDlgItemInt( hWnd, IDC_KA_SUBMIT, k.iSubmitVoices, FALSE );
+            SetDlgItemInt( hWnd, IDC_KA_THREADS, k.iVoiceThreads, FALSE );
+            CheckDlgButton( hWnd, IDC_KA_SORT, k.bSortVoices ? BST_CHECKED : BST_UNCHECKED );
+            CheckDlgButton( hWnd, IDC_KA_KAHAN, k.bKahan ? BST_CHECKED : BST_UNCHECKED );
+            CheckDlgButton( hWnd, IDC_KA_UNCHECKED, k.bUnchecked ? BST_CHECKED : BST_UNCHECKED );
+        };
+        switch ( msg )
+        {
+            case WM_INITDIALOG:
+            {
+                for ( const wchar_t *s : { L"Nearest", L"Linear", L"Cubic" } ) SendDlgItemMessageW( hWnd, IDC_KA_INTERP, CB_ADDSTRING, 0, ( LPARAM )s );
+                for ( const wchar_t *s : { L"the oldest voice", L"no voice (drop the new note)", L"the quietest voice" } ) SendDlgItemMessageW( hWnd, IDC_KA_STEAL, CB_ADDSTRING, 0, ( LPARAM )s );
+                for ( const wchar_t *s : { L"the loudest notes", L"notes evenly" } ) SendDlgItemMessageW( hWnd, IDC_KA_ADMIT, CB_ADDSTRING, 0, ( LPARAM )s );
+                for ( int b : aBlocks ) { wchar_t s[16]; swprintf( s, 16, L"%d", b ); SendDlgItemMessageW( hWnd, IDC_KA_BLOCK, CB_ADDSTRING, 0, ( LPARAM )s ); }
+                for ( int b : aGates ) { wchar_t s[16]; swprintf( s, 16, L"%d", b ); SendDlgItemMessageW( hWnd, IDC_KA_GATE, CB_ADDSTRING, 0, ( LPARAM )s ); }
+                for ( int b : aGroups ) { wchar_t s[16]; swprintf( s, 16, L"%d", b ); SendDlgItemMessageW( hWnd, IDC_KA_WORKGROUP, CB_ADDSTRING, 0, ( LPARAM )s ); }
+                Show( g_RenderKb );
+                return TRUE;
+            }
+            case WM_COMMAND:
+                switch ( LOWORD( wParam ) )
+                {
+                    case IDC_KA_DC:
+                        EnableWindow( GetDlgItem( hWnd, IDC_KA_DCHZ ), IsDlgButtonChecked( hWnd, IDC_KA_DC ) == BST_CHECKED );
+                        return TRUE;
+                    case IDC_KA_DEFAULTS:
+                        Show( RenderBackends::KestrelOpts() );
+                        return TRUE;
+                    case IDOK:
+                    {
+                        RenderBackends::KestrelOpts k = g_RenderKb;
+                        BOOL bOk;
+                        k.iInterpolation = std::clamp( (int)SendDlgItemMessageW( hWnd, IDC_KA_INTERP, CB_GETCURSEL, 0, 0 ), 0, 2 );
+                        k.iStealRule = std::clamp( (int)SendDlgItemMessageW( hWnd, IDC_KA_STEAL, CB_GETCURSEL, 0, 0 ), 0, 2 );
+                        k.iAdmitRule = std::clamp( (int)SendDlgItemMessageW( hWnd, IDC_KA_ADMIT, CB_GETCURSEL, 0, 0 ), 0, 1 );
+                        int v = (int)GetDlgItemInt( hWnd, IDC_KA_STEALPCT, &bOk, FALSE );
+                        if ( bOk ) k.iMaxStealPercent = std::clamp( v, 1, 100 );
+                        v = (int)GetDlgItemInt( hWnd, IDC_KA_FLOOR, &bOk, TRUE );
+                        if ( bOk ) k.iReleaseFloorDb = std::clamp( v, -160, -20 );
+                        v = (int)GetDlgItemInt( hWnd, IDC_KA_LAYERS, &bOk, FALSE );
+                        if ( bOk ) k.iMaxLayers = std::clamp( v, 1, 64 );
+                        k.bFilter = IsDlgButtonChecked( hWnd, IDC_KA_FILTER ) == BST_CHECKED;
+                        k.bLfo = IsDlgButtonChecked( hWnd, IDC_KA_LFO ) == BST_CHECKED;
+                        k.bModEnv = IsDlgButtonChecked( hWnd, IDC_KA_MODENV ) == BST_CHECKED;
+                        k.bDcBlocker = IsDlgButtonChecked( hWnd, IDC_KA_DC ) == BST_CHECKED;
+                        v = (int)GetDlgItemInt( hWnd, IDC_KA_DCHZ, &bOk, FALSE );
+                        if ( bOk ) k.iDcBlockerHz = std::clamp( v, 1, 200 );
+                        k.iBlockFrames = aBlocks[std::clamp( (int)SendDlgItemMessageW( hWnd, IDC_KA_BLOCK, CB_GETCURSEL, 0, 0 ), 0, 5 )];
+                        k.iGateFrames = aGates[std::clamp( (int)SendDlgItemMessageW( hWnd, IDC_KA_GATE, CB_GETCURSEL, 0, 0 ), 0, 5 )];
+                        k.iWorkgroupSize = aGroups[std::clamp( (int)SendDlgItemMessageW( hWnd, IDC_KA_WORKGROUP, CB_GETCURSEL, 0, 0 ), 0, 5 )];
+                        v = (int)GetDlgItemInt( hWnd, IDC_KA_RENDERWG, &bOk, FALSE );
+                        if ( bOk ) k.iRenderWorkgroups = std::clamp( v, 1, 1 << 24 );
+                        v = (int)GetDlgItemInt( hWnd, IDC_KA_SUBMIT, &bOk, FALSE );
+                        if ( bOk ) k.iSubmitVoices = std::clamp( v, 1024, 1 << 30 );
+                        v = (int)GetDlgItemInt( hWnd, IDC_KA_THREADS, &bOk, FALSE );
+                        if ( bOk ) k.iVoiceThreads = std::clamp( v, 1, 64 );
+                        k.bSortVoices = IsDlgButtonChecked( hWnd, IDC_KA_SORT ) == BST_CHECKED;
+                        k.bKahan = IsDlgButtonChecked( hWnd, IDC_KA_KAHAN ) == BST_CHECKED;
+                        k.bUnchecked = IsDlgButtonChecked( hWnd, IDC_KA_UNCHECKED ) == BST_CHECKED;
+                        const bool bChanged = !( k == g_RenderKb );
+                        g_RenderKb = k;
+                        EndDialog( hWnd, bChanged ? IDOK : IDCANCEL );
+                        return TRUE;
+                    }
+                    case IDCANCEL:
+                        EndDialog( hWnd, IDCANCEL );
+                        return TRUE;
+                }
+                break;
+        }
+        return FALSE;
+    }
+
+    VOID ShowRenderNotes( HWND hWnd, int eEngine );
+
+    VOID ShowRenderVoices( HWND hWnd, int eEngine )
+    {
+        // Keep what was typed for the engine shown before
+        if ( g_iRenderEngineShown != RenderBackends::EngineMerlin )
+        {
+            BOOL bOk = FALSE;
+            UINT u = GetDlgItemInt( hWnd, IDC_RA_VOICES, &bOk, FALSE );
+            if ( bOk ) g_aRenderVoices[g_iRenderEngineShown == RenderBackends::EngineBass ? 0 : 1] = (int)u;
+        }
+        g_iRenderEngineShown = eEngine;
+        const bool bMerlin = eEngine == RenderBackends::EngineMerlin;
+        if ( bMerlin ) SetDlgItemTextW( hWnd, IDC_RA_VOICES, L"" );
+        else SetDlgItemInt( hWnd, IDC_RA_VOICES, g_aRenderVoices[eEngine == RenderBackends::EngineBass ? 0 : 1], FALSE );
+        EnableWindow( GetDlgItem( hWnd, IDC_RA_VOICES ), !bMerlin );
+        const bool bBass = eEngine == RenderBackends::EngineBass;
+        SetDlgItemTextW( hWnd, IDC_RA_VOICESNOTE, bBass ? L"per instance (1 to 100,000)" : bMerlin ? L"Merlin has no voice limit" : L"(1 to 16,777,216)" );
+        EnableWindow( GetDlgItem( hWnd, IDC_RA_FX ), bBass );
+        for ( int id : { IDC_RA_THREADS, IDC_RA_THREADSLBL, IDC_RA_THREADSNOTE, IDC_RA_NPS, IDC_RA_NPSLBL, IDC_RA_NPSNOTE, IDC_RA_BYCHANNEL } ) EnableWindow( GetDlgItem( hWnd, id ), bBass );
+        for ( int id : { IDC_RA_GPUSHARE, IDC_RA_ADVANCED } ) EnableWindow( GetDlgItem( hWnd, id ), !bBass );
+        ShowRenderNotes( hWnd, eEngine );
+    }
+
+    // Merlin's weak spots and the open song's, and what the last soundfont load reported
+    VOID ShowRenderNotes( HWND hWnd, int eEngine )
+    {
+        std::wstring s;
+        if ( eEngine == RenderBackends::EngineMerlin )
+        {
+            const std::wstring sSong = RenderBackends::GetNote( RenderBackends::NoteSong );
+            s = L"Merlin does not apply channel volume or expression (CC7, CC11) properly yet, renders many pitch bends slowly, and takes one "
+                L"soundfont (several go to Kestrel). 31-EDO by pitch bends it plays; by scale tuning, Kestrel makes its pieces. ";
+            s += sSong.empty() ? L"The open song uses none of these (or no song is open)." : L"The open song: " + sSong + L".";
+        }
+        const std::wstring sLoad = RenderBackends::GetNote( RenderBackends::NoteLoad );
+        if ( !sLoad.empty() )
+        {
+            std::wstring t = sLoad;
+            for ( wchar_t &c : t ) if ( c == L'\n' ) c = L';';
+            s += ( s.empty() ? L"" : L" " ) + std::wstring( L"Last soundfont load: " ) + t;
+        }
+        SetDlgItemTextW( hWnd, IDC_RA_NOTES, s.empty() ? L"None." : s.c_str() );
+    }
+
+    VOID ShowRenderDlls( HWND hWnd )
+    {
+        SetDlgItemTextW( hWnd, IDC_RA_DLLSTATUS, ( L"Engines: " + RenderBackends::DllStatus() ).c_str() );
+    }
+
+    VOID EnableRenderButtons( HWND hWnd )
+    {
+        HWND hList = GetDlgItem( hWnd, IDC_RA_FONTS );
+        int iSel = (int)SendMessageW( hList, LB_GETCURSEL, 0, 0 ), n = (int)SendMessageW( hList, LB_GETCOUNT, 0, 0 );
+        EnableWindow( GetDlgItem( hWnd, IDC_RA_REMOVE ), iSel >= 0 );
+        EnableWindow( GetDlgItem( hWnd, IDC_RA_UP ), iSel > 0 );
+        EnableWindow( GetDlgItem( hWnd, IDC_RA_DOWN ), iSel >= 0 && iSel < n - 1 );
+    }
+
+    std::wstring ListText( HWND hList, int i )
+    {
+        int n = (int)SendMessageW( hList, LB_GETTEXTLEN, i, 0 );
+        if ( n < 0 ) return std::wstring();
+        std::wstring s( (size_t)n + 1, L'\0' );
+        SendMessageW( hList, LB_GETTEXT, i, ( LPARAM )&s[0] );
+        s.resize( (size_t)n );
+        return s;
+    }
+
+    // The list box's horizontal scroll reaches its longest path
+    VOID FitRenderList( HWND hList )
+    {
+        HDC hdc = GetDC( hList );
+        HFONT hOld = ( HFONT )SelectObject( hdc, ( HFONT )SendMessageW( hList, WM_GETFONT, 0, 0 ) );
+        int iMax = 0;
+        for ( int i = 0, n = (int)SendMessageW( hList, LB_GETCOUNT, 0, 0 ); i < n; i++ )
+        {
+            std::wstring s = ListText( hList, i );
+            SIZE sz;
+            if ( GetTextExtentPoint32W( hdc, s.c_str(), (int)s.size(), &sz ) ) iMax = std::max( iMax, (int)sz.cx );
+        }
+        SelectObject( hdc, hOld );
+        ReleaseDC( hList, hdc );
+        SendMessageW( hList, LB_SETHORIZONTALEXTENT, iMax + 8, 0 );
+    }
+
+    INT_PTR CALLBACK RenderProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
+    {
+        switch ( msg )
+        {
+            case WM_INITDIALOG:
+            {
+                AddTips( hWnd, {
+                    { IDC_RA_ON, L"The song is made into audio in the background, ahead of where it plays, so even the densest passages play every note. "
+                                 L"A seek far away, a change of speed, or muting a channel makes it again from there (until then the old audio plays). "
+                                 L"The notes are the ones the Performance tab's velocity floor, collapsing and send limit leave, for every engine." },
+                    { IDC_RA_ENGINE, L"BASSMIDI runs on the processor, several pieces at once. Kestrel runs on the graphics card, continuously (one synth kept "
+                                     L"from block to block). Merlin runs on the graphics card in pieces, never drops a note, and hands what it cannot do to "
+                                     L"Kestrel. Neither reads every soundfont opcode or controller BASSMIDI does." },
+                    { IDC_RA_VOICES, L"BASSMIDI: each instance's (each thread's, or each channel and key group's). Kestrel: in all. Merlin has no limit." },
+                    { IDC_RA_THREADS, L"BASSMIDI: each piece is split by key over this many instances, each with the voices set (one keeps up with a few thousand)." },
+                    { IDC_RA_BYCHANNEL, L"16 times the threads' instances: one per channel and key group, each with the voices set (OmniMIDI's way). Instances "
+                                        L"that get no notes cost nothing. BASSMIDI renders many small instances much faster than a few large ones." },
+                    { IDC_RA_NPS, L"BASSMIDI only, separate from the Performance tab's send limit: each instance (each thread, or each channel and key "
+                                  L"group) limits its own notes a second, as OmniMIDI's limiter does. A note of velocity v is played while the instance's "
+                                  L"rate is under v/127 of the limit (so the quietest go first), the rate being its notes in the last second, or its notes in "
+                                  L"the current millisecond at a second's rate when more (which thins out big chords). A skipped note's off goes with it. "
+                                  L"0: no limit." },
+                    { IDC_RA_FX, L"BASSMIDI's reverb and chorus." },
+                    { IDC_RA_LIMITER, L"Keeps the joined audio under full scale." },
+                    { IDC_RA_GPUSHARE, L"10 to 100. Once 5 seconds are made, Kestrel and Merlin rest between blocks or pieces, so they use the graphics card at "
+                                       L"most this share of the time; the rest is the picture's." },
+                    { IDC_RA_LOSSLESS, L"Identical notes (channel, key, velocity, tick) sent once with their count. Merlin reads Spiderweb's repeat marks; "
+                                       L"Kestrel's copies that also end together are one voice at their summed loudness. BASSMIDI gets every note." },
+                    { IDC_RA_DEGRADE, L"When the next audio would not be made before what is made runs out, it is made lighter: BASSMIDI skips its quietest "
+                                      L"notes, Kestrel and Merlin lower the voice cap. Made again in full once well ahead." },
+                    { IDC_RA_DISCARD, L"When the engine is changed, the audio the old one made is thrown away at once (else it plays until made again)." },
+                    { IDC_RA_AHEAD, L"5 to 43200 seconds (12 hours). Past 10 minutes ahead, it is kept on disk." },
+                    { IDC_RA_BEHIND, L"0 to 43200 seconds, so going back plays at once. Past 5 minutes behind, it is kept on disk." },
+                } );
+                AudioSettings a = Config::GetConfig().CopyAudioSettings();
+                CheckDlgButton( hWnd, IDC_RA_ON, a.bRendered ? BST_CHECKED : BST_UNCHECKED );
+                HWND hEngine = GetDlgItem( hWnd, IDC_RA_ENGINE );
+                SendMessageW( hEngine, CB_ADDSTRING, 0, ( LPARAM )L"BASSMIDI (processor)" );
+                SendMessageW( hEngine, CB_ADDSTRING, 0, ( LPARAM )L"Kestrel (graphics card)" );
+                SendMessageW( hEngine, CB_ADDSTRING, 0, ( LPARAM )L"Merlin (graphics card)" );
+                SendMessageW( hEngine, CB_SETCURSEL, a.eRenderEngine, 0 );
+                g_aRenderVoices[0] = a.iBassVoices;
+                g_aRenderVoices[1] = a.iKestrelVoices;
+                g_iRenderEngineShown = RenderBackends::EngineMerlin;     // (nothing typed to keep yet)
+                ShowRenderVoices( hWnd, a.eRenderEngine );
+                CheckDlgButton( hWnd, IDC_RA_FX, a.bRenderFx ? BST_CHECKED : BST_UNCHECKED );
+                SetDlgItemInt( hWnd, IDC_RA_THREADS, a.iBassThreads, FALSE );
+                SetDlgItemInt( hWnd, IDC_RA_GPUSHARE, a.iGpuShare, FALSE );
+                g_RenderKb = a.kb;
+                CheckDlgButton( hWnd, IDC_RA_LIMITER, a.bLimiter ? BST_CHECKED : BST_UNCHECKED );
+                SetDlgItemInt( hWnd, IDC_RA_AHEAD, a.iAheadSecs, FALSE );
+                SetDlgItemInt( hWnd, IDC_RA_BEHIND, a.iBehindSecs, FALSE );
+                SetDlgItemInt( hWnd, IDC_RA_NPS, (UINT)a.iBassNps, FALSE );
+                CheckDlgButton( hWnd, IDC_RA_BYCHANNEL, a.bBassByChannel ? BST_CHECKED : BST_UNCHECKED );
+                HWND hList = GetDlgItem( hWnd, IDC_RA_FONTS );
+                for ( size_t i = 0; i <= a.sSoundfonts.size(); )
+                {
+                    size_t j = a.sSoundfonts.find( L'|', i );
+                    if ( j == std::wstring::npos ) j = a.sSoundfonts.size();
+                    if ( j > i ) SendMessageW( hList, LB_ADDSTRING, 0, ( LPARAM )a.sSoundfonts.substr( i, j - i ).c_str() );
+                    i = j + 1;
+                }
+                FitRenderList( hList );
+                CheckDlgButton( hWnd, IDC_RA_LOSSLESS, a.bRenderLossless ? BST_CHECKED : BST_UNCHECKED );
+                CheckDlgButton( hWnd, IDC_RA_DEGRADE, a.bRenderDegrade ? BST_CHECKED : BST_UNCHECKED );
+                CheckDlgButton( hWnd, IDC_RA_DISCARD, a.bRenderDiscard ? BST_CHECKED : BST_UNCHECKED );
+                ShowRenderDlls( hWnd );
+                EnableRenderButtons( hWnd );
+                return TRUE;
+            }
+            case WM_COMMAND:
+            {
+                const WORD wId = LOWORD( wParam ), wCode = HIWORD( wParam );
+                HWND hList = GetDlgItem( hWnd, IDC_RA_FONTS );
+                if ( wId == IDC_RA_ENGINE && wCode == CBN_SELCHANGE )
+                    ShowRenderVoices( hWnd, std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_RA_ENGINE, CB_GETCURSEL, 0, 0 ) ) );
+                else if ( wId == IDC_RA_ADVANCED && wCode == BN_CLICKED )
+                {
+                    if ( DialogBoxParamW( GetModuleHandleW( nullptr ), MAKEINTRESOURCEW( IDD_KESTRELADV ), GetParent( hWnd ), KestrelAdvProc, 0 ) == IDOK )
+                        Changed( hWnd );
+                    return TRUE;
+                }
+                else if ( wId == IDC_RA_FONTS && wCode == LBN_SELCHANGE ) { EnableRenderButtons( hWnd ); return TRUE; }
+                else if ( wId == IDC_RA_ADD && wCode == BN_CLICKED )
+                {
+                    std::vector< wchar_t > vBuf( 65536, L'\0' );
+                    OPENFILENAMEW ofn = {};
+                    ofn.lStructSize = sizeof( ofn );
+                    ofn.hwndOwner = hWnd;
+                    ofn.lpstrFilter = L"Soundfonts (*.sf2, *.sf3, *.sfz, *.sf2pack)\0*.sf2;*.sf3;*.sfz;*.sf2pack\0All files (*.*)\0*.*\0";
+                    ofn.lpstrFile = vBuf.data();
+                    ofn.nMaxFile = (DWORD)vBuf.size();
+                    ofn.lpstrTitle = L"Add soundfonts";
+                    ofn.Flags = OFN_EXPLORER | OFN_HIDEREADONLY | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR | OFN_ALLOWMULTISELECT;
+                    if ( GetOpenFileNameW( &ofn ) )
+                    {
+                        // One file: its path; several: the folder, then each name
+                        std::wstring sFirst( vBuf.data() );
+                        const wchar_t *p = vBuf.data() + sFirst.size() + 1;
+                        if ( !*p ) SendMessageW( hList, LB_ADDSTRING, 0, ( LPARAM )sFirst.c_str() );
+                        for ( ; *p; p += wcslen( p ) + 1 )
+                        {
+                            std::wstring s = sFirst;
+                            if ( !s.empty() && s.back() != L'\\' ) s += L'\\';
+                            s += p;
+                            SendMessageW( hList, LB_ADDSTRING, 0, ( LPARAM )s.c_str() );
+                        }
+                        FitRenderList( hList );
+                        EnableRenderButtons( hWnd );
+                        Changed( hWnd );
+                    }
+                    return TRUE;
+                }
+                else if ( ( wId == IDC_RA_REMOVE || wId == IDC_RA_UP || wId == IDC_RA_DOWN ) && wCode == BN_CLICKED )
+                {
+                    int i = (int)SendMessageW( hList, LB_GETCURSEL, 0, 0 ), n = (int)SendMessageW( hList, LB_GETCOUNT, 0, 0 );
+                    if ( i < 0 ) return TRUE;
+                    if ( wId == IDC_RA_REMOVE )
+                    {
+                        SendMessageW( hList, LB_DELETESTRING, i, 0 );
+                        if ( n > 1 ) SendMessageW( hList, LB_SETCURSEL, std::min( i, n - 2 ), 0 );
+                    }
+                    else
+                    {
+                        int j = wId == IDC_RA_UP ? i - 1 : i + 1;
+                        if ( j < 0 || j >= n ) return TRUE;
+                        std::wstring s = ListText( hList, i );
+                        SendMessageW( hList, LB_DELETESTRING, i, 0 );
+                        SendMessageW( hList, LB_INSERTSTRING, j, ( LPARAM )s.c_str() );
+                        SendMessageW( hList, LB_SETCURSEL, j, 0 );
+                    }
+                    FitRenderList( hList );
+                    EnableRenderButtons( hWnd );
+                    Changed( hWnd );
+                    return TRUE;
+                }
+                if ( UserChange( wParam, lParam ) ) Changed( hWnd );
+                break;
+            }
+            case WM_NOTIFY:
+                if ( ( ( LPNMHDR )lParam )->code == PSN_APPLY )
+                {
+                    Config &config = Config::GetConfig();
+                    AudioSettings a = config.CopyAudioSettings();
+                    a.bRendered = IsDlgButtonChecked( hWnd, IDC_RA_ON ) == BST_CHECKED;
+                    a.eRenderEngine = std::clamp( (int)SendDlgItemMessageW( hWnd, IDC_RA_ENGINE, CB_GETCURSEL, 0, 0 ), 0, 2 );
+                    ShowRenderVoices( hWnd, a.eRenderEngine );      // (keeps what is typed)
+                    a.iBassVoices = std::clamp( g_aRenderVoices[0], 1, 100000 );
+                    a.iKestrelVoices = std::clamp( g_aRenderVoices[1], 1, 1 << 24 );
+                    BOOL bOk = FALSE;
+                    UINT uAhead = GetDlgItemInt( hWnd, IDC_RA_AHEAD, &bOk, FALSE );
+                    if ( bOk ) a.iAheadSecs = std::clamp( (int)uAhead, RenderAhead::Settings::MinAheadSecs, RenderAhead::Settings::MaxAheadSecs );
+                    SetDlgItemInt( hWnd, IDC_RA_AHEAD, a.iAheadSecs, FALSE );
+                    UINT uBehind = GetDlgItemInt( hWnd, IDC_RA_BEHIND, &bOk, FALSE );
+                    if ( bOk ) a.iBehindSecs = std::clamp( (int)uBehind, 0, RenderAhead::Settings::MaxAheadSecs );
+                    SetDlgItemInt( hWnd, IDC_RA_BEHIND, a.iBehindSecs, FALSE );
+                    UINT uNps = GetDlgItemInt( hWnd, IDC_RA_NPS, &bOk, FALSE );
+                    if ( bOk ) a.iBassNps = (int)std::min< UINT >( uNps, 1000000000u );
+                    SetDlgItemInt( hWnd, IDC_RA_NPS, (UINT)a.iBassNps, FALSE );
+                    a.bBassByChannel = IsDlgButtonChecked( hWnd, IDC_RA_BYCHANNEL ) == BST_CHECKED;
+                    a.bLimiter = IsDlgButtonChecked( hWnd, IDC_RA_LIMITER ) == BST_CHECKED;
+                    a.bRenderFx = IsDlgButtonChecked( hWnd, IDC_RA_FX ) == BST_CHECKED;
+                    UINT uThreads = GetDlgItemInt( hWnd, IDC_RA_THREADS, &bOk, FALSE );
+                    if ( bOk ) a.iBassThreads = std::clamp( (int)uThreads, 1, 64 );
+                    SetDlgItemInt( hWnd, IDC_RA_THREADS, a.iBassThreads, FALSE );
+                    UINT uShare = GetDlgItemInt( hWnd, IDC_RA_GPUSHARE, &bOk, FALSE );
+                    if ( bOk ) a.iGpuShare = std::clamp( (int)uShare, 10, 100 );
+                    SetDlgItemInt( hWnd, IDC_RA_GPUSHARE, a.iGpuShare, FALSE );
+                    a.kb = g_RenderKb;
+                    HWND hList = GetDlgItem( hWnd, IDC_RA_FONTS );
+                    a.sSoundfonts.clear();
+                    for ( int i = 0, n = (int)SendMessageW( hList, LB_GETCOUNT, 0, 0 ); i < n; i++ )
+                    {
+                        if ( i ) a.sSoundfonts += L'|';
+                        a.sSoundfonts += ListText( hList, i );
+                    }
+                    a.bRenderLossless = IsDlgButtonChecked( hWnd, IDC_RA_LOSSLESS ) == BST_CHECKED;
+                    a.bRenderDegrade = IsDlgButtonChecked( hWnd, IDC_RA_DEGRADE ) == BST_CHECKED;
+                    a.bRenderDiscard = IsDlgButtonChecked( hWnd, IDC_RA_DISCARD ) == BST_CHECKED;
+                    config.SetAudioSettings( a );
+                    RenderAhead::PreloadFromConfig();   // (the chosen soundfonts loaded at once, song or not)
+                    SetWindowLongPtrW( hWnd, DWLP_MSGRESULT, PSNRET_NOERROR );
+                    return TRUE;
+                }
+                break;
+        }
+        return FALSE;
+    }
+
+    //-------------------------------------------------------------------------
     // Effects (EffectSettings; visual/Effects.h)
     //-------------------------------------------------------------------------
 
@@ -1245,6 +1631,7 @@ namespace
         { IDC_FX_EXPOSURE, FX( iExposure ), 0, 100, L"the auto exposure's strength (0 to 100%)" },
         { IDC_FX_EXPOSUREMS, FX( iExposureMs ), 0, 60000, L"the auto exposure's time (0 to 60000 ms)" },
         { IDC_FX_VIGNETTE, FX( iVignette ), 0, 100, L"the vignette (0 to 100%)" },
+        { IDC_FX_VIGFADE, FX( iVignetteFade ), 1, 100, L"how far in the vignette fades out (1 to 100%)" },
         { IDC_FX_HITSIZE, FX( iHitLineSize ), 0, 200, L"the hit line's thickness (0 to 200 pixels)" },
         { IDC_FX_HITSOFT, FX( iHitLineSoft ), 0, 400, L"the hit line's fade (0 to 400 pixels)" },
         { IDC_FX_HITSTRENGTH, FX( iHitLineStrength ), 0, 100, L"the hit line's strength (0 to 100%)" },
@@ -2014,10 +2401,10 @@ VOID DoPreferences( HWND hWndOwner )
         SetForegroundWindow( g_hWndPrefs );
         return;
     }
-    const int aDialogs[] = { IDD_PP1_VISUAL, IDD_PP6_EFFECTS, IDD_PP2_AUDIO, IDD_PP4_CONTROLS, IDD_PP5_PERFORMANCE };
-    const DLGPROC aProcs[] = { VisualProc, EffectsProc, AudioProc, ControlsProc, PerformanceProc };
-    const wchar_t *const aTitles[] = { L"Visual", L"Effects", L"Audio", L"Controls", L"Performance" };
-    const int iPages = 5;
+    const int aDialogs[] = { IDD_PP1_VISUAL, IDD_PP6_EFFECTS, IDD_PP2_AUDIO, IDD_PP7_RENDER, IDD_PP4_CONTROLS, IDD_PP5_PERFORMANCE };
+    const DLGPROC aProcs[] = { VisualProc, EffectsProc, AudioProc, RenderProc, ControlsProc, PerformanceProc };
+    const wchar_t *const aTitles[] = { L"Visual", L"Effects", L"Audio", L"Rendered audio", L"Controls", L"Performance" };
+    const int iPages = 6;
     static_assert( iPages <= MaxPages, "MaxPages" );
     PROPSHEETPAGEW psp[iPages] = {};
     // (kept while the window is open: a page is made from its template when its tab is first shown)

@@ -2,6 +2,7 @@
 // plus the Performance tab. Stored as UTF-8 INI in %APPDATA%\PFAviz++\config.ini.
 #pragma once
 
+#include "audio/RenderBackends.h"
 #include <atomic>
 #include <mutex>
 #include <string>
@@ -75,6 +76,7 @@ struct EffectSettings
     enum VignetteSide { VignetteAround, VignetteTop, VignetteBottom, VignetteLeft, VignetteRight, VignetteSideCount };
     int eVignetteSide;          // from every edge (darkest in the corners), or from one side only
     bool bVignetteNotes;        // over the notes area only (not the keyboard, nor the rest of the picture)
+    int iVignetteFade;          // percent of the way in from its edge over which it fades out (more: softer and wider)
     int eDecay;                 // Decay: how a played note's light falls while it is held
     int iDecayMs;               // the time it takes
     int iDecayFloor;            // percent: the light left after it
@@ -111,11 +113,11 @@ struct VisualSettings
     enum Stat { StatTime, StatFPS, StatScore, StatNotes, StatNPS, StatPolyphony, StatSent, StatSkipped, StatCollapsed, StatLag,
                 StatSkipping, StatOtherMs, StatNotesMs, StatSceneMs, StatPresentMs,
                 StatDecoded, StatDecoderBusy, StatSenderBusy, StatRing, StatSendCost, StatTempo, StatVoices, StatSynthCpu, StatCC,
-                StatMaxNPS, StatMaxPoly, StatCount };
+                StatMaxNPS, StatMaxPoly, StatRendered, StatDegrade, StatCount };
     static constexpr unsigned NoteStats = 7u << StatNotes | 3u << StatMaxNPS;      // counted while a song loads (Song::noteStats)
     static constexpr unsigned PipelineStats = 31u << StatDecoded;
     static constexpr unsigned VoiceStats = 3u << StatVoices;    // asked of the synth (KDMAPI only)
-    static constexpr unsigned SynthStats = 31u << StatSent | PipelineStats | VoiceStats;   // need a MIDI output
+    static constexpr unsigned SynthStats = 31u << StatSent | PipelineStats | VoiceStats | 1u << StatRendered | 1u << StatDegrade;  // need playback
     static constexpr unsigned FrameStats = 15u << StatOtherMs;  // frame time parts, live only
     static constexpr unsigned AllStats = ( 1u << StatCount ) - 1;
     // The Statistics dialog's sections, each line's section, its label in the stats box and its name
@@ -213,6 +215,24 @@ struct AudioSettings
     std::vector< std::wstring > vMIDIOutDevices;
     int iOutDevice;
     std::wstring sDesiredOut;
+
+    // Audio rendered ahead (audio/RenderAhead.h) instead of the MIDI output
+    bool bRendered;
+    int eRenderEngine;              // RenderBackends::Engine: BASSMIDI, Kestrel, Merlin
+    std::wstring sSoundfonts;       // paths separated by |, each replacing what the ones before it define
+    int iBassVoices, iKestrelVoices;
+    int iBassThreads;               // BASSMIDI instances (threads) each piece is split over, by key
+    int iGpuShare;                  // Kestrel and Merlin: most of the graphics card's time, once well ahead (percent)
+    RenderBackends::KestrelOpts kb; // Kestrel's and Merlin's advanced settings
+    int iAheadSecs;                 // how far ahead of the playback position it is made
+    int iBehindSecs;                // how far behind it what was made is kept
+    int iBassNps;                   // BASSMIDI: each instance's notes-a-second limit (0: none)
+    bool bBassByChannel;            // BASSMIDI: pieces split by channel as well as key (16 x iBassThreads instances)
+    bool bLimiter;                  // keeps the joined audio under full scale
+    bool bRenderFx;                 // BASSMIDI's reverb and chorus
+    bool bRenderLossless;           // stacks of identical notes sent once with their count (Kestrel, Merlin)
+    bool bRenderDegrade;            // pieces made lighter when they would be late
+    bool bRenderDiscard;            // switching engines throws away the old one's audio
 };
 
 struct VideoSettings
@@ -254,6 +274,8 @@ struct ExportSettings
     std::wstring sAudioFile;    // anything ffmpeg reads: WAV up to 64-bit float, FLAC up to 24-bit, ...
     bool bAudioAlign;           // its first sound is moved to where the song's first note sounds
     int iAudioOffsetMs;         // and then by this much (positive: later)
+    bool bRenderedAudio;        // instead of the file: the audio made by the audio renderer (AudioSettings' rendered
+                                // audio settings), made from the start for the video, in time with it
     static const wchar_t *const Presets[];
     static const int PresetCount;
     enum Codec { H264, Hevc, Av1, ProRes, Ffv1, CodecCount };
@@ -402,6 +424,7 @@ public:
 
     const VisualSettings &GetVisualSettings() const { return m_VisualSettings; }
     const AudioSettings &GetAudioSettings() const { return m_AudioSettings; }
+    AudioSettings CopyAudioSettings() { std::lock_guard< std::mutex > lock( m_mxAudio ); return m_AudioSettings; }
     const VideoSettings &GetVideoSettings() const { return m_VideoSettings; }
     const ControlsSettings &GetControlsSettings() const { return m_ControlsSettings; }
     const PerformanceSettings &GetPerformanceSettings() const { return m_PerformanceSettings; }

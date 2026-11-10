@@ -236,6 +236,7 @@ namespace
 
         LoadView::Model m;
         Heading( m, g_pJob->sFile );
+        m.bSmooth = true;
         if ( g_pJob->bWaiting ) m.sStatus = L"Waiting for the cancelled load to stop...";
         else if ( p.bWaitingOnDisk ) m.sStatus = L"Waiting on the disk (I/O bound)";
         else if ( iStage >= 0 && iStage < LoadProgress::StageCount ) m.sStatus = std::wstring( LoadProgress::StageNames[iStage] ) + L"...";
