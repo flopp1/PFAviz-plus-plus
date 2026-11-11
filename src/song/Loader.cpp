@@ -1345,6 +1345,7 @@ namespace
         std::stable_sort( song->vMeta.begin(), song->vMeta.end(), []( const RefMetaEvent &a, const RefMetaEvent &b ) {
             return a.llTick != b.llTick ? a.llTick < b.llTick : a.iTrack < b.iTrack; } );
         TempoMap tempo;
+        tempo.bExact = song->bExactTempo = prog.bExactTempo;
         tempo.Build( song->vMeta, info.iDivision );
         for ( RefMetaEvent &m : song->vMeta ) m.llMicroSec = tempo.At( m.llTick );
         for ( auto &v : song->vTrackMeta ) for ( RefMetaEvent &m : v ) m.llMicroSec = tempo.At( m.llTick );

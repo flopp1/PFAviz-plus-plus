@@ -1,5 +1,10 @@
 // Tick -> microseconds with the exact integer arithmetic of the original (DESIGN.md R3), identical to
 // RefMidi::TickToMicroSecs. Every valid SetTempo event starts a segment, even a redundant one.
+// bExact (the Performance tab's "Exact tempo timing"): the original rounds each segment down to whole
+// microseconds on its own, so a segment shorter than one (a tempo of 1 us a beat over 7 ticks at a division
+// of 8) takes no time, and a song of millions of them collapses into an instant. Exact: the parts of a
+// microsecond are carried from one segment to the next (llRem, in 1/iDivision us), so every tick's time is
+// the exact sum rounded down once.
 #pragma once
 
 #include <algorithm>
@@ -9,9 +14,10 @@
 
 struct TempoMap
 {
-    struct Seg { long long llTick, llMicroSec, llMicroSecsPerBeat; };
+    struct Seg { long long llTick, llMicroSec, llMicroSecsPerBeat; long long llRem = 0; };
     std::vector< Seg > vSegs;
     int iDivision = 0;
+    bool bExact = false;
 
     long long At( long long llTick ) const
     {
@@ -29,7 +35,7 @@ struct TempoMap
             if ( llTicksPerSec100 <= 0 ) return s.llMicroSec;
             return s.llMicroSec + ( 100000000LL * ( llTick - s.llTick ) ) / llTicksPerSec100;
         }
-        return s.llMicroSec + ( s.llMicroSecsPerBeat * ( llTick - s.llTick ) ) / iDivision;
+        return s.llMicroSec + ( s.llRem + s.llMicroSecsPerBeat * ( llTick - s.llTick ) ) / iDivision;
     }
 
     // At() for n ticks in ascending order: one search, then the segments walked forwards
@@ -67,9 +73,17 @@ struct TempoMap
         for ( const RefMetaEvent &m : vMeta )
             if ( m.cType == RefMetaEvent::SetTempo )
             {
-                long long llTime = At( m.llTick );
+                long long llTime = At( m.llTick ), llRem = 0;
+                if ( bExact && !IsSmpteDivision( iDivision ) )
+                {
+                    // (the time at the tick, and its part of a microsecond, from the segment it ends)
+                    const Seg &s = vSegs.back();
+                    const long long n = s.llRem + s.llMicroSecsPerBeat * ( m.llTick - s.llTick );
+                    llTime = s.llMicroSec + n / iDivision;
+                    llRem = n % iDivision;
+                }
                 long long llUspb = ( (long long)m.aData[0] << 16 ) | ( m.aData[1] << 8 ) | m.aData[2];
-                vSegs.push_back( { m.llTick, llTime, llUspb } );
+                vSegs.push_back( { m.llTick, llTime, llUspb, llRem } );
             }
     }
 };

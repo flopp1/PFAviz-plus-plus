@@ -549,6 +549,7 @@ namespace
         CheckDlgButton( hWnd, IDC_TICKBASED, cVisual.bTickBased ? BST_CHECKED : BST_UNCHECKED );
         CheckDlgButton( hWnd, IDC_PFALAG, cVisual.bPfaLag ? BST_CHECKED : BST_UNCHECKED );
         CheckDlgButton( hWnd, IDC_PFASTATS, cVisual.bPfaLiveStats ? BST_CHECKED : BST_UNCHECKED );
+        CheckDlgButton( hWnd, IDC_PFAVISUAL, cVisual.bPfaLiveVisual ? BST_CHECKED : BST_UNCHECKED );
         {
             // The cache sizes in KB (empty: this computer's, which the label says)
             const int aiId[2] = { IDC_PFAL2, IDC_PFAL3 }, aiKB[2] = { cVisual.iPfaL2KB, cVisual.iPfaL3KB };
@@ -564,9 +565,10 @@ namespace
             SendDlgItemMessageW( hWnd, IDC_PFAL3, EM_SETCUEBANNER, TRUE, ( LPARAM )buf );
             swprintf( buf, 32, L"%g", cVisual.iPfaSendNs / 1000.0 );
             SetDlgItemTextW( hWnd, IDC_PFASEND, buf );
-            SetDlgItemInt( hWnd, IDC_PFASPEED, (UINT)cVisual.iPfaCpuPct, FALSE );
+            swprintf( buf, 32, L"%g", cVisual.dPfaCpuPct );
+            SetDlgItemTextW( hWnd, IDC_PFASPEED, buf );
             SetPfaBenchText( hWnd, cVisual.bPfaLag );
-            for ( int iId : { IDC_PFAL2, IDC_PFAL3, IDC_PFASEND, IDC_PFASPEED, IDC_PFASTATS } ) EnableWindow( GetDlgItem( hWnd, iId ), cVisual.bPfaLag );
+            for ( int iId : { IDC_PFAL2, IDC_PFAL3, IDC_PFASEND, IDC_PFASPEED, IDC_PFASTATS, IDC_PFAVISUAL } ) EnableWindow( GetDlgItem( hWnd, iId ), cVisual.bPfaLag );
         }
         SendDlgItemMessageW( hWnd, IDC_LOOPCOLORS, CB_SETCURSEL, cVisual.bLoopColors ? 0 : cVisual.bUniqueColors ? 2 : 1, 0 );
         CheckDlgButton( hWnd, IDC_STATSSCALED, cVisual.bStatsScaled ? BST_CHECKED : BST_UNCHECKED );
@@ -835,7 +837,7 @@ namespace
                     case IDC_PFALAG:
                     {
                         BOOL bOn = IsDlgButtonChecked( hWnd, IDC_PFALAG ) == BST_CHECKED;
-                        for ( int iId : { IDC_PFAL2, IDC_PFAL3, IDC_PFASEND, IDC_PFASPEED, IDC_PFASTATS } ) EnableWindow( GetDlgItem( hWnd, iId ), bOn );
+                        for ( int iId : { IDC_PFAL2, IDC_PFAL3, IDC_PFASEND, IDC_PFASPEED, IDC_PFASTATS, IDC_PFAVISUAL } ) EnableWindow( GetDlgItem( hWnd, iId ), bOn );
                         SetPfaBenchText( hWnd, bOn );
                         return TRUE;
                     }
@@ -1069,6 +1071,7 @@ namespace
                     cVisual.bTickBased = IsDlgButtonChecked( hWnd, IDC_TICKBASED ) == BST_CHECKED;
                     cVisual.bPfaLag = IsDlgButtonChecked( hWnd, IDC_PFALAG ) == BST_CHECKED;
                     cVisual.bPfaLiveStats = IsDlgButtonChecked( hWnd, IDC_PFASTATS ) == BST_CHECKED;
+                    cVisual.bPfaLiveVisual = IsDlgButtonChecked( hWnd, IDC_PFAVISUAL ) == BST_CHECKED;
                     {
                         const int aiId[2] = { IDC_PFAL2, IDC_PFAL3 };
                         int *apKB[2] = { &cVisual.iPfaL2KB, &cVisual.iPfaL3KB };
@@ -1084,10 +1087,12 @@ namespace
                         wchar_t *pEnd = nullptr;
                         double dSend = wcstod( sSend, &pEnd );
                         if ( pEnd != sSend && dSend >= 0.0 ) cVisual.iPfaSendNs = (int)( std::min( dSend, 10000.0 ) * 1000.0 + 0.5 );
-                        // (a percentage, 10 to 1000; empty or unreadable: this computer's)
-                        BOOL bNum = FALSE;
-                        UINT uPct = GetDlgItemInt( hWnd, IDC_PFASPEED, &bNum, FALSE );
-                        cVisual.iPfaCpuPct = bNum ? std::clamp( (int)uPct, 10, 1000 ) : 100;
+                        // (a percentage, decimals allowed, from 0.0001 to a billion; empty or unreadable: this computer's)
+                        wchar_t sPct[64] = {};
+                        GetDlgItemTextW( hWnd, IDC_PFASPEED, sPct, 64 );
+                        wchar_t *pPctEnd = nullptr;
+                        const double dPct = wcstod( sPct, &pPctEnd );
+                        cVisual.dPfaCpuPct = pPctEnd != sPct && dPct > 0.0 ? std::clamp( dPct, VisualSettings::PfaCpuMin, VisualSettings::PfaCpuMax ) : 100.0;
                     }
                     {
                         int iAfter = (int)SendDlgItemMessageW( hWnd, IDC_LOOPCOLORS, CB_GETCURSEL, 0, 0 );
@@ -2136,6 +2141,7 @@ namespace
                 SetDlgItemInt( hWnd, IDC_PERF_MINVEL, (UINT)cPerf.iMinVelocity, FALSE );
                 CheckDlgButton( hWnd, IDC_PERF_IGNOREWEIRD, cPerf.bIgnoreWeird ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_PERF_ENDOPEN, cPerf.bEndOpenNotes ? BST_CHECKED : BST_UNCHECKED );
+                CheckDlgButton( hWnd, IDC_PERF_EXACTTEMPO, cPerf.bExactTempo ? BST_CHECKED : BST_UNCHECKED );
                 CheckDlgButton( hWnd, IDC_PERF_SENDLIMIT, cPerf.bSendLimit ? BST_CHECKED : BST_UNCHECKED );
                 SetDlgItemInt( hWnd, IDC_PERF_MAXSENDS, (UINT)cPerf.iMaxSendsPerSec, FALSE );
                 CheckDlgButton( hWnd, IDC_LIMITFPS, cVideo.bLimitFPS ? BST_CHECKED : BST_UNCHECKED );
@@ -2214,6 +2220,7 @@ namespace
                     cPerf.iMinVelocity = (int)uMinVel;
                     cPerf.bIgnoreWeird = IsDlgButtonChecked( hWnd, IDC_PERF_IGNOREWEIRD ) == BST_CHECKED;
                     cPerf.bEndOpenNotes = IsDlgButtonChecked( hWnd, IDC_PERF_ENDOPEN ) == BST_CHECKED;
+                    cPerf.bExactTempo = IsDlgButtonChecked( hWnd, IDC_PERF_EXACTTEMPO ) == BST_CHECKED;
                     cPerf.bSendLimit = IsDlgButtonChecked( hWnd, IDC_PERF_SENDLIMIT ) == BST_CHECKED;
                     cPerf.iMaxSendsPerSec = (int)uSends;
                     cPerf.bShowLoadStats = IsDlgButtonChecked( hWnd, IDC_PERF_LOADSTATS ) == BST_CHECKED;

@@ -113,7 +113,7 @@ struct VisualSettings
     enum Stat { StatTime, StatFPS, StatScore, StatNotes, StatNPS, StatPolyphony, StatSent, StatSkipped, StatCollapsed, StatLag,
                 StatSkipping, StatOtherMs, StatNotesMs, StatSceneMs, StatPresentMs,
                 StatDecoded, StatDecoderBusy, StatSenderBusy, StatRing, StatSendCost, StatTempo, StatVoices, StatSynthCpu, StatCC,
-                StatMaxNPS, StatMaxPoly, StatRendered, StatDegrade, StatCount };
+                StatMaxNPS, StatMaxPoly, StatRendered, StatDegrade, StatPfaLagTime, StatCount };
     static constexpr unsigned NoteStats = 7u << StatNotes | 3u << StatMaxNPS;      // counted while a song loads (Song::noteStats)
     static constexpr unsigned PipelineStats = 31u << StatDecoded;
     static constexpr unsigned VoiceStats = 3u << StatVoices;    // asked of the synth (KDMAPI only)
@@ -149,9 +149,11 @@ struct VisualSettings
     bool bTickBased;            // notes placed by tick, not time (FastEngine::SetTickBased)
     bool bPfaLag;               // play as the original PFA would lag on this computer (song/PfaLag.h)
     bool bPfaLiveStats;         // its statistics (and graphs) follow how far its Logic has played, not its last drawn frame
+    bool bPfaLiveVisual;        // no visual lag: every frame drawn at its playhead (the sound, frame rate and lag time still simulated)
     int iPfaL2KB, iPfaL3KB;     // its CPU's L2 and L3 caches (0: this computer's)
     int iPfaSendNs;             // what one MIDI message costs it on average (midiOutShortMsg), nanoseconds (50: the KDMAPI patch)
-    int iPfaCpuPct;             // its CPU's speed, percent of this computer's (100: this one, as benchmarked)
+    double dPfaCpuPct;          // its CPU's speed, percent of this computer's (100: this one, as benchmarked; PfaCpuMin to PfaCpuMax)
+    static constexpr double PfaCpuMin = 1e-4, PfaCpuMax = 1e9;
     bool bHideSpeedBoxes;       // the toolbar as the original's: sliders only, without the exact speed boxes
     bool bLoopColors;           // the track colors repeat (channel n gets colors[n % iColorCount]); off: random after them
     bool bUniqueColors;         // (not looping) the random colours each different, from each other and the track colours (Util::UniqueColors)
@@ -315,6 +317,7 @@ struct PerformanceSettings
     bool bLodCache;             // the fast renderer's LOD cache (DESIGN.md 8.11)
     bool bIgnoreWeird;          // keep each note's first pairing (Song::bFirstPairingOnly); off: weird notes end at their later off
     bool bEndOpenNotes;         // layered compressed files: notes without a note-off last until the song's end (Song::bEndOpenNotes); on by default
+    bool bExactTempo;           // exact tempo timing (TempoMap::bExact); on by default, off: the original's rounding per tempo segment
     bool bGpuInstancing;        // notes drawn by Renderer::DrawNoteInstances (not pixel-exact), off by default
     bool bDedup;                // identical tracks, and repeats in layered compressed files, loaded once (song/Dedup.h); off by default
     bool bDedupAssume;          // with it: the rest of a layer taken as repeats of its first tile when its size fits (on by default)

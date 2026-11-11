@@ -293,6 +293,7 @@ private:
     void ResetSim( long long llTime );
     static PfaLag::Cpu SimCpu( const VisualSettings &cVisual );
     std::vector< SimFrame > m_vSim;
+    PfaLag::LagTracker m_SimLag;        // how long it has been lagging (the stats box's "Lag time")
     long long m_llSimNextWall = 0, m_llSimNextFrom = 0, m_llSimNoiseWall = 0;   // where the next frame to work out starts
     unsigned long long m_llSimKey = 0;  // the settings the frames ahead were worked out with
     bool m_bSimOn = false, m_bSimWarned = false;

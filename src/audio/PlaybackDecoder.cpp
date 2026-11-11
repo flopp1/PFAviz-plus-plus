@@ -7,6 +7,7 @@
 PlaybackDecoder::PlaybackDecoder( const Song &song ) : m_Song( song ), m_Stream( song.stream )
 {
     m_Cursor.Attach( &m_Stream );
+    m_Tempo.bExact = song.bExactTempo;
     m_Tempo.Build( song.vMeta, song.info.iDivision );
     for ( const RefMetaEvent &m : song.vMeta )
         if ( m.cType == RefMetaEvent::TimeSignature && m.iDataLen == 4 )

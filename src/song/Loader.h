@@ -38,6 +38,7 @@ struct LoadProgress
     bool bNoteStats = true;             // the extra statistics (Song::noteStats)
     bool bFirstPairingOnly = false;     // the Performance tab's "End weird notes at their first note-off" (Song::bFirstPairingOnly)
     bool bEndOpenNotes = false;         // and its "Layered compressed files: notes without a note-off last until the song's end" (Song::bEndOpenNotes)
+    bool bExactTempo = false;           // the Performance tab's "Exact tempo timing" (TempoMap::bExact; off: the original's)
     bool bDedup = false;                // the Performance tab's "Deduplicate repeated tracks" (song/Dedup.h)
     bool bDedupAssume = true;           // and its "assume the rest of a layer repeats"
     int iFusedRead = -1;                // tools only: 1 forces the fused single read (DESIGN.md 4.2a), 0 the two-pass read

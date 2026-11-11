@@ -145,22 +145,22 @@ const int VisualSettings::StatSections[StatCount] = {
     SectionSynth, SectionSynth, SectionSynth, SectionSynth, SectionSynth,
     SectionFrame, SectionFrame, SectionFrame, SectionFrame,
     SectionPipeline, SectionPipeline, SectionPipeline, SectionPipeline, SectionPipeline,
-    SectionGeneral, SectionSynth, SectionSynth, SectionNotes, SectionNotes, SectionNotes, SectionSynth, SectionSynth };
+    SectionGeneral, SectionSynth, SectionSynth, SectionNotes, SectionNotes, SectionNotes, SectionSynth, SectionSynth, SectionGeneral };
 const wchar_t *const VisualSettings::StatLabels[StatCount] = {
     L"Time:", L"FPS:", L"Score:", L"Notes:", L"NPS:", L"Polyphony:",
     L"Sent/s:", L"Skipped/s:", L"Collapsed/s:", L"Lag:", L"Skipping:",
     L"Other ms:", L"Notes ms:", L"Scene ms:", L"Present ms:",
     L"Decoded/s:", L"Decoder busy:", L"Sender busy:", L"Ring:", L"Send cost:",
-    L"Tempo:", L"Voices:", L"Synth CPU:", L"CC events:", L"Max NPS:", L"Max Poly:", L"Rendered:", L"Degraded:" };
+    L"Tempo:", L"Voices:", L"Synth CPU:", L"CC events:", L"Max NPS:", L"Max Poly:", L"Rendered:", L"Degraded:", L"Lag time:" };
 const wchar_t *const VisualSettings::StatNames[StatCount] = {
     L"Time", L"Frame rate", L"Score", L"Notes passed", L"NPS", L"Polyphony",
     L"Messages sent", L"Skipped", L"Collapsed", L"Lag", L"Skipping threshold",
     L"Other (frame ms)", L"Notes (frame ms)", L"Scene (frame ms)", L"Present (frame ms)",
     L"Messages decoded", L"Decoder busy", L"Sender busy", L"Ring fill", L"Send cost",
-    L"Tempo (BPM)", L"Synth voices (KDMAPI)", L"Synth CPU (KDMAPI)", L"CC events passed", L"Max NPS (so far)", L"Max Poly (so far)", L"Audio rendered ahead", L"Rendered audio made lighter" };
+    L"Tempo (BPM)", L"Synth voices (KDMAPI)", L"Synth CPU (KDMAPI)", L"CC events passed", L"Max NPS (so far)", L"Max Poly (so far)", L"Audio rendered ahead", L"Rendered audio made lighter", L"Lag duration (PFA lag simulation)" };
 // The order the lines had before they could be moved: general, notes, synth, pipeline, frame time
 const unsigned char VisualSettings::DefaultStatOrder[StatCount] = {
-    StatTime, StatFPS, StatScore, StatTempo, StatNotes, StatNPS, StatMaxNPS, StatPolyphony, StatMaxPoly, StatCC,
+    StatTime, StatFPS, StatPfaLagTime, StatScore, StatTempo, StatNotes, StatNPS, StatMaxNPS, StatPolyphony, StatMaxPoly, StatCC,
     StatSent, StatSkipped, StatCollapsed, StatLag, StatRendered, StatDegrade, StatSkipping, StatVoices, StatSynthCpu,
     StatDecoded, StatDecoderBusy, StatSenderBusy, StatRing, StatSendCost,
     StatOtherMs, StatNotesMs, StatSceneMs, StatPresentMs };
@@ -185,9 +185,10 @@ void VisualSettings::LoadDefaultValues()
     bTickBased = false;
     bPfaLag = false;
     bPfaLiveStats = false;
+    bPfaLiveVisual = false;
     iPfaL2KB = iPfaL3KB = 0;
     iPfaSendNs = 50;
-    iPfaCpuPct = 100;
+    dPfaCpuPct = 100.0;
     bHideSpeedBoxes = false;
     bLoopColors = false;
     bUniqueColors = false;
@@ -341,7 +342,7 @@ void VisualSettings::Load( const IniFile &ini )
             aStatOrder[iAt] = uStat;
             n++;
             abSeen[uStat] = true;
-            if ( !s.empty() && i > 0 && ( uStats >> DefaultStatOrder[i - 1] ) & 1 ) uStats |= 1u << uStat;
+            if ( !s.empty() && i > 0 && ( uStats >> DefaultStatOrder[i - 1] ) & 1 && uStat != StatPfaLagTime ) uStats |= 1u << uStat;   // (the lag time: only when asked for)
         }
     }
     iFirstKey = std::clamp( ini.GetInt( "Visual", "FirstKey", iFirstKey ), 0, 255 );
@@ -360,10 +361,11 @@ void VisualSettings::Load( const IniFile &ini )
     bTickBased = ini.GetBool( "Visual", "TickBased", bTickBased );
     bPfaLag = ini.GetBool( "Visual", "PfaLag", bPfaLag );
     bPfaLiveStats = ini.GetBool( "Visual", "PfaLagLiveStats", bPfaLiveStats );
+    bPfaLiveVisual = ini.GetBool( "Visual", "PfaLagLiveVisual", bPfaLiveVisual );
     iPfaL2KB = std::clamp( ini.GetInt( "Visual", "PfaLagL2KB", iPfaL2KB ), 0, 1 << 20 );
     iPfaL3KB = std::clamp( ini.GetInt( "Visual", "PfaLagL3KB", iPfaL3KB ), 0, 1 << 22 );
     iPfaSendNs = std::clamp( ini.GetInt( "Visual", "PfaLagSendCostNs", iPfaSendNs ), 0, 10000000 );
-    iPfaCpuPct = std::clamp( ini.GetInt( "Visual", "PfaLagCpuPercent", iPfaCpuPct ), 10, 1000 );
+    dPfaCpuPct = std::clamp( ini.GetDouble( "Visual", "PfaLagCpuPercent", dPfaCpuPct ), PfaCpuMin, PfaCpuMax );
     bLoopColors = ini.GetBool( "Visual", "LoopColors", bLoopColors );
     bUniqueColors = ini.GetBool( "Visual", "UniqueColors", bUniqueColors );
     bEdo31Keys = ini.GetBool( "Visual", "Edo31Keys", bEdo31Keys );
@@ -474,10 +476,11 @@ void VisualSettings::Save( IniFile &ini ) const
     ini.SetInt( "Visual", "TickBased", bTickBased );
     ini.SetInt( "Visual", "PfaLag", bPfaLag );
     ini.SetInt( "Visual", "PfaLagLiveStats", bPfaLiveStats );
+    ini.SetInt( "Visual", "PfaLagLiveVisual", bPfaLiveVisual );
     ini.SetInt( "Visual", "PfaLagL2KB", iPfaL2KB );
     ini.SetInt( "Visual", "PfaLagL3KB", iPfaL3KB );
     ini.SetInt( "Visual", "PfaLagSendCostNs", iPfaSendNs );
-    ini.SetInt( "Visual", "PfaLagCpuPercent", iPfaCpuPct );
+    ini.SetDouble( "Visual", "PfaLagCpuPercent", dPfaCpuPct );
     ini.SetInt( "Visual", "LoopColors", bLoopColors );
     ini.SetInt( "Visual", "UniqueColors", bUniqueColors );
     ini.SetInt( "Visual", "Edo31Keys", bEdo31Keys );
@@ -1019,6 +1022,7 @@ void PerformanceSettings::LoadDefaultValues()
     bCollapseStacks = false;
     bIgnoreWeird = false;
     bEndOpenNotes = true;
+    bExactTempo = true;
     bDedup = false;
     bDedupAssume = true;
     bSendLimit = false;
@@ -1046,6 +1050,7 @@ void PerformanceSettings::Load( const IniFile &ini )
     bCollapseStacks = ini.GetBool( "Performance", "CollapseStacks", bCollapseStacks );
     bIgnoreWeird = ini.GetBool( "Performance", "IgnoreWeirdNotes", bIgnoreWeird );
     bEndOpenNotes = ini.GetBool( "Performance", "EndOpenNotes", bEndOpenNotes );
+    bExactTempo = ini.GetBool( "Performance", "ExactTempo", bExactTempo );
     bDedup = ini.GetBool( "Performance", "Dedup", bDedup );
     bDedupAssume = ini.GetBool( "Performance", "DedupAssume", bDedupAssume );
     bSendLimit = ini.GetBool( "Performance", "SendLimit", bSendLimit );
@@ -1072,6 +1077,7 @@ void PerformanceSettings::Save( IniFile &ini ) const
     ini.SetInt( "Performance", "CollapseStacks", bCollapseStacks );
     ini.SetInt( "Performance", "IgnoreWeirdNotes", bIgnoreWeird );
     ini.SetInt( "Performance", "EndOpenNotes", bEndOpenNotes );
+    ini.SetInt( "Performance", "ExactTempo", bExactTempo );
     ini.SetInt( "Performance", "Dedup", bDedup );
     ini.SetInt( "Performance", "DedupAssume", bDedupAssume );
     ini.SetInt( "Performance", "SendLimit", bSendLimit );

@@ -126,6 +126,8 @@
 #define IDC_RA_NPSLBL                   1672
 #define IDC_RA_NPSNOTE                  1673
 #define IDC_VIDP_VIEW                   1674
+#define IDC_PERF_EXACTTEMPO             1675
+#define IDC_PFAVISUAL                   1676
 #define IDC_RA_BYCHANNEL                1671
 #define ID_FILE_LOADSTATS               40210
 

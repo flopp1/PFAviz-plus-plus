@@ -340,6 +340,8 @@ struct Song
     // more notes, and are played that way); off: it is never drawn or lit, as in the original. Only for
     // a layered compressed file (the Performance tab's option: Loader)
     bool bEndOpenNotes = false;
+    // Times from ticks with the parts of a microsecond carried between tempo segments (TempoMap::bExact)
+    bool bExactTempo = false;
     size_t MemoryBytes() const;
     void BuildSendCounts( int iThreads );   // aSendOns and vChase, in one pass over the stream
 };

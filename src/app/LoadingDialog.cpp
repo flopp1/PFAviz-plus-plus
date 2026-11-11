@@ -154,6 +154,7 @@ namespace
                                     Config::GetConfig().GetVisualSettings().bGraph || Config::GetConfig().GetVisualSettings().bPfaLag;
         pJob->progress.bFirstPairingOnly = cPerf.bIgnoreWeird;
         pJob->progress.bEndOpenNotes = cPerf.bEndOpenNotes;
+        pJob->progress.bExactTempo = cPerf.bExactTempo;
         pJob->progress.bDedup = cPerf.bDedup;
         pJob->progress.bDedupAssume = cPerf.bDedupAssume;
         SetLzCacheBytes( (size_t)cPerf.iBlockCacheMB << 20 );

@@ -23,6 +23,7 @@
 // taking part of the caches, the frame's own spread, a message's send cost varying, the odd stall.
 #pragma once
 
+#include <algorithm>
 #include <cstdint>
 
 struct Song;
@@ -116,4 +117,37 @@ namespace PfaLag
     // note-offs times its polyphony, split over the five working-set sizes the costs are given at
     // (PfaLag.cpp) as the cost interpolates between them; and the events there
     void WalkBands( const Song &song, const Cpu &cpu, long long llFrom, long long llTo, double aBands[5], double *pEvents );
+
+    // How long the original has been lagging: a frame that takes ThresholdUs or more (under 1 fps) is lag,
+    // and a lag spike is a run of such frames with less than ThresholdUs of quicker ones between them. Its
+    // duration counts from the start of its first slow frame without a pause, through the quicker frames
+    // between slow ones (the spike is over only after ThresholdUs without one), and stops there, until the
+    // next spike starts it again from 0. Wall times in microseconds
+    struct LagTracker
+    {
+        static constexpr long long ThresholdUs = 1000000;
+        long long llStart = 0, llLastEnd = 0;   // the spike: its first slow frame's start, its last one's end
+        bool bAny = false;
+        int iSpikes = 0;
+        // A frame that ended
+        void Ended( long long llWallStart, long long llWallEnd )
+        {
+            if ( llWallEnd - llWallStart < ThresholdUs ) return;
+            if ( !bAny || llWallStart - llLastEnd >= ThresholdUs ) { llStart = llWallStart; iSpikes++; }
+            bAny = true;
+            llLastEnd = std::max( llLastEnd, llWallEnd );
+        }
+        // The duration at llNow, with the frame running since llRunStart (0: none); bLagging: in a spike
+        long long Duration( long long llNow, long long llRunStart, bool *pbLagging = nullptr ) const
+        {
+            const bool bSlow = llRunStart && llNow - llRunStart >= ThresholdUs;
+            const bool bOn = bAny && llNow - llLastEnd < ThresholdUs;       // (quicker frames between slow ones)
+            if ( pbLagging ) *pbLagging = bSlow || bOn;
+            if ( bSlow ) return llNow - ( bAny && llRunStart - llLastEnd < ThresholdUs ? llStart : llRunStart );
+            if ( bOn ) return llNow - llStart;
+            return bAny ? Length() : 0;
+        }
+        // The last spike's whole length: to a second after its last slow frame, when it was seen to be over
+        long long Length() const { return llLastEnd + ThresholdUs - llStart; }
+    };
 }

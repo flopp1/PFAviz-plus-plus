@@ -710,7 +710,7 @@ GameState::GameError MainScreen::Logic()
     // Figure out start and end times for display: the clock is sampled once per frame
     long long llOldStartTime = m_llStartTime;
     if ( !m_bPaused && m_llStartTime < llMaxTime )
-        m_llStartTime = m_bSimOn ? m_llSimShown : m_Clock.Now();
+        m_llStartTime = m_bSimOn && !Config::GetConfig().GetVisualSettings().bPfaLiveVisual ? m_llSimShown : m_Clock.Now();     // (no visual lag: the playhead)
     m_iStartTick = m_pMeter->GetCurrentTick( m_llStartTime );
     const long long llView = m_pEngine->ToView( m_llStartTime );
     long long llEndTime = ViewEnd( llView );
@@ -784,6 +784,7 @@ void MainScreen::SimulateFrame( long long llMaxTime )
 
     // The frames that ended
     auto Ended = [&]( const SimFrame &f ) {
+        m_SimLag.Ended( f.llWallStart, f.llWallEnd );
         m_llSimShown = f.llTo;
         m_dSimFrameUs = (double)( f.llWallEnd - f.llWallStart );
         m_iSimFrames++;
@@ -871,7 +872,7 @@ PfaLag::Cpu MainScreen::SimCpu( const VisualSettings &cVisual )
     if ( cVisual.iPfaL2KB > 0 ) cpu.llL2 = (uint64_t)cVisual.iPfaL2KB << 10;
     if ( cVisual.iPfaL3KB > 0 ) cpu.llL3 = (uint64_t)cVisual.iPfaL3KB << 10;
     PfaLag::ApplyBench( cpu, PfaLag::RunBench() );
-    cpu.Faster( cVisual.iPfaCpuPct / 100.0 );
+    cpu.Faster( cVisual.dPfaCpuPct / 100.0 );
     return cpu;
 }
 
@@ -1157,7 +1158,7 @@ void MainScreen::RenderStats( float fDark )
     // Simulating PFA: the last frame it drew, or (Visual > Timing) how far its running frame's Logic has
     // played, as the audio does (through a crash: crawling on while the picture holds)
     long long llTime = m_llStartTime;
-    if ( m_bSimOn && Config::GetConfig().GetVisualSettings().bPfaLiveStats )
+    if ( m_bSimOn && Config::GetConfig().GetVisualSettings().bPfaLiveStats && !Config::GetConfig().GetVisualSettings().bPfaLiveVisual )
     {
         // (paused: where it got to; a seek since moves it with the frames)
         if ( !m_bPaused ) m_llSimStatsTime = m_Clock.Now();
@@ -1503,7 +1504,7 @@ MainScreen::StatsBox MainScreen::FitStats( Renderer *pRenderer, int iWidth, int 
         L"00:00.0 / 00:00.0", L"000.0", L"N/A", L"000,000,000", L"00,000,000", L"000,000", L"000.0K", L"000.0K", L"000.0K",
         L"0000.0 ms", L"< 000, 000 at 000%", L"00.00 / 00.00", L"00.00 / 00.00", L"00.00 / 00.00", L"00.00 / 00.00",
         L"000.00M", L"000% \u00d700", L"000%", L"000% avg, 000% max", L"0000.0 ns/msg", L"000.00 BPM", L"0000", L"000.0%",
-        L"000,000,000", L"00,000,000", L"000,000", L"000.0 of 000 s (BASSMIDI)", L"000000 voices (0000 so far)" };
+        L"000,000,000", L"00,000,000", L"000,000", L"000.0 of 000 s (BASSMIDI)", L"000000 voices (0000 so far)", L"00:00:00.0 (lagging)" };
     static std::wstring sFace;
     static int iFontCY = -1, iTextCX = 0;
     static unsigned uMeasured = 0;
@@ -1594,6 +1595,21 @@ void MainScreen::RenderStatus( Renderer *pRenderer, const StatsBox &box, long lo
             -llTime / 60000000, ( -llTime % 60000000 ) / 1000000.0,
             mInfo.llTotalMicroSecs / 60000000, ( mInfo.llTotalMicroSecs % 60000000 ) / 1000000.0 );
     swprintf( aValue[VS::StatFPS], 48, L"%.1lf%ls", dFPS, pRenderer == m_pRenderer && m_bSimOn ? L" (PFA sim)" : L"" );
+    // How long the simulated original has been lagging (PfaLag::LagTracker): the current or last spike
+    if ( Shown( VS::StatPfaLagTime ) )
+    {
+        if ( !m_bSimOn ) wcscpy( aValue[VS::StatPfaLagTime], L"N/A" );
+        else
+        {
+            bool bLagging = false;
+            const long long llNow = Timer::NowMicroSecs();
+            const long long llUs = m_SimLag.Duration( llNow, m_vSim.empty() || m_llSimWallStart > llNow ? 0 : m_llSimWallStart, &bLagging );
+            const long long llS = llUs / 1000000;
+            if ( llS >= 3600 ) swprintf( aValue[VS::StatPfaLagTime], 48, L"%lld:%02lld:%04.1f%ls", llS / 3600, llS / 60 % 60, ( llUs % 60000000 ) / 1e6, bLagging ? L" (lagging)" : L"" );
+            else if ( llS >= 60 ) swprintf( aValue[VS::StatPfaLagTime], 48, L"%lld:%04.1f%ls", llS / 60, ( llUs % 60000000 ) / 1e6, bLagging ? L" (lagging)" : L"" );
+            else swprintf( aValue[VS::StatPfaLagTime], 48, L"%.1f s%ls", llUs / 1e6, bLagging ? L" (lagging)" : L"" );
+        }
+    }
     // Scoring was removed; the line is kept as the original shows it with no input device
     wcscpy( aValue[VS::StatScore], L"N/A" );
     if ( Shown( VS::StatTempo ) ) swprintf( aValue[VS::StatTempo], 48, L"%.2f BPM", 60000000.0 / TempoAt( m_pSong->vMeta, llTime ) );

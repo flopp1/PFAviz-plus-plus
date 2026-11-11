@@ -100,21 +100,22 @@ BEGIN
     GROUPBOX        "Interface",IDC_STATIC,302,141,288,32
     LTEXT           "Light or dark the&me:",IDC_STATIC,308,156,70,8
     COMBOBOX        IDC_THEME,380,154,90,100,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    GROUPBOX        "Timing",IDC_STATIC,302,177,288,83
+    GROUPBOX        "Timing",IDC_STATIC,302,177,288,86
     CONTROL         "Tic&k-based: notes spaced by ticks (a quarter note is 0.5 s at any tempo)",IDC_TICKBASED,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,308,188,276,10
     CONTROL         "Simulate the original PFA's la&g (frame rate, freezes, audio bursts)",IDC_PFALAG,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,308,200,276,10
-    LTEXT           "Its L2:",IDC_STATIC,320,216,22,8
-    EDITTEXT        IDC_PFAL2,344,214,36,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "L3:",IDC_STATIC,384,216,12,8
-    EDITTEXT        IDC_PFAL3,398,214,40,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "KB; a MIDI message:",IDC_PFACPU,442,216,68,8
-    EDITTEXT        IDC_PFASEND,512,214,30,14,ES_AUTOHSCROLL
-    LTEXT           "µs",IDC_STATIC,546,216,12,8
-    LTEXT           "Its CPU speed:",IDC_STATIC,320,232,50,8
-    EDITTEXT        IDC_PFASPEED,372,230,30,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "% of this computer's",IDC_PFABENCH,406,232,180,8
-    CONTROL         "Statistics follo&w how far its Logic has played (off: its last drawn frame)",IDC_PFASTATS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,320,246,264,10
-    PUSHBUTTON      "&Restore Defaults",IDC_RESTOREDEFAULTS,521,264,69,14
+    LTEXT           "Its L2:",IDC_STATIC,320,214,22,8
+    EDITTEXT        IDC_PFAL2,344,212,36,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "L3:",IDC_STATIC,384,214,12,8
+    EDITTEXT        IDC_PFAL3,398,212,40,14,ES_AUTOHSCROLL | ES_NUMBER
+    LTEXT           "KB; a MIDI message:",IDC_PFACPU,442,214,68,8
+    EDITTEXT        IDC_PFASEND,512,212,30,14,ES_AUTOHSCROLL
+    LTEXT           "µs",IDC_STATIC,546,214,12,8
+    LTEXT           "Its CPU speed:",IDC_STATIC,320,228,50,8
+    EDITTEXT        IDC_PFASPEED,372,226,44,14,ES_AUTOHSCROLL
+    LTEXT           "% of this computer's",IDC_PFABENCH,420,228,166,8
+    CONTROL         "Statistics follo&w how far its Logic has played (off: its last drawn frame)",IDC_PFASTATS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,320,240,264,10
+    CONTROL         "No visual lag: draw every frame at its playhead (its sound, FPS and lag time still lag)",IDC_PFAVISUAL,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,320,251,264,10
+    PUSHBUTTON      "&Restore Defaults",IDC_RESTOREDEFAULTS,521,266,69,14
 END
 
 IDD_PP2_AUDIO DIALOGEX 0, 0, 597, 212
@@ -435,6 +436,8 @@ BEGIN
     GROUPBOX        "Display",IDC_STATIC,7,177,286,28
     CONTROL         "&Limit frame rate",IDC_LIMITFPS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,190,100,10
     PUSHBUTTON      "Render &video...",IDC_PERF_VIDEO,120,187,80,14
+    GROUPBOX        "Timing (songs opened next)",IDC_STATIC,302,129,288,44
+    CONTROL         "E&xact tempo timing (very fast tempos keep their length; off: rounded per tempo change, as the original, pixel for pixel)",IDC_PERF_EXACTTEMPO,"Button",BS_AUTOCHECKBOX | BS_MULTILINE | WS_TABSTOP,308,142,275,26
 END
 
 IDD_CHOOSEMIDI DIALOGEX 0, 0, 280, 170
