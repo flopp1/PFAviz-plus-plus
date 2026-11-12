@@ -3,6 +3,7 @@
 #include <windows.h>
 #include <cpuid.h>
 #include <algorithm>
+#include <climits>
 #include <cmath>
 #include <cstring>
 #include <mutex>
@@ -553,4 +554,46 @@ PfaLag::FrameCost PfaLag::Cost( const Song &song, const Cpu &cpuIn, const Params
     }
     f.llPolyphony = (uint64_t)dPolyTo;
     return f;
+}
+
+// The sudden rise a lag spike comes from (LagTracker): stepping through (llFrom, llTo] every StepUs, the note-ons
+// of the AfterUs after each point against those of the BeforeUs before it (as notes a second), and the polyphony
+// AfterUs on against the most of the BeforeUs before. A rise is notes a second at least RiseRatio times and
+// NpsFloor more, or polyphony at least PolyRatio times and PolyFloor more (the floors keep the small ups and
+// downs of a light passage out); the biggest one (in floors) is taken, the latest of equals
+long long PfaLag::RiseIn( const Song &song, long long llFrom, long long llTo )
+{
+    const NoteStats &ns = song.noteStats;
+    if ( ns.Empty() || llTo <= llFrom || ns.llBinUs <= 0 ) return LLONG_MIN;
+    const long long B = ns.llBinUs, nBins = (long long)ns.vOns.size();
+    const long long nBefore = std::max< long long >( 1, RiseBeforeUs / B ), nAfter = std::max< long long >( 1, RiseAfterUs / B );
+    const long long nStep = std::max< long long >( 1, RiseStepUs / B );
+    auto Ons = [&]( long long b ) -> double { return b >= 0 && b < nBins ? (double)ns.vOns[(size_t)b] : 0.0; };
+    auto Poly = [&]( long long b ) -> double { return b >= 0 && b < nBins ? (double)ns.vPoly[(size_t)b] : 0.0; };
+    long long b = std::max< long long >( 0, llFrom / B + 1 );
+    const long long bEnd = std::min( nBins - 1, llTo / B );
+    if ( b > bEnd ) return LLONG_MIN;
+    // (running sums: bins [b - nBefore, b) and [b, b + nAfter))
+    double dBefore = 0.0, dAfter = 0.0;
+    for ( long long i = b - nBefore; i < b; i++ ) dBefore += Ons( i );
+    for ( long long i = b; i < b + nAfter; i++ ) dAfter += Ons( i );
+    double dBest = 0.0;
+    long long llBest = LLONG_MIN;
+    for ( ; b <= bEnd; )
+    {
+        const double dNpsBefore = dBefore * 1e6 / ( nBefore * B ), dNpsAfter = dAfter * 1e6 / ( nAfter * B );
+        double dPolyBefore = 0.0;
+        for ( long long i = b - nBefore; i < b; i += nStep ) dPolyBefore = std::max( dPolyBefore, Poly( i ) );
+        const double dPolyAfter = Poly( b + nAfter - 1 );
+        double dScore = 0.0;
+        if ( dNpsAfter >= RiseRatio * dNpsBefore && dNpsAfter - dNpsBefore >= NpsFloor ) dScore += ( dNpsAfter - dNpsBefore ) / NpsFloor;
+        if ( dPolyAfter >= PolyRatio * dPolyBefore && dPolyAfter - dPolyBefore >= PolyFloor ) dScore += ( dPolyAfter - dPolyBefore ) / PolyFloor;
+        if ( dScore > 0.0 && dScore >= dBest ) { dBest = dScore; llBest = b * B; }
+        for ( long long k = 0; k < nStep; k++, b++ )
+        {
+            dBefore += Ons( b ) - Ons( b - nBefore );
+            dAfter += Ons( b + nAfter ) - Ons( b );
+        }
+    }
+    return llBest;
 }

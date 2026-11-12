@@ -342,6 +342,10 @@ public:
     void SetPlayable( bool bPlayable, bool bUpdateGUI = false );
     void SetPaused( bool bPaused, bool bUpdateGUI = false );
     void SetStopped( bool bUpdateGUI = false );
+    // The valid ranges (wider than the sliders, which keep theirs: typed in the boxes or reached with the keys):
+    // playback speed 0.001% to 100,000%; note speed, the seconds a third of the view spans, 0.00005 to 1000
+    // (shown as a multiple of the default 0.06: 1,200x to 0.00006x)
+    static constexpr double SpeedMin = 1e-5, SpeedMax = 1000.0, NSpeedMin = 5e-5, NSpeedMax = 1000.0;
     void SetSpeed( double dSpeed, bool bUpdateGUI = false );
     void SetNSpeed( double dNSpeed, bool bUpdateGUI = false );
     void SetVolume( double dVolume, bool bUpdateGUI = false );

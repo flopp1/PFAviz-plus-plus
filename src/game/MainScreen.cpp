@@ -116,7 +116,7 @@ GameState::GameError MainScreen::Init()
     // Developer switch PFAVIZ_START=S: start S seconds into the song
     if ( const char *sStart = getenv( "PFAVIZ_START" ) ) JumpTo( (long long)( atof( sStart ) * 1e6 ) );
     // ... PFAVIZ_SPEED=x: playback at x times (for load tests)
-    if ( const char *sSpeed = getenv( "PFAVIZ_SPEED" ) ) Config::GetConfig().GetPlaybackSettings().SetSpeed( std::clamp( atof( sSpeed ), 0.01, 10.0 ), true );
+    if ( const char *sSpeed = getenv( "PFAVIZ_SPEED" ) ) Config::GetConfig().GetPlaybackSettings().SetSpeed( atof( sSpeed ), true );     // (clamped there)
     m_Timer.Start();
     return Success;
 }
@@ -534,6 +534,7 @@ GameState::GameError MainScreen::Logic()
             if ( bReady )
             {
                 m_SimCpu = SimCpu( cVisual );
+                m_SimLag.pSong = m_pSong.get();     // (its sudden rises: where a lag spike starts)
                 DEVMODEW dm = { };
                 dm.dmSize = sizeof( dm );
                 m_dRefreshUs = EnumDisplaySettingsW( nullptr, ENUM_CURRENT_SETTINGS, &dm ) && dm.dmDisplayFrequency > 1 ? 1e6 / dm.dmDisplayFrequency : 1e6 / 60.0;
@@ -557,9 +558,11 @@ GameState::GameError MainScreen::Logic()
         }
         else if ( m_bSimOn && config.VisualGen() != m_uSimVisualGen )
         {
-            // (the cache sizes or the speed may have changed: the frames ahead are worked out again)
+            // (the cache sizes or the speed may have changed: the frames ahead are worked out again, and the one
+            // running is cut short, so they apply at once)
             m_SimCpu = SimCpu( cVisual );
             m_llSimKey = 0;
+            m_bSimCut = true;
         }
         m_uSimVisualGen = config.VisualGen();
         if ( m_bSimOn ) SimulateFrame( llMaxTime );
@@ -779,12 +782,31 @@ void MainScreen::SimulateFrame( long long llMaxTime )
     const double dCap = 600e6;
     // (at most this many worked out per call: after a long stall here, the next starts now)
     const int MaxFrames = 20000;
-    const long long AheadUs = 250000;
+    // (past the lag time's threshold, so it knows a spike's end as it comes: PfaLag::LagTracker)
+    const long long AheadUs = PfaLag::LagTracker::ThresholdUs + 250000;
     const size_t MaxKnots = PlaybackClock::MaxRampKnots - 8;
+
+    // A setting of the simulation changed (Preferences): the frame running is cut short now, at the song time
+    // its Logic has reached, so the next ones, with the new settings, start at once (not after a freeze)
+    if ( m_bSimCut )
+    {
+        m_bSimCut = false;
+        if ( !m_vSim.empty() && m_vSim.front().llWallStart <= llWall && m_vSim.front().llWallEnd > llWall )
+        {
+            SimFrame &f = m_vSim.front();
+            f.llTo = std::clamp( m_Clock.At( llWall ), f.llFrom, f.llTo );
+            f.llWallEnd = llWall;
+            while ( !f.vKnots.empty() && f.vKnots.back().llWall >= llWall ) f.vKnots.pop_back();
+            f.vKnots.push_back( { llWall, f.llTo } );
+            m_vSim.resize( 1 );
+            m_llSimNextWall = llWall;
+            m_llSimNextFrom = f.llTo;
+        }
+    }
 
     // The frames that ended
     auto Ended = [&]( const SimFrame &f ) {
-        m_SimLag.Ended( f.llWallStart, f.llWallEnd );
+        m_SimLag.Ended( f.llWallStart, f.llWallEnd, f.llFrom, f.llTo );
         m_llSimShown = f.llTo;
         m_dSimFrameUs = (double)( f.llWallEnd - f.llWallStart );
         m_iSimFrames++;
@@ -809,7 +831,11 @@ void MainScreen::SimulateFrame( long long llMaxTime )
     size_t nKnots = 0;
     for ( const SimFrame &f : m_vSim ) nKnots += f.vKnots.size();
     long long llStart = m_llSimNextWall ? m_llSimNextWall : llWall;
-    for ( int i = 0; llStart < llWall + AheadUs && nKnots < MaxKnots; i++ )
+    // While it is slowing down (frames of the lag time's lead-in length in a row), further ahead, up to
+    // LeadAheadUs, so the slow frame a lead-in goes into is known as the lead-in starts
+    const long long LeadAheadUs = 10000000;
+    bool bLeadIn = !m_vSim.empty() && m_vSim.back().llWallEnd - m_vSim.back().llWallStart >= m_SimLag.LeadUs;
+    for ( int i = 0; ( llStart < llWall + AheadUs || ( bLeadIn && llStart < llWall + LeadAheadUs ) ) && nKnots < MaxKnots; i++ )
     {
         if ( i == MaxFrames ) llStart = std::max( llStart, llWall );
         if ( i > 4 * MaxFrames ) break;
@@ -824,6 +850,7 @@ void MainScreen::SimulateFrame( long long llMaxTime )
         // With Limit FPS, Present waits for the display's next refresh
         if ( bLimit ) dTotal = std::ceil( dTotal / m_dRefreshUs ) * m_dRefreshUs;
         SimFrame f = { llStart, llStart + std::max< long long >( 1, (long long)dTotal ), llFrom, llTo, {} };
+        bLeadIn = f.llWallEnd - f.llWallStart >= m_SimLag.LeadUs;
         m_llSimNextWall = f.llWallEnd;
         m_llSimNextFrom = llTo;
         llStart = f.llWallEnd;
@@ -1603,7 +1630,10 @@ void MainScreen::RenderStatus( Renderer *pRenderer, const StatsBox &box, long lo
         {
             bool bLagging = false;
             const long long llNow = Timer::NowMicroSecs();
-            const long long llUs = m_SimLag.Duration( llNow, m_vSim.empty() || m_llSimWallStart > llNow ? 0 : m_llSimWallStart, &bLagging );
+            static std::vector< long long > s_vFrames;
+            s_vFrames.clear();
+            for ( const SimFrame &f : m_vSim ) s_vFrames.insert( s_vFrames.end(), { f.llWallStart, f.llWallEnd, f.llFrom, f.llTo } );
+            const long long llUs = m_SimLag.Duration( llNow, s_vFrames.data(), m_vSim.size(), &bLagging );
             const long long llS = llUs / 1000000;
             if ( llS >= 3600 ) swprintf( aValue[VS::StatPfaLagTime], 48, L"%lld:%02lld:%04.1f%ls", llS / 3600, llS / 60 % 60, ( llUs % 60000000 ) / 1e6, bLagging ? L" (lagging)" : L"" );
             else if ( llS >= 60 ) swprintf( aValue[VS::StatPfaLagTime], 48, L"%lld:%04.1f%ls", llS / 60, ( llUs % 60000000 ) / 1e6, bLagging ? L" (lagging)" : L"" );

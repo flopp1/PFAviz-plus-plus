@@ -1,5 +1,7 @@
 #include "app/MainWindow.h"
 #include "app/DarkMode.h"
+#include "app/OnScreen.h"
+#include "app/Tips.h"
 
 #include "app/LoadingDialog.h"
 #include "app/Preferences.h"
@@ -22,7 +24,8 @@ namespace
 {
     // The note speed slider (0 to 1000): logarithmic in two halves, from the slowest note speed (10,
     // left) through the default 0.06 (the middle) to the fastest (0.005, right), so the low values
-    // most songs use get half of it. Config's limits are the same.
+    // most songs use get half of it. Typed in its box, it goes much further (PlaybackSettings::NSpeedMin to
+    // NSpeedMax); the slider then stays at its end.
     const double NSpeedSlow = 10.0, NSpeedMid = 0.06, NSpeedFast = 0.005;
     const int NSpeedSteps = 1000;
 
@@ -44,20 +47,32 @@ namespace
     // The exact value boxes beside the speed sliders: playback speed in percent, and note speed as a
     // multiple of the default (higher is faster: NSpeedMid / the note speed). A box's text is applied
     // when it loses the focus or Enter is pressed, if it was typed in; Escape puts the value back.
-    const double SpeedMin = 0.01, SpeedMax = 10.0;
+    // (a value as typed back: n significant digits, never in exponent form)
+    std::wstring Plain( double d, int n )
+    {
+        wchar_t buf[48];
+        if ( d >= std::pow( 10.0, n ) ) swprintf( buf, 48, L"%.0f", d );
+        else swprintf( buf, 48, L"%.*g", n, d );
+        if ( wcschr( buf, L'e' ) )
+        {
+            // (small: as many decimals as its significant digits need)
+            const int iDec = std::clamp( n - 1 - (int)std::floor( std::log10( d ) ), 0, 12 );
+            swprintf( buf, 48, L"%.*f", iDec, d );
+            std::wstring s = buf;
+            if ( s.find( L'.' ) != std::wstring::npos ) { while ( s.back() == L'0' ) s.pop_back(); if ( s.back() == L'.' ) s.pop_back(); }
+            return s;
+        }
+        return buf;
+    }
 
     VOID ShowSpeedText( double dSpeed )
     {
-        wchar_t buf[32];
-        swprintf( buf, 32, L"%.4g%%", dSpeed * 100.0 );
-        SetDlgItemTextW( GetDlgItem( g_hWndBar, IDC_TOPTOOLBAR ), IDC_SPEEDEDIT, buf );
+        SetDlgItemTextW( GetDlgItem( g_hWndBar, IDC_TOPTOOLBAR ), IDC_SPEEDEDIT, ( Plain( dSpeed * 100.0, 4 ) + L"%" ).c_str() );
     }
 
     VOID ShowNSpeedText( double dNSpeed )
     {
-        wchar_t buf[32];
-        swprintf( buf, 32, L"%.3gx", NSpeedMid / dNSpeed );
-        SetDlgItemTextW( GetDlgItem( g_hWndBar, IDC_TOPTOOLBAR ), IDC_NSPEEDEDIT, buf );
+        SetDlgItemTextW( GetDlgItem( g_hWndBar, IDC_TOPTOOLBAR ), IDC_NSPEEDEDIT, ( Plain( NSpeedMid / dNSpeed, 3 ) + L"x" ).c_str() );
     }
 
     VOID ApplySpeedEdit( HWND hWndEdit )
@@ -68,7 +83,7 @@ namespace
         double d = 0.0;
         if ( SendMessageW( hWndEdit, EM_GETMODIFY, 0, 0 ) && GetWindowTextW( hWndEdit, buf, 32 ) > 0 && swscanf( buf, L"%lf", &d ) == 1 && d > 0.0 )
         {
-            if ( bSpeed ) cPlayback.SetSpeed( std::clamp( d / 100.0, SpeedMin, SpeedMax ), true );
+            if ( bSpeed ) cPlayback.SetSpeed( d / 100.0, true );    // (clamped there: PlaybackSettings::SpeedMin to SpeedMax)
             else cPlayback.SetNSpeed( NSpeedMid / d, true );
         }
         else if ( bSpeed ) ShowSpeedText( cPlayback.GetSpeed() );
@@ -285,8 +300,13 @@ LRESULT WINAPI WndProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
         {
             RECT rcMain;
             GetWindowRect( hWnd, &rcMain );
-            // A minimized window is parked at -32000,-32000: never save that as the position
-            if ( !cView.GetFullScreen() && !IsZoomed( hWnd ) && !IsIconic( hWnd ) ) cView.SetMainPos( rcMain.left, rcMain.top );
+            // A minimized window is parked at -32000,-32000: never save that as the position. Dragged off the
+            // screens, it is saved where it will open next time (app/OnScreen.h)
+            if ( !cView.GetFullScreen() && !IsZoomed( hWnd ) && !IsIconic( hWnd ) )
+            {
+                const POINT pt = OnScreen::Fixed( rcMain );
+                cView.SetMainPos( pt.x, pt.y );
+            }
             return 0;
         }
         case WM_ENTERSIZEMOVE:
@@ -756,6 +776,9 @@ HWND CreateRebar( HWND hWndOwner )
         SetWindowSubclass( h, SliderProc, 0, 0 );
     for ( HWND h : { hWndSpeedEdit, hWndNSpeedEdit } )
         SetWindowSubclass( h, SpeedEditProc, 0, 0 );
+    // (the valid ranges, wider than the sliders')
+    AddTips( hWndToolbar, { { IDC_SPEEDEDIT, L"Playback speed: 0.001% to 100,000% when typed here (Enter applies it); the slider goes from 5% to 195%." },
+                            { IDC_NSPEEDEDIT, L"Note speed, as a multiple of the default: 0.00006x to 1,200x when typed here (Enter applies it); the slider goes from 0.006x to 12x." } } );
 
     HWND hWndPosn = CreateWindowExW( 0, POSNCLASSNAME, nullptr, WS_CHILD | WS_VISIBLE | WS_DISABLED,
                                      0, 0, 0, 0, hWndRebar, ( HMENU )IDC_POSNCTRL, g_hInstance, nullptr );

@@ -140,7 +140,7 @@ void RenderAhead::Start( const Settings &s )
         m_sState = L"no sound: " + sError;
     {
         std::lock_guard< std::mutex > lock( m_mx );
-        NewTimebase( std::max( m_Clock.Speed(), 1e-3 ), m_uOfflineRate ? m_uOfflineRate : m_Out.Rate() ? m_Out.Rate() : 48000 );
+        NewTimebase( std::max( m_Clock.Speed(), 1e-6 ), m_uOfflineRate ? m_uOfflineRate : m_Out.Rate() ? m_Out.Rate() : 48000 );
         m_uBankGen++;
     }
     m_Loader = std::thread( &RenderAhead::LoaderThread, this );
@@ -1150,16 +1150,21 @@ void RenderAhead::Fill( float *pOut, unsigned n, long long llWallUs, unsigned uR
 {
     // (offline: in order, at the cursor, with nothing faded)
     const bool bOffline = m_uOfflineRate != 0;
-    const double dSpeed = std::max( m_Clock.Speed(), 1e-3 );
+    const double dSpeed = std::max( m_Clock.Speed(), 1e-6 );   // (below the slowest playback speed, 1e-5)
     const bool bPaused = !bOffline && m_Clock.Paused();
     const unsigned uEpoch = m_Clock.Epoch();
     const long long L = uRate / 250;       // the limiter's look-ahead (4 ms)
     const long long XF = uRate / 200;
+    // The PFA lag simulation drives the clock (a ramp): it holds through a freeze and races through what was
+    // held, so the audio follows it frame by frame instead (below), never going back
+    const bool bRamped = !bOffline && !bPaused && m_Clock.Ramped();
+    const size_t N = (size_t)( n + L );
 
     std::vector< BlockPtr > vBlocks;
     long long llB0 = 0, BF = 0;
     unsigned uBase;
     double dWant;
+    std::vector< double > vWant;        // (ramped: the clock's frame for each frame out)
     {
         std::lock_guard< std::mutex > lock( m_mx );
         if ( m_bHold )
@@ -1173,17 +1178,39 @@ void RenderAhead::Fill( float *pOut, unsigned n, long long llWallUs, unsigned uR
             NewTimebase( dSpeed, uRate );
         }
         uBase = m_uBase;
+        if ( !bRamped ) m_bGrains = false;     // (started afresh when the ramp comes back)
         BF = BlockFrames();
         dWant = bOffline ? m_dCursor : SongToFrame( (double)m_Clock.At( llWallUs ) );
-        if ( !bOffline && ( uBase != m_uCursorBase || uEpoch != m_uCursorEpoch || std::fabs( m_dCursor - dWant ) > 0.05 * uRate ) )
+        if ( !bOffline && ( uBase != m_uCursorBase || uEpoch != m_uCursorEpoch || ( !bRamped && std::fabs( m_dCursor - dWant ) > 0.05 * uRate ) ) )
         {
             m_dCursor = dWant;
             m_uCursorBase = uBase;
             m_uCursorEpoch = uEpoch;
             m_fFade = 0.0f;
+            m_bGrains = false;
         }
-        const double dLast = m_dCursor + ( n + L ) * 1.01 + 2;
-        llB0 = FloorDiv( (long long)std::floor( m_dCursor ), BF ) - 1;
+        double dFirst = m_dCursor, dLast = m_dCursor + ( n + L ) * 1.01 + 2;
+        if ( bRamped )
+        {
+            // (the clock read every millisecond, in between in straight lines, as its knots are)
+            vWant.resize( N );
+            const size_t S = std::max< size_t >( 1, uRate / 1000 );
+            double dA = dWant;
+            for ( size_t i = 0; i < N; i += S )
+            {
+                const size_t j = std::min( N, i + S );
+                const double dB = SongToFrame( (double)m_Clock.At( llWallUs + (long long)( j * 1e6 / uRate ) ) );
+                for ( size_t k = i; k < j; k++ ) vWant[k] = dA + ( dB - dA ) * ( k - i ) / (double)( j - i );
+                dA = dB;
+            }
+            // (where it may read: from the first of the clock and the grains, less the search, to the furthest and
+            // a grain and the search, at most a minute; past that is silence)
+            const double dG = 0.06 * uRate;
+            dFirst = std::min( { vWant.front(), m_bGrains ? (double)std::min( m_llGrainPrev, m_llGrainCur ) : dWant } ) - dG;
+            dLast = std::max( { vWant.back(), m_bGrains ? (double)std::max( m_llGrainPrev, m_llGrainCur ) : dWant } ) + N + 2 * dG;
+            dLast = std::min( dLast, dFirst + 60.0 * uRate );
+        }
+        llB0 = FloorDiv( (long long)std::floor( dFirst ), BF ) - 1;
         const long long llB1 = FloorDiv( (long long)std::floor( dLast ), BF );
         for ( long long b = llB0; b <= llB1; b++ )
         {
@@ -1210,10 +1237,85 @@ void RenderAhead::Fill( float *pOut, unsigned n, long long llWallUs, unsigned uR
             r = pp->vOver[(size_t)o * 2 + 1] * ( 1.0f - w ) + r * w;
         }
     };
-    const size_t N = (size_t)( n + L );
     m_vMix.resize( N * 2 );
     uint64_t llGaps = 0;
-    for ( size_t i = 0; i < N; i++ )
+    if ( bRamped )
+    {
+        // Following the clock, stretched at the music's own pitch (WSOLA): grains of 2H frames, a Hann window
+        // each, one every H frames, each read from where the clock is as it starts, nudged by up to D so its
+        // start matches the waveform the grain before it would go on with (so they join without beating). So
+        // a slowed passage plays its notes at their pitches at the clock's pace, and a race through what was
+        // held plays the music as the clock passes it, never going back. While the clock stands (a freeze)
+        // the grains hold where they are and fade out (0.1 s), as held notes die away
+        const long long H = std::max< long long >( 64, uRate / 40 ), D = uRate / 200, W = std::min< long long >( H, uRate / 100 );
+        const float fDecay = std::exp( -(float)H / ( 0.1f * uRate ) );
+        long long prev = m_llGrainPrev, cur = m_llGrainCur, phase = m_llGrainPhase;
+        float g0 = m_fGrainGain0, g1 = m_fGrainGain1;
+        double dHopWant = m_dGrainWant;
+        if ( !m_bGrains )
+        {
+            cur = (long long)std::floor( vWant[0] );
+            prev = cur - H;
+            phase = 0;
+            g0 = g1 = 1.0f;
+            dHopWant = vWant[0];
+        }
+        auto Mono = [&]( long long f ) { float l, r; Frame( f, l, r ); return l + r; };
+        std::vector< float > vSeek( (size_t)( 2 * D + W ) ), vNat( (size_t)W );
+        for ( size_t i = 0; i < N; i++ )
+        {
+            if ( i == n )      // (the look-ahead's frames are not kept)
+            {
+                m_llGrainPrev = prev; m_llGrainCur = cur; m_llGrainPhase = phase;
+                m_fGrainGain0 = g0; m_fGrainGain1 = g1; m_dGrainWant = dHopWant; m_bGrains = true;
+                m_dCursor = (double)( cur + phase );
+            }
+            if ( phase >= H )
+            {
+                // The next grain: near the clock, where it best goes on from the grain before (normalised
+                // correlation of the two, coarsely then finely)
+                prev = cur;
+                const long long p = (long long)std::floor( vWant[i] ), nat = prev + H;
+                for ( long long j = 0; j < W; j++ ) vNat[(size_t)j] = Mono( nat + j );
+                for ( long long j = 0; j < 2 * D + W; j++ ) vSeek[(size_t)j] = Mono( p - D + j );
+                auto Score = [&]( long long d, long long st ) {
+                    double c = 0.0, e = 1e-9;
+                    for ( long long j = 0; j < W; j += st ) { const float x = vSeek[(size_t)( d + D + j )]; c += x * vNat[(size_t)j]; e += x * x; }
+                    return c / std::sqrt( e );
+                };
+                long long dBest = 0;
+                double sBest = -1e300;
+                for ( long long d = -D; d <= D; d += 4 ) { const double sc = Score( d, 4 ); if ( sc > sBest ) { sBest = sc; dBest = d; } }
+                const long long dCoarse = dBest;
+                for ( long long d = std::max( -D, dCoarse - 3 ); d <= std::min( D, dCoarse + 3 ); d++ ) { const double sc = Score( d, 2 ); if ( d == std::max( -D, dCoarse - 3 ) || sc > sBest ) { sBest = sc; dBest = d; } }
+                cur = p + dBest;
+                // (standing: fading out; moving: back up within the hop)
+                const bool bMoved = vWant[i] - dHopWant >= 1.0;
+                g0 = g1;
+                g1 = bMoved ? 1.0f : g1 * fDecay;
+                dHopWant = vWant[i];
+                phase = 0;
+            }
+            const float x = (float)phase / H;
+            const float wCur = 0.5f - 0.5f * std::cos( 3.14159265f * x ), wPrev = 1.0f - wCur;
+            float la, ra, lb, rb;
+            bGap = false;
+            Frame( prev + H + phase, la, ra );
+            Frame( cur + phase, lb, rb );
+            if ( bGap && i < n ) llGaps++;
+            const float g = g0 + ( g1 - g0 ) * x;
+            m_vMix[i * 2] = g * ( wPrev * la + wCur * lb );
+            m_vMix[i * 2 + 1] = g * ( wPrev * ra + wCur * rb );
+            phase++;
+        }
+        if ( N <= n )
+        {
+            m_llGrainPrev = prev; m_llGrainCur = cur; m_llGrainPhase = phase;
+            m_fGrainGain0 = g0; m_fGrainGain1 = g1; m_dGrainWant = dHopWant; m_bGrains = true;
+            m_dCursor = (double)( cur + phase );
+        }
+    }
+    else for ( size_t i = 0; i < N; i++ )
     {
         const double pos = m_dCursor + i * ( dStep > 0.0 ? dStep : 1.0 );
         const long long f = (long long)std::floor( pos );
@@ -1286,7 +1388,7 @@ void RenderAhead::Fill( float *pOut, unsigned n, long long llWallUs, unsigned uR
         pOut[i * 2] = l;
         pOut[i * 2 + 1] = r;
     }
-    if ( dStep > 0.0 ) m_dCursor += n * dStep;
+    if ( dStep > 0.0 && !bRamped ) m_dCursor += n * dStep;
 }
 
 //-----------------------------------------------------------------------------

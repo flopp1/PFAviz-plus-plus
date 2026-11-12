@@ -157,9 +157,9 @@ BEGIN
     LTEXT           "&NPS limit per instance:",IDC_RA_NPSLBL,380,55,78,8
     EDITTEXT        IDC_RA_NPS,460,53,56,14,ES_AUTOHSCROLL | ES_NUMBER
     LTEXT           "(0: none)",IDC_RA_NPSNOTE,520,55,60,8
-    LTEXT           "&Graphics card (Kestrel, Merlin), at most:",IDC_STATIC,13,72,140,8
+    LTEXT           "&Graphics card for the renderer:",IDC_STATIC,13,72,140,8
     EDITTEXT        IDC_RA_GPUSHARE,155,70,28,14,ES_AUTOHSCROLL | ES_NUMBER
-    LTEXT           "% of the time",IDC_STATIC,187,72,60,8
+    LTEXT           "% (the rest for the visuals)",IDC_STATIC,187,72,100,8
     PUSHBUTTON      "Kestrel and Merlin a&dvanced...",IDC_RA_ADVANCED,474,69,110,14
     CONTROL         "Collapse stacked notes l&osslessly",IDC_RA_LOSSLESS,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,13,89,140,10
     CONTROL         "&Auto-degrade when the audio would run out",IDC_RA_DEGRADE,"Button",BS_AUTOCHECKBOX | WS_TABSTOP,160,89,170,10
@@ -185,7 +185,7 @@ STYLE DS_SETFONT | DS_MODALFRAME | DS_FIXEDSYS | WS_POPUP | WS_CAPTION | WS_SYSM
 CAPTION "Kestrel and Merlin: advanced"
 FONT 8, "MS Shell Dlg", 400, 0, 0x1
 BEGIN
-    LTEXT           "Kestrel's own defaults to begin with, but for the block (Kestrel's is 4096; 1024 shares the card with the picture better). Merlin reads the soundfont and output settings, not the voice ones.",IDC_STATIC,7,7,302,18
+    LTEXT           "Kestrel's own defaults to begin with, but for the block (Kestrel's is 4096; 1024 shares the card with the visuals better). Merlin reads the soundfont and output settings, not the voice ones.",IDC_STATIC,7,7,302,18
     GROUPBOX        "Voices (Kestrel)",IDC_STATIC,7,26,302,74
     LTEXT           "&Interpolation:",IDC_STATIC,13,40,90,8
     COMBOBOX        IDC_KA_INTERP,105,38,90,60,CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP

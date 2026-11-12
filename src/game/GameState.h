@@ -297,6 +297,7 @@ private:
     long long m_llSimNextWall = 0, m_llSimNextFrom = 0, m_llSimNoiseWall = 0;   // where the next frame to work out starts
     unsigned long long m_llSimKey = 0;  // the settings the frames ahead were worked out with
     bool m_bSimOn = false, m_bSimWarned = false;
+    bool m_bSimCut = false;         // a setting changed: the running frame is cut short (SimulateFrame)
     PfaLag::Cpu m_SimCpu;
     PfaLag::Noise m_SimNoise;
     long long m_llSimWallStart = 0, m_llSimWallEnd = 0, m_llSimCur = 0, m_llSimShown = 0;

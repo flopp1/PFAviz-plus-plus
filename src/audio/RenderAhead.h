@@ -316,6 +316,13 @@ private:
     double m_dCursor = 0.0;             // the frame being played (fractional while catching up)
     unsigned m_uCursorBase = 0, m_uCursorEpoch = 0;
     float m_fFade = 0.0f;               // gain ramp for pause, mute and jumps
+    // Following a ramped clock (the PFA lag simulation), stretched at the music's own pitch (Fill): the two
+    // grains sounding (where each reads from), how far into the hop it is, the gain at the hop's start and
+    // end (fading out while the clock stands), and where the clock was at the hop's start
+    bool m_bGrains = false;
+    long long m_llGrainPrev = 0, m_llGrainCur = 0, m_llGrainPhase = 0;
+    float m_fGrainGain0 = 1.0f, m_fGrainGain1 = 1.0f;
+    double m_dGrainWant = 0.0;
     float m_fLimGain = 1.0f;
     std::vector< float > m_vMix;
 };

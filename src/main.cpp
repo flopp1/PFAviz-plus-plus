@@ -11,6 +11,7 @@
 #include "app/LoadingDialog.h"
 #include "app/Preferences.h"
 #include "app/MainWindow.h"
+#include "app/OnScreen.h"
 #include "audio/RenderAhead.h"
 #include "audio/RenderBackends.h"
 #include "app/VideoExport.h"
@@ -28,6 +29,7 @@ SpscQueue< MSG > g_MsgQueue;
 static DWORD WINAPI GameThread( LPVOID lpParameter )
 {
     if ( !g_hWndGfx ) return 0;
+    OnScreen::Install();    // (its message boxes)
 
     Renderer *pRenderer = new Renderer();
     if ( FAILED( pRenderer->Init( g_hWndGfx, Config::GetConfig().GetVideoSettings().bLimitFPS ) ) )
@@ -142,6 +144,8 @@ int WINAPI wWinMain( HINSTANCE hInstance, HINSTANCE, LPWSTR, int nCmdShow )
             cView.SetMainPos( iLeft, iTop );
         }
     }
+    // Every window's title bar kept on a screen (app/OnScreen.h), the main window's first
+    OnScreen::Install();
     // The interface's theme, before any window
     DarkMode::Install();
     DarkMode::SetTheme( cView.GetTheme() );

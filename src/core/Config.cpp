@@ -1108,7 +1108,7 @@ void PlaybackSettings::LoadDefaultValues()
 void PlaybackSettings::Load( const IniFile &ini )
 {
     m_bMute = ini.GetBool( "Playback", "Mute", m_bMute );
-    m_dNSpeed = std::clamp( ini.GetDouble( "Playback", "NoteSpeed", m_dNSpeed ), 0.005, 10.0 );
+    m_dNSpeed = std::clamp( ini.GetDouble( "Playback", "NoteSpeed", m_dNSpeed ), NSpeedMin, NSpeedMax );
     m_dVolume = std::clamp( ini.GetDouble( "Playback", "Volume", m_dVolume ), 0.0, 1.0 );
     m_eMetronome = static_cast< Metronome >( std::clamp( ini.GetInt( "Playback", "Metronome", m_eMetronome ), 0, 2 ) );
 }
@@ -1126,8 +1126,8 @@ void PlaybackSettings::SetPlayMode( PlayMode::State e, bool bUpdateGUI ) { if ( 
 void PlaybackSettings::SetPlayable( bool b, bool bUpdateGUI ) { if ( bUpdateGUI ) ::SetPlayable( b ); m_bPlayable = b; }
 void PlaybackSettings::SetPaused( bool b, bool bUpdateGUI ) { if ( bUpdateGUI ) ::SetPlayPauseStop( !b, b, false ); m_bPaused = b; }
 void PlaybackSettings::SetStopped( bool bUpdateGUI ) { if ( bUpdateGUI ) ::SetPlayPauseStop( false, false, true ); m_bPaused = true; }
-void PlaybackSettings::SetSpeed( double d, bool bUpdateGUI ) { if ( bUpdateGUI ) ::SetSpeed( d ); m_dSpeed = d; }
-void PlaybackSettings::SetNSpeed( double d, bool bUpdateGUI ) { d = std::max( std::min( d, 10.0 ), 0.005 ); if ( bUpdateGUI ) ::SetNSpeed( d ); m_dNSpeed = d; }
+void PlaybackSettings::SetSpeed( double d, bool bUpdateGUI ) { d = std::clamp( d, SpeedMin, SpeedMax ); if ( bUpdateGUI ) ::SetSpeed( d ); m_dSpeed = d; }
+void PlaybackSettings::SetNSpeed( double d, bool bUpdateGUI ) { d = std::clamp( d, NSpeedMin, NSpeedMax ); if ( bUpdateGUI ) ::SetNSpeed( d ); m_dNSpeed = d; }
 void PlaybackSettings::SetVolume( double d, bool bUpdateGUI ) { if ( bUpdateGUI ) ::SetVolume( d ); m_dVolume = d; }
 void PlaybackSettings::SetMute( bool b, bool bUpdateGUI ) { if ( bUpdateGUI ) ::SetMute( b ); m_bMute = b; }
 void PlaybackSettings::SetMetronome( Metronome e, bool bUpdateGUI ) { if ( bUpdateGUI ) ::SetMetronome( e ); m_eMetronome = e; }

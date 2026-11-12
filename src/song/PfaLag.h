@@ -24,7 +24,10 @@
 #pragma once
 
 #include <algorithm>
+#include <climits>
+#include <cstddef>
 #include <cstdint>
+#include <vector>
 
 struct Song;
 
@@ -118,36 +121,103 @@ namespace PfaLag
     // (PfaLag.cpp) as the cost interpolates between them; and the events there
     void WalkBands( const Song &song, const Cpu &cpu, long long llFrom, long long llTo, double aBands[5], double *pEvents );
 
+    // The song time in (llFrom, llTo] where the notes a second or the polyphony rise suddenly (LLONG_MIN: none;
+    // LagTracker): the notes of the RiseAfterUs after a point at least RiseRatio times, and NpsFloor a second
+    // more than, those of the RiseBeforeUs before it, or the polyphony RiseAfterUs on at least PolyRatio times,
+    // and PolyFloor more than, the most of the RiseBeforeUs before; points every RiseStepUs, the biggest rise
+    static constexpr long long RiseBeforeUs = 1000000, RiseAfterUs = 250000, RiseStepUs = 10000;
+    static constexpr double RiseRatio = 2.0, NpsFloor = 20000.0, PolyRatio = 1.5, PolyFloor = 2000.0;
+    long long RiseIn( const Song &song, long long llFrom, long long llTo );
+
     // How long the original has been lagging: a frame that takes ThresholdUs or more (under 1 fps) is lag,
-    // and a lag spike is a run of such frames with less than ThresholdUs of quicker ones between them. Its
-    // duration counts from the start of its first slow frame without a pause, through the quicker frames
-    // between slow ones (the spike is over only after ThresholdUs without one), and stops there, until the
-    // next spike starts it again from 0. Wall times in microseconds
+    // and a lag spike is a run of such frames with less than ThresholdUs of quicker ones between them. It
+    // starts where the slowing down into it does: at the first of the frames of LeadUs or more (under 1.33 fps)
+    // that lead straight into its first slow frame. Its duration counts from there without a pause, through
+    // the quicker frames between slow ones, to the end of its last slow frame, and stays there until the next
+    // spike starts it again from 0. It ends the same way it starts: after the frames of LeadUs or more straight
+    // after its last slow frame (the speeding up out of it). With the song given (pSong), a sudden rise in notes
+    // a second or polyphony in the RiseBackUs before that start (RiseIn: where the dense part begins, which
+    // usually brings the lag on) moves the start back to the frame that played it. The frames are known before they run (worked out ahead), so a spike
+    // counts from the moment its first frame starts (when the slow frame it leads to is worked out by then),
+    // and ends exactly at its last slow frame's end, given the frames worked out at least ThresholdUs ahead.
+    // Wall times in microseconds
     struct LagTracker
     {
         static constexpr long long ThresholdUs = 1000000;
-        long long llStart = 0, llLastEnd = 0;   // the spike: its first slow frame's start, its last one's end
-        bool bAny = false;
+        // The search for the dense part a spike comes from: this much wall time back from where it starts
+        static constexpr long long RiseBackUs = 3000000;
+        long long LeadUs = 750000;
+        const Song *pSong = nullptr;            // (its note statistics: the start moved to a sudden rise; none: not)
+        long long llStart = 0, llLastEnd = 0;   // the spike: where it starts, its end (last slow frame's, then its lead-out's)
+        long long llRunStart = 0;               // the frames of LeadUs or more in a row up to now: the first's start
+        long long llRiseUs = 0;                 // how much earlier the last spike starts for a rise (0: none found)
+        bool bAny = false, bRun = false, bOut = false;  // bOut: the run goes on from the spike's last slow frame
         int iSpikes = 0;
-        // A frame that ended
-        void Ended( long long llWallStart, long long llWallEnd )
+        struct Past { long long llWallStart, llWallEnd, llFrom, llTo; };
+        std::vector< Past > vPast;              // the frames of the last RiseBackUs and more (song time by wall time)
+        // A frame that ended: from llWallStart to llWallEnd, playing song time (llFrom, llTo]
+        void Ended( long long llWallStart, long long llWallEnd, long long llFrom, long long llTo )
         {
-            if ( llWallEnd - llWallStart < ThresholdUs ) return;
-            if ( !bAny || llWallStart - llLastEnd >= ThresholdUs ) { llStart = llWallStart; iSpikes++; }
-            bAny = true;
+            if ( pSong )
+            {
+                vPast.push_back( { llWallStart, llWallEnd, llFrom, llTo } );
+                size_t iKeep = 0;
+                while ( iKeep + 1 < vPast.size() && vPast[iKeep + 1].llWallStart < llWallStart - RiseBackUs - ThresholdUs ) iKeep++;
+                if ( iKeep ) vPast.erase( vPast.begin(), vPast.begin() + (ptrdiff_t)iKeep );
+            }
+            const long long d = llWallEnd - llWallStart;
+            if ( d < LeadUs ) { bRun = bOut = false; return; }
+            if ( !bRun ) { bRun = true; llRunStart = llWallStart; }
+            // (the speeding up out of it: frames of LeadUs or more straight after its last slow one)
+            if ( d < ThresholdUs ) { if ( bOut ) llLastEnd = std::max( llLastEnd, llWallEnd ); return; }
+            if ( !bAny || llWallStart - llLastEnd >= ThresholdUs )
+            {
+                llStart = std::min( llRunStart, llWallStart );
+                iSpikes++;
+                llRiseUs = 0;
+                // A sudden rise in notes a second or polyphony shortly before: it starts there (the dense part)
+                if ( pSong && !vPast.empty() )
+                {
+                    const Past *pAt = nullptr, *pBack = &vPast.front();
+                    for ( const Past &p : vPast )
+                    {
+                        if ( !pAt && p.llWallStart >= llStart ) pAt = &p;
+                        if ( p.llWallStart <= llStart - RiseBackUs ) pBack = &p;
+                    }
+                    if ( pAt && pBack->llFrom < pAt->llFrom )
+                    {
+                        const long long llRise = RiseIn( *pSong, pBack->llFrom, pAt->llFrom );
+                        if ( llRise != LLONG_MIN )
+                            for ( const Past &p : vPast )
+                                if ( llRise <= p.llTo )
+                                {
+                                    if ( p.llWallStart < llStart ) { llRiseUs = llStart - p.llWallStart; llStart = p.llWallStart; }
+                                    break;
+                                }
+                    }
+                }
+            }
+            bAny = bOut = true;
             llLastEnd = std::max( llLastEnd, llWallEnd );
         }
-        // The duration at llNow, with the frame running since llRunStart (0: none); bLagging: in a spike
-        long long Duration( long long llNow, long long llRunStart, bool *pbLagging = nullptr ) const
+        // The duration at llNow, given the frames not ended yet (the running one and those worked out ahead, in
+        // order: n of wall start, wall end, song from, song to at pFrames); bLagging: in a spike
+        long long Duration( long long llNow, const long long *pFrames, size_t n, bool *pbLagging = nullptr ) const
         {
-            const bool bSlow = llRunStart && llNow - llRunStart >= ThresholdUs;
-            const bool bOn = bAny && llNow - llLastEnd < ThresholdUs;       // (quicker frames between slow ones)
-            if ( pbLagging ) *pbLagging = bSlow || bOn;
-            if ( bSlow ) return llNow - ( bAny && llRunStart - llLastEnd < ThresholdUs ? llStart : llRunStart );
-            if ( bOn ) return llNow - llStart;
-            return bAny ? Length() : 0;
+            LagTracker t = *this;
+            for ( size_t i = 0; i < n; i++ )
+            {
+                const long long *f = pFrames + 4 * i;
+                if ( f[0] <= llNow ) { t.Ended( f[0], f[1], f[2], f[3] ); continue; }
+                // (ahead: only what goes on the spike under way, or on the slowing down under way now)
+                const bool bGoesOn = t.bAny && f[0] - t.llLastEnd < ThresholdUs, bLeadIn = t.bRun && t.llRunStart <= llNow;
+                if ( !bGoesOn && !bLeadIn ) break;
+                t.Ended( f[0], f[1], f[2], f[3] );
+            }
+            const bool bLag = t.bAny && llNow >= t.llStart && llNow < t.llLastEnd;
+            if ( pbLagging ) *pbLagging = bLag;
+            return !t.bAny ? 0 : bLag ? llNow - t.llStart : t.Length();
         }
-        // The last spike's whole length: to a second after its last slow frame, when it was seen to be over
-        long long Length() const { return llLastEnd + ThresholdUs - llStart; }
+        long long Length() const { return llLastEnd - llStart; }    // (the last spike's)
     };
 }

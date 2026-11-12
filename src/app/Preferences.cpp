@@ -1436,8 +1436,8 @@ namespace
                                   L"0: no limit." },
                     { IDC_RA_FX, L"BASSMIDI's reverb and chorus." },
                     { IDC_RA_LIMITER, L"Keeps the joined audio under full scale." },
-                    { IDC_RA_GPUSHARE, L"10 to 100. Once 5 seconds are made, Kestrel and Merlin rest between blocks or pieces, so they use the graphics card at "
-                                       L"most this share of the time; the rest is the picture's." },
+                    { IDC_RA_GPUSHARE, L"10 to 100. The audio renderer uses at most this % of the graphics card's time; the rest is left for the visuals "
+                                       L"(once 5 seconds of audio are made ahead)." },
                     { IDC_RA_LOSSLESS, L"Identical notes (channel, key, velocity, tick) sent once with their count. Merlin reads Spiderweb's repeat marks; "
                                        L"Kestrel's copies that also end together are one voice at their summed loudness. BASSMIDI gets every note." },
                     { IDC_RA_DEGRADE, L"When the next audio would not be made before what is made runs out, it is made lighter: BASSMIDI skips its quietest "
