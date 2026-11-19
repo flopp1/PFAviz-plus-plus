@@ -1,6 +1,6 @@
 // The playback decoder (DESIGN.md 7.2, 7.5, 7.7, 7.8): turns the event stream into timed batches of
 // short messages, applying mute, the velocity correction, stack collapsing, the send budget, velocity
-// skipping, the seek chase and the metronome. It has no threads and no clock of its own, so the harness can drive it directly;
+// skipping and the seek chase. It has no threads and no clock of its own, so the harness can drive it directly;
 // PlaybackEngine runs it on the decoder thread.
 #pragma once
 
@@ -20,12 +20,10 @@
 class PlaybackDecoder
 {
 public:
-    enum Metronome { MetOff = 0, MetEveryBeat = 1, MetEveryMeasure = 2 };      // PlaybackSettings::Metronome
     struct Params
     {
         bool bMute = false;
         double dVolumeCorrect = 1.0;
-        int iMetronome = MetOff;
         // Velocity skipping (off: every event is sent). Above llSkipLagUs of lag (song time), note-ons
         // quieter than a threshold are skipped; it rises from velocity 1 at that lag to every note at
         // 4x that lag (VelocityThreshold)
@@ -68,8 +66,6 @@ public:
 
     explicit PlaybackDecoder( const Song &song );
 
-    // Mute bits per track (bit c = channel c); may be changed by another thread at any time
-    void SetMuteMask( const std::atomic< uint16_t > *pMask ) { m_pMuteMask = pMask; }
 
     // MainScreen::InitState: the cursor goes to the first event, nothing is chased
     void Reset( long long llStartTime );
@@ -78,8 +74,8 @@ public:
     // (unused: the chase does not depend on where playback was).
     void Seek( long long llTarget, long long llPrevTime, std::vector< uint32_t > &vOut );
 
-    // Time of the next message (event, or metronome click when it is on), LLONG_MAX at the end
-    long long NextTime( int iMetronome );
+    // Time of the next event, LLONG_MAX at the end
+    long long NextTime();
     // Appends up to iCap messages whose time is <= llHorizon, all within 0.5 ms (x speed) of the
     // first one, whose time is returned in llDue. llNow is the current playback time (for lag).
     // It reads at most 256 k events per call, so it can return fewer (even none) with
@@ -138,8 +134,6 @@ public:
     static double BudgetDepth( long long llMaxSendsPerSec ) { return std::max( 4.0, llMaxSendsPerSec * (double)BudgetWindowUs / 1e6 ); }
 
 private:
-    struct Signature { long long llTick, iBeatsPerMeasure, iBeatType; };
-
     long long EventTime();
     // With bShares: when the next event is due, from its share of its millisecond's events
     long long ShareTime( long long tE );
@@ -154,11 +148,6 @@ public:
 private:
     void BudgetTick( long long tE, const Params &p );
     bool BudgetKeep( uint32_t uVel );
-    const Signature &SignatureAt( long long llTick ) const;
-    long long GetBeat( long long iTick, const Signature &s ) const;
-    long long GetBeatTick( long long iTick ) const;
-    long long CurrentTick( long long llTime ) const;
-    void SetBeat( long long llBeatTick );
     void FillLane( const Params &p, long long llNow, LaneOut &out );
     // A NoteOff, or a NoteOn of velocity 0
     static bool IsOff( uint32_t m ) { return ( ( m & 0xF0 ) == 0x80 ) | ( ( m & 0x7F00F0 ) == 0x90 ); }
@@ -179,8 +168,6 @@ private:
     const EventStream &m_Stream;
     StreamCursor m_Cursor;
     TempoMap m_Tempo;
-    std::vector< Signature > m_vSignatures;
-    const std::atomic< uint16_t > *m_pMuteMask = nullptr;
 
     // Cached time of the cursor's next unique tick
     size_t m_uCachedTick = SIZE_MAX;
@@ -189,12 +176,6 @@ private:
     // Velocity correction
     double m_dLutCorrect = -1.0;
     uint8_t m_aVelLut[128] = {};
-
-    // Metronome
-    bool m_bMetronome = false;          // ticks are musical (not SMPTE)
-    long long m_llNextBeatTick = 0, m_llNextBeatTime = LLONG_MAX;
-    int m_iLastMetronomeNote = 76;
-    int m_iMetronome = MetOff;
 
     // Per channel and key, in one record so a note touches one cache line:
     //   - uPending: the note-offs still to drop for note-ons not sent (skipped or muted);

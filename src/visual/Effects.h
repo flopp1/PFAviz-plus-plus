@@ -1,4 +1,4 @@
-// Eye candy (Preferences > Effects; core/Config.h EffectSettings): the colours a frame is drawn with
+// Eye candy (Preferences > Look & effects; core/Config.h EffectSettings): the colours a frame is drawn with
 // under the effects, the light of notes and keys over time, and what the bloom glows from. With every
 // effect off nothing here is used, and frames are drawn exactly as before.
 //
@@ -63,6 +63,7 @@ namespace Effects
         D3DCOLOR m_cBarGlow = 0;
         bool m_bFlat = false;
         float m_fSemiFlat = -1.0f;     // the semi-flat look: its outlines' colour, of their insides' (below 0: not that look)
+        bool m_bKiva = false;          // the Kiva look: the notes' colours as Kiva's
         SceneColors m_Colors;
         // The rest colours: notes', and short notes' when they differ
         bool m_abOwnRest[2] = {};

@@ -95,6 +95,14 @@ namespace
             v.insert( v.end(), p + 1, p + n );
             uStatus = 0;
         }
+        // Cut back to n bytes, written up to llAt: the next message writes its status again (the one the
+        // bytes cut away ended on is not the one before the cut)
+        void Cut( size_t n, uint64_t llAt )
+        {
+            v.resize( n );
+            llTick = llAt;
+            uStatus = 0;
+        }
         void End( uint64_t llAt )
         {
             Vlq( v, llAt > llTick ? llAt - llTick : 0 );
@@ -106,18 +114,18 @@ namespace
     };
 }
 
-RenderAhead::RenderAhead( std::shared_ptr< const Song > pSong, PlaybackClock &clock, const std::atomic< uint16_t > *pMuteMask )
-    : m_pSong( std::move( pSong ) ), m_Clock( clock ), m_pMuteMask( pMuteMask )
+RenderAhead::RenderAhead( std::shared_ptr< const Song > pSong, PlaybackClock &clock )
+    : m_pSong( std::move( pSong ) ), m_Clock( clock )
 {
-    m_llEndUs = m_pSong->info.llTotalMicroSecs + 3000000;
+    m_llEndUs = m_pSong->info.llTotalMicroSecs + TailSecs * 1000000;
     for ( const auto &t : m_pSong->vTracks )
         for ( int c = 0; c < 16; c++ ) if ( t.aNoteCount[c] > 0 ) m_uChannels |= (uint16_t)( 1u << c );
 }
 
-RenderAhead::RenderAhead( std::shared_ptr< const Song > pSong, const std::atomic< uint16_t > *pMuteMask, unsigned uRate )
-    : m_pSong( std::move( pSong ) ), m_uOfflineRate( uRate ), m_Clock( m_OwnClock ), m_pMuteMask( pMuteMask )
+RenderAhead::RenderAhead( std::shared_ptr< const Song > pSong, unsigned uRate )
+    : m_pSong( std::move( pSong ) ), m_uOfflineRate( uRate ), m_Clock( m_OwnClock )
 {
-    m_llEndUs = m_pSong->info.llTotalMicroSecs + 3000000;
+    m_llEndUs = m_pSong->info.llTotalMicroSecs + TailSecs * 1000000;
     for ( const auto &t : m_pSong->vTracks )
         for ( int c = 0; c < 16; c++ ) if ( t.aNoteCount[c] > 0 ) m_uChannels |= (uint16_t)( 1u << c );
     m_OwnClock.SetSpeed( 1.0 );
@@ -188,6 +196,8 @@ void RenderAhead::SetSettings( const Settings &s )
     const bool bKestrel = s.eEngine != RenderBackends::EngineBass;
     if ( s.eEngine != old.eEngine || s.vFonts != old.vFonts || ( bKestrel && s.kb.bFilter != old.kb.bFilter ) )
     {
+        // (the Degraded count is the current engine's: it starts again from zero on a switch)
+        if ( s.eEngine != old.eEngine ) m_llDegraded.store( 0, std::memory_order_relaxed );
         m_uBankGen++;
         m_cv.notify_all();
     }
@@ -207,12 +217,6 @@ void RenderAhead::SetSound( const Sound &snd )
     NewGeneration();
 }
 
-void RenderAhead::MuteChanged()
-{
-    std::lock_guard< std::mutex > lock( m_mx );
-    NewGeneration();
-}
-
 RenderAhead::Status RenderAhead::GetStatus()
 {
     Status st;
@@ -224,22 +228,47 @@ RenderAhead::Status RenderAhead::GetStatus()
     st.llGaps = m_llGaps.load( std::memory_order_relaxed );
     st.llDegraded = m_llDegraded.load( std::memory_order_relaxed );
     const long long BF = BlockFrames();
-    const double dFrame = SongToFrame( (double)m_Clock.Now() );
+    // (the song's tail playing on, or played out, after the clock stopped at its end: where the player is)
+    const bool bAtTail = !m_uOfflineRate && m_iTail != TailNone && m_Clock.Paused() && m_Clock.Now() >= m_pSong->info.llTotalMicroSecs;
+    const double dFrame = bAtTail ? m_dCursor : SongToFrame( (double)m_Clock.Now() );
     long long b = FloorDiv( (long long)std::floor( dFrame ), BF );
     long long n = 0;
-    for ( auto it = m_mBlocks.find( b ); it != m_mBlocks.end() && it->first == b + n; ++it ) n++;
+    // (only what is made with the sound as it is now: after a change of soundfonts or sound, what was made before
+    // plays on until it is made again, but is not counted as ready)
+    for ( auto it = m_mBlocks.find( b ); it != m_mBlocks.end() && it->first == b + n && it->second->uGen == m_uGen; ++it ) n++;
     st.iGpuShare = m_Settings.eEngine != RenderBackends::EngineBass ? m_Settings.iGpuShare : 0;
     st.dReadySecs = n ? std::max( 0.0, ( ( b + n ) * BF - dFrame ) / m_uRate ) : 0.0;
     // Made to the song's end: nothing more to make, so as far ahead as it aims
     if ( n && b + n > FloorDiv( (long long)SongToFrame( (double)m_llEndUs ), BF ) ) st.dReadySecs = st.dAheadSecs;
     st.sWarning = m_sWarning;
+    // The voices sounding in what plays (past the song's made end: none)
+    {
+        auto it = m_mBlocks.find( b );
+        if ( it != m_mBlocks.end() && !it->second->vVoices.empty() )
+        {
+            const size_t k = (size_t)std::clamp< long long >( (long long)( ( dFrame - (double)b * BF ) * 8 / BF ), 0, (long long)it->second->vVoices.size() - 1 );
+            st.llVoices = it->second->vVoices[k];
+            st.llVoiceCap = it->second->llVoiceCap;
+            st.llVoiceMax = it->second->llVoiceMax;
+        }
+        // (the tail played out and faded: nothing sounds any more)
+        if ( bAtTail && ( it == m_mBlocks.end() || m_iTail == TailDone ) ) st.llVoices = 0;
+    }
     // How much lighter what plays is: the block playing (and the pieces made lighter so far)
     if ( !m_Settings.bAutoDegrade ) st.sDegrade = L"off";
     else
     {
         auto it = m_mBlocks.find( b );
         wchar_t s[64];
-        if ( it == m_mBlocks.end() || !it->second->bDegraded ) swprintf( s, 64, L"none (%llu so far)", (unsigned long long)st.llDegraded );
+        // (nothing playing while a continuous render catches up: its thinning as it makes the audio)
+        const int iThinNow = m_iThinNow.load( std::memory_order_relaxed );
+        if ( it == m_mBlocks.end() && iThinNow > 0 && st.iBusy > 0 && !m_Clock.Paused() )
+            swprintf( s, 64, L"thinning %d%%, catching up (%llu so far)", iThinNow, (unsigned long long)st.llDegraded );
+        else if ( it == m_mBlocks.end() || !it->second->bDegraded ) swprintf( s, 64, L"none (%llu so far)", (unsigned long long)st.llDegraded );
+        else if ( it->second->iThinPct && it->second->uDegradeCap )
+            swprintf( s, 64, L"thinned %d%%, voices cut (%llu so far)", it->second->iThinPct, (unsigned long long)st.llDegraded );
+        else if ( it->second->iThinPct ) swprintf( s, 64, L"thinned %d%% (%llu so far)", it->second->iThinPct, (unsigned long long)st.llDegraded );
+        else if ( it->second->uDegradeCap && !it->second->vVoices.empty() ) swprintf( s, 64, L"voices cut (%llu so far)", (unsigned long long)st.llDegraded );
         else if ( it->second->iDegradeVel ) swprintf( s, 64, L"vel < %d (%llu so far)", it->second->iDegradeVel, (unsigned long long)st.llDegraded );
         else swprintf( s, 64, L"%u voices (%llu so far)", it->second->uDegradeCap, (unsigned long long)st.llDegraded );
         st.sDegrade = s;
@@ -307,20 +336,25 @@ void RenderAhead::CancelUnwanted( long long llPlay )
 
 void RenderAhead::Evict( long long llPlay )
 {
-    // What is wanted ahead, and what was made behind as far as kept (so going back plays at once); past
-    // that, the furthest go first
-    const long long llBehind = std::max( 2, m_Settings.iBehindSecs );
+    // What was played is thrown away at once: only the block before the one playing is kept (its overrun
+    // is what the next piece fades in over). Offline, two blocks behind, as the writer reads them in order
+    const long long llBehind = m_uOfflineRate ? 2 : BehindBlocks;
+    if ( !m_uOfflineRate )
+        while ( !m_mBlocks.empty() && m_mBlocks.begin()->first < llPlay - llBehind ) m_mBlocks.erase( m_mBlocks.begin() );
+    // What is wanted ahead; past that, the furthest go first
     const size_t iKeep = (size_t)( m_Settings.iAheadSecs + llBehind ) + RunBlocks;
     if ( m_mBlocks.size() <= iKeep ) return;
+    // (the furthest are at the map's two ends: taken from whichever end is further, with no sort under the
+    // lock the audio callback takes)
     const long long llLast = llPlay + m_Settings.iAheadSecs, llFirst = llPlay - llBehind;
-    std::vector< std::pair< long long, long long > > v;     // distance, block
-    for ( const auto &kv : m_mBlocks )
+    while ( m_mBlocks.size() > iKeep )
     {
-        long long d = kv.first < llFirst ? llFirst - kv.first : kv.first > llLast ? kv.first - llLast : 0;
-        v.push_back( { d, kv.first } );
+        const long long a = m_mBlocks.begin()->first, b = m_mBlocks.rbegin()->first;
+        const long long dA = a < llFirst ? llFirst - a : 0, dB = b > llLast ? b - llLast : 0;
+        if ( dA <= 0 && dB <= 0 ) break;
+        if ( dB >= dA ) m_mBlocks.erase( std::prev( m_mBlocks.end() ) );
+        else m_mBlocks.erase( m_mBlocks.begin() );
     }
-    std::sort( v.begin(), v.end(), []( auto &a, auto &b ) { return a.first > b.first; } );
-    for ( size_t i = 0; i < v.size() && m_mBlocks.size() > iKeep && v[i].first > 0; i++ ) m_mBlocks.erase( v[i].second );
 }
 
 //-----------------------------------------------------------------------------
@@ -351,15 +385,18 @@ void RenderAhead::LoaderThread()
             std::wstring sWhy;
             if ( !pBank->MerlinTakes( sWhy ) )
                 sWarning = L"Merlin does not take these soundfonts, so Kestrel makes the audio (" + sWhy + L")" + ( sWarning.empty() ? L"" : L"\n" ) + sWarning;
+            else if ( !sWhy.empty() ) sWarning = sWhy + ( sWarning.empty() ? L"" : L"\n" ) + sWarning;     // (which one it plays, of several)
         }
         lock.lock();
         if ( uGen != m_uBankGen ) continue;     // (asked for something else meanwhile)
         m_uLoadedGen = uGen;
         m_pBank = pBank;
+        m_bBassNoStream = false;
         m_sWarning = sWarning;
         if ( FILE *f = RenderLog() ) { fprintf( f, "W %ls\n", sWarning.c_str() ); fflush( f ); }
         RenderBackends::SetNote( RenderBackends::NoteLoad, sWarning );
-        if ( pBank && m_Settings.bDiscardOnSwitch && m_eLoadedEngine >= 0 && m_eLoadedEngine != key.eEngine ) m_mBlocks.clear();
+        // (a switch of engine throws away the old one's audio at once)
+        if ( pBank && m_eLoadedEngine >= 0 && m_eLoadedEngine != key.eEngine ) m_mBlocks.clear();
         if ( pBank ) m_eLoadedEngine = key.eEngine;
         m_Cost = CostModel();
         m_CostMerlin = CostModel();
@@ -397,7 +434,13 @@ struct RenderAhead::StreamRun
     long long tDecoded = 0;             // decoded up to this song time
     bool bDecoded = false;              // to the song's end
     std::vector< float > vCarry;        // its next block's first CrossfadeFrames, made already
-    unsigned uCap = 0, uMax = 0;        // the voice cap now, and as set
+    unsigned uCap = 0, uMax = 0;        // the voice cap now, and as set (Kestrel; BASSMIDI's last resort, each instance's)
+    unsigned uCapBlock = 0;             // ... the lowest in the block being made
+    int iCapWait = 0;                   // BASSMIDI: steps before its cap may change again
+    double dThin = 0.0;                 // BASSMIDI: the thinning now (RenderBackends::Stream::SetThin)
+    double dStepRt = 0.0;               // ... what its last step took, over the time its audio plays
+    double dUsPerOn = 0.0;              // ... what a note-on put in costs a step (an average of busy steps; 0: not known yet)
+    int iThinBlock = 0;                 // ... the most thinning (percent of the level) in the block being made
     double dSecUs = 5e5;                // what a second of audio takes it (an average)
     uint64_t llMerged = 0;              // copies merged into another note-on (for the log)
     long long llPushed = 0;             // frames pushed up to (exclusive)
@@ -488,6 +531,10 @@ namespace
 {
     // (developer switch PFAVIZ_KSTREAM=0: Kestrel in pieces, as before)
     bool StreamWanted() { static const bool s_b = !getenv( "PFAVIZ_KSTREAM" ) || atoi( getenv( "PFAVIZ_KSTREAM" ) ) != 0; return s_b; }
+    // (... PFAVIZ_BSTREAM=0: BASSMIDI in pieces as it plays, as before)
+    bool BassStreamWanted() { static const bool s_b = !getenv( "PFAVIZ_BSTREAM" ) || atoi( getenv( "PFAVIZ_BSTREAM" ) ) != 0; return s_b; }
+    // (... PFAVIZ_BSTREAM=2: also offline, as it plays, to measure it)
+    bool BassStreamOffline() { static const bool s_b = getenv( "PFAVIZ_BSTREAM" ) && atoi( getenv( "PFAVIZ_BSTREAM" ) ) == 2; return s_b; }
 }
 
 
@@ -495,7 +542,6 @@ void RenderAhead::WorkerThread( int k )
 {
     SetThreadPriority( GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL );
     PlaybackDecoder dec( *m_pSong );
-    dec.SetMuteMask( m_pMuteMask );
     std::vector< std::vector< uint8_t > > vMidi;
     std::vector< uint32_t > vBuf( 65536 );
     std::vector< float > vAudio;
@@ -505,18 +551,35 @@ void RenderAhead::WorkerThread( int k )
     while ( !m_bStop )
     {
         if ( m_bHold ) { pRun->p.reset(); m_cv.wait_for( lock, std::chrono::milliseconds( 200 ) ); continue; }
+        // A continuous render (or one that could not start) for a bank no longer loaded: let go of it, so its
+        // synth (a GPU one's voices) is not kept while another engine plays, and try one again with the new
+        // bank. Freed out of the lock, as StreamBlock frees one: the audio callback takes it
+        if ( pRun->pBank && pRun->pBank != m_pBank )
+        {
+            std::unique_ptr< RenderBackends::Stream > pOld = std::move( pRun->p );
+            std::shared_ptr< RenderBackends::Bank > pOldBank = std::move( pRun->pBank );
+            pRun->pBank.reset();
+            pRun->bUnavailable = false;
+            pRun->llNext = LLONG_MIN;
+            lock.unlock();
+            pOld.reset();
+            pOldBank.reset();
+            lock.lock();
+            continue;
+        }
         RenderBackends::PieceOpts opts;
         opts.uVoices = (unsigned)( m_Settings.eEngine == RenderBackends::EngineBass ? m_Settings.iBassVoices : m_Settings.iKestrelVoices );
         opts.iBassThreads = m_Settings.iBassThreads;
         opts.bBassByChannel = m_Settings.bBassByChannel;
         opts.uChannels = m_uChannels;
         opts.bFx = m_Settings.bFx;
+        opts.llBassNps = m_Settings.iBassNps;
         opts.kb = m_Settings.kb;
         opts.eEngine = m_Settings.eEngine;
         // (the parts that work: by channel, those of the song's channels with notes)
         auto UsedParts = [&]( const RenderBackends::Bank &bank ) {
             const int iParts = bank.Parts( opts );
-            if ( !opts.bBassByChannel || iParts < 16 ) return iParts;
+            if ( !opts.bBassByChannel || iParts < 16 || !RenderBackends::OldSplit() ) return iParts;
             int nCh = 0;
             for ( int c = 0; c < 16; c++ ) nCh += ( m_uChannels >> c ) & 1;
             return std::max( 1, nCh ) * ( iParts / 16 );
@@ -546,14 +609,17 @@ void RenderAhead::WorkerThread( int k )
             for ( b = P; b <= llLast && !Needed( b ); ) b++;
         }
         if ( b > llLast ) { m_cv.wait_for( lock, std::chrono::milliseconds( 100 ) ); continue; }
-        // Kestrel: the blocks from here on made by its continuous render, one after another (no synth, file and
-        // preroll a piece); what is made again in full, and Merlin's, in pieces
-        if ( bGpu && !bWhole && !bRedo && StreamWanted() && !pRun->bUnavailable )
+        // Kestrel, and BASSMIDI as it plays: the blocks from here on made by the continuous render, one after
+        // another (no synth, file and preroll a piece; BASSMIDI's on one worker, its parts on threads of their
+        // own); what is made again in full, Merlin's, and BASSMIDI's offline, in pieces
+        const bool bStreamEngine = bGpu ? !bWhole && StreamWanted() : ( !m_uOfflineRate || BassStreamOffline() ) && BassStreamWanted();
+        if ( bStreamEngine && !bRedo && !pRun->bUnavailable )
         {
             std::wstring sWhy;
-            const bool bKestrel = opts.eEngine == RenderBackends::EngineKestrel ||
-                                  ( m_Sound.bTuning31 && !m_Sound.bTuningBend ) || !m_pBank->MerlinTakes( sWhy );
-            if ( bKestrel )
+            const bool bStream = !bGpu || opts.eEngine == RenderBackends::EngineKestrel || !m_pBank->MerlinTakes( sWhy );
+            // (BASSMIDI's on worker 0 only: the others wait, unless it could not start, when all make pieces)
+            if ( !bGpu && k > 0 && !m_bBassNoStream ) { m_cv.wait_for( lock, std::chrono::milliseconds( 100 ) ); continue; }
+            if ( bStream )
             {
                 // Where it cannot be in time (a start takes its preroll and first block), it goes on, or starts,
                 // that far ahead: the blocks before are lost either way, and chasing the playback position
@@ -605,8 +671,6 @@ void RenderAhead::WorkerThread( int k )
         std::shared_ptr< RenderBackends::Bank > pBank = m_pBank;
         Sound snd = m_Sound;
         const long long llNps = bGpu ? 0 : m_Settings.iBassNps;
-        // (Merlin does not read scale tuning: those 31-EDO pieces are Kestrel's; pitch bends it plays)
-        if ( snd.bTuning31 && !snd.bTuningBend && opts.eEngine == RenderBackends::EngineMerlin ) opts.bForceKestrel = true;
         const double dSpeed = m_dSpeed;
         const unsigned uRate = m_uRate, uBase = m_uBase;
         lock.unlock();
@@ -873,7 +937,6 @@ void RenderAhead::HeldNotes( long long llAt, std::vector< uint32_t > &vOut, doub
     const uint64_t u = times.LowerBound( (uint64_t)llAt );
     if ( u == 0 ) return;
     const uint32_t uVel = (uint32_t)std::clamp( (int)std::lround( 100 * dVelocityCorrect ), 1, 127 );
-    const size_t nTracks = m_pSong->vTracks.size();
     NoteView n;
     for ( int k = 0; k < 128; k++ )
     {
@@ -884,9 +947,8 @@ void RenderAhead::HeldNotes( long long llAt, std::vector< uint32_t > &vOut, doub
         for ( int c = 0; c < 4 && ( j = ks.RightmostEnd( 0, hi, u ) ) >= 0; c++ )
         {
             ks.Get( (size_t)j, n );
-            const uint32_t uTrack = n.uSlot >> 4, uCh = n.uSlot & 15;
-            if ( !( uTrack < nTracks && m_pMuteMask && ( m_pMuteMask[uTrack].load( std::memory_order_relaxed ) >> uCh ) & 1 ) )
-                vOut.push_back( 0x90 | uCh | ( (uint32_t)k << 8 ) | ( uVel << 16 ) );
+            const uint32_t uCh = n.uSlot & 15;
+            vOut.push_back( 0x90 | uCh | ( (uint32_t)k << 8 ) | ( uVel << 16 ) );
             hi = (size_t)j;
         }
     }
@@ -1073,7 +1135,6 @@ bool RenderAhead::BuildPiece( PlaybackDecoder &dec, long long llFirst, long long
 
     PlaybackDecoder::Params p;
     p.dVolumeCorrect = snd.dVelocityCorrect;
-    p.iMetronome = snd.iMetronome;
     p.iMinVelocity = snd.iMinVelocity;
     p.bCollapse = snd.bCollapse;
     p.llMaxSendsPerSec = snd.llMaxSendsPerSec;
@@ -1086,6 +1147,7 @@ bool RenderAhead::BuildPiece( PlaybackDecoder &dec, long long llFirst, long long
     long long tEnd = (long long)std::ceil( F2S( (double)( FEnd + POST ) ) );
     // Where each block's end (and the fade after it) lies in the file, to cut a piece that grows too big
     std::vector< std::vector< size_t > > vCut( K, std::vector< size_t >( (size_t)llCount + 1, 0 ) );
+    std::vector< std::vector< uint64_t > > vCutTick( K, std::vector< uint64_t >( (size_t)llCount + 1, 0 ) );     // (each writer's time there)
     long long kNext = 1;
     for ( ;; )
     {
@@ -1100,19 +1162,21 @@ bool RenderAhead::BuildPiece( PlaybackDecoder &dec, long long llFirst, long long
         const double dFrame = S2F( (double)llDue );
         while ( kNext <= llCount && dFrame >= (double)( F0 + kNext * BF + XF ) )
         {
-            for ( size_t i = 0; i < K; i++ ) vCut[i][(size_t)kNext] = vMidi[i].size();
+            for ( size_t i = 0; i < K; i++ ) { vCut[i][(size_t)kNext] = vMidi[i].size(); vCutTick[i][(size_t)kNext] = vW[i].llTick; }
             kNext++;
         }
-        if ( kNext > 1 && Bytes() > PieceBytesMax )
+        // (developer switch PFAVIZ_PIECEMAX=bytes: a lower cap, to test the cutting)
+        static const size_t s_Max = getenv( "PFAVIZ_PIECEMAX" ) ? (size_t)atoll( getenv( "PFAVIZ_PIECEMAX" ) ) : PieceBytesMax;
+        if ( kNext > 1 && Bytes() > s_Max )
         {
             llCount = kNext - 1;
-            for ( size_t i = 0; i < K; i++ ) vMidi[i].resize( vCut[i][(size_t)llCount] );
+            for ( size_t i = 0; i < K; i++ ) vW[i].Cut( vCut[i][(size_t)llCount], vCutTick[i][(size_t)llCount] );
             FEnd = ( llFirst + llCount ) * BF + XF;
             break;
         }
         if ( dFrame >= (double)FEnd && kNext <= llCount )
         {
-            for ( size_t i = 0; i < K; i++ ) vCut[i][(size_t)kNext] = vMidi[i].size();
+            for ( size_t i = 0; i < K; i++ ) { vCut[i][(size_t)kNext] = vMidi[i].size(); vCutTick[i][(size_t)kNext] = vW[i].llTick; }
             kNext = llCount + 1;
         }
         const uint64_t llTick = (uint64_t)std::max( 0LL, std::llround( ( dFrame - Fp ) * dTicksPerFrame ) );
@@ -1164,6 +1228,8 @@ void RenderAhead::Fill( float *pOut, unsigned n, long long llWallUs, unsigned uR
     long long llB0 = 0, BF = 0;
     unsigned uBase;
     double dWant;
+    bool bTail = false;                 // (paused at the song's end, its tail playing on)
+    double dTailLeft = 0.0;             // (... frames of it left)
     std::vector< double > vWant;        // (ramped: the clock's frame for each frame out)
     {
         std::lock_guard< std::mutex > lock( m_mx );
@@ -1181,7 +1247,19 @@ void RenderAhead::Fill( float *pOut, unsigned n, long long llWallUs, unsigned uR
         if ( !bRamped ) m_bGrains = false;     // (started afresh when the ramp comes back)
         BF = BlockFrames();
         dWant = bOffline ? m_dCursor : SongToFrame( (double)m_Clock.At( llWallUs ) );
-        if ( !bOffline && ( uBase != m_uCursorBase || uEpoch != m_uCursorEpoch || ( !bRamped && std::fabs( m_dCursor - dWant ) > 0.05 * uRate ) ) )
+        // The song's end: the clock stops there (half a second past its last event), but what was made goes
+        // on playing to its own end (TailSecs past the last event), so the notes' releases and the reverb
+        // ring out as a synth's would, instead of fading out at once. Only when it played up to the end: not
+        // after a seek there, a speed change or another timebase
+        // (once it has played out, the player stays at the tail's end, so the statistics read it there)
+        const bool bPastEnd = m_Clock.Now() >= m_pSong->info.llTotalMicroSecs;
+        if ( !bPaused ) m_iTail = TailArmed;
+        if ( uBase != m_uCursorBase || uEpoch != m_uCursorEpoch ) m_iTail = bPaused ? TailNone : TailArmed;
+        bTail = !bOffline && bPaused && m_iTail == TailArmed && bPastEnd && m_dCursor < SongToFrame( (double)m_llEndUs );
+        if ( bPaused && m_iTail == TailArmed && !bTail ) m_iTail = bPastEnd ? TailDone : TailNone;
+        const bool bKeepCursor = bTail || ( bPaused && m_iTail == TailDone );
+        if ( bTail ) dTailLeft = SongToFrame( (double)m_llEndUs ) - m_dCursor;
+        if ( !bOffline && ( uBase != m_uCursorBase || uEpoch != m_uCursorEpoch || ( !bRamped && !bKeepCursor && std::fabs( m_dCursor - dWant ) > 0.05 * uRate ) ) )
         {
             m_dCursor = dWant;
             m_uCursorBase = uBase;
@@ -1220,7 +1298,7 @@ void RenderAhead::Fill( float *pOut, unsigned n, long long llWallUs, unsigned uR
     }
 
     // Catch up with the clock slowly (at most 0.3 %: unheard), or stand still while paused
-    const double dStep = bPaused ? 0.0 : 1.0 + std::clamp( ( dWant - m_dCursor ) / ( 0.5 * uRate ), -0.003, 0.003 );
+    const double dStep = bTail ? 1.0 : bPaused ? 0.0 : 1.0 + std::clamp( ( dWant - m_dCursor ) / ( 0.5 * uRate ), -0.003, 0.003 );
     bool bGap = false;
     auto Frame = [&]( long long f, float &l, float &r ) {
         const long long b = FloorDiv( f, BF ), o = f - b * BF;
@@ -1341,14 +1419,17 @@ void RenderAhead::Fill( float *pOut, unsigned n, long long llWallUs, unsigned uR
     if ( s_pCap && !bOffline )
     {
         fwrite( m_vMix.data(), sizeof( float ), (size_t)n * 2, s_pCap );
-        fprintf( s_pCapLog, "%lld %.2f %.2f %u %d %u %llu\n", llWallUs, dWant, m_dCursor, n, bPaused ? 1 : 0, uRate, (unsigned long long)llGaps );
+        fprintf( s_pCapLog, "%lld %.2f %.2f %u %d %u %llu %d %u %d\n", llWallUs, dWant, m_dCursor, n, bPaused ? 1 : 0, uRate, (unsigned long long)llGaps,
+                 bTail ? 1 : 0, uEpoch, m_iTail );
         fflush( s_pCapLog );
     }
-    const bool bSound = !bPaused && !m_bMute.load( std::memory_order_relaxed );
+    const bool bSound = ( !bPaused || bTail ) && !m_bMute.load( std::memory_order_relaxed );
     if ( bSound ) m_llGaps.fetch_add( llGaps, std::memory_order_relaxed );
 
     // Gain, the fade (pause, mute and jumps: 5 ms) and the limiter (4 ms look-ahead, 150 ms release)
     const float fGain = (float)m_dGain.load( std::memory_order_relaxed );
+    // (the song's tail fades out over its last second, so a sound still ringing there is not cut short)
+    const float fTailGain = bTail ? (float)std::clamp( dTailLeft / uRate, 0.0, 1.0 ) : 1.0f;
     const float fFadeStep = 1.0f / ( 0.005f * uRate );
     const bool bLimiter = m_bLimiter.load( std::memory_order_relaxed );
     const float fCeil = 0.98f;
@@ -1375,7 +1456,7 @@ void RenderAhead::Fill( float *pOut, unsigned n, long long llWallUs, unsigned uR
     for ( size_t i = 0; i < n; i++ )
     {
         m_fFade = bSound ? std::min( 1.0f, m_fFade + fFadeStep ) : std::max( 0.0f, m_fFade - fFadeStep );
-        float g = fGain * m_fFade;
+        float g = fGain * m_fFade * fTailGain;
         if ( bLimiter )
         {
             const float need = vNeed[i];
@@ -1565,8 +1646,11 @@ void RenderAhead::PagerThread()
     {
         if ( !bBusy ) m_cv.wait_for( lock, std::chrono::milliseconds( 100 ) );
         bBusy = false;
-        if ( m_bStop || m_bHold || !m_pSpill ) continue;
-        long long llAhead = std::min( RamAheadSecs, m_Settings.iAheadSecs ) + RunBlocks, llBehind = std::min( RamBehindSecs, std::max( 2, m_Settings.iBehindSecs ) );
+        if ( m_bStop || m_bHold ) continue;
+        // (what was played goes even while nothing is being made)
+        if ( !m_uOfflineRate && !m_mBlocks.empty() && m_mBlocks.begin()->first < PlayBlock() - BehindBlocks ) Evict( PlayBlock() );
+        if ( !m_pSpill ) continue;
+        long long llAhead = std::min( RamAheadSecs, m_Settings.iAheadSecs ) + RunBlocks, llBehind = BehindBlocks;
         if ( iRamSecs ) { llAhead = iRamSecs; llBehind = std::min( llBehind, (long long)iRamSecs ); }
         const long long P = PlayBlock(), lo = P - llBehind, hi = P + llAhead;
         auto Meta = []( const Block &b ) {
@@ -1574,7 +1658,11 @@ void RenderAhead::PagerThread()
             p->uGen = b.uGen;
             p->bDegraded = b.bDegraded;
             p->iDegradeVel = b.iDegradeVel;
+            p->iThinPct = b.iThinPct;
             p->uDegradeCap = b.uDegradeCap;
+            p->vVoices = b.vVoices;
+            p->llVoiceCap = b.llVoiceCap;
+            p->llVoiceMax = b.llVoiceMax;
             p->bPieceStart = b.bPieceStart;
             p->pSlot = b.pSlot;
             p->nAudio = b.Spilled() ? b.nAudio : b.vAudio.size();
@@ -1668,20 +1756,25 @@ bool RenderAhead::StreamBlock( StreamRun &run, long long b, std::unique_lock< st
     // (next to the playback position: no time to start back at a held note's start)
     const bool bUrgent = !m_uOfflineRate && b - PlayBlock() < 3;
     const bool bKeepCap = bDegrade && run.uGen == m_uGen && run.uMax == std::max( 1u, opts.uVoices );
+    const bool bBass = pBank->Engine() == RenderBackends::EngineBass;
+    const long long llMadeFrom = bRestart ? 0 : run.llRendered;
     lock.unlock();
     const long long llT0 = Timer::NowMicroSecs();
 
-    const long long BF = uRate, XF = uRate / 200, PRE = (long long)std::llround( PrerollSecs * uRate );
-    const long long KB = std::clamp( opts.kb.iBlockFrames, 64, 16384 );     // (pushed this far past what is made)
+    const long long BF = uRate, XF = uRate / 200;
+    // (pushed this far past what is made: Kestrel a block of its own; BASSMIDI puts them in as it gets to them)
+    const long long KB = bBass ? 256 : std::clamp( opts.kb.iBlockFrames, 64, 16384 );
+    bool bPreroll = false;
     auto F2S = [&]( double f ) { return f * 1e6 * dSpeed / uRate; };
     auto S2F = [&]( double t ) { return t * uRate / ( 1e6 * dSpeed ); };
     std::wstring sError;
     bool bOk = true;
 
-    // Decodes to llFrame (stream frames), and StreamLookSecs past it while the queue is not too long
+    // Decodes to llFrame (stream frames), and StreamLookSecs past it while the queue is not too long (Kestrel:
+    // its merging needs each note's off; BASSMIDI gets every note, so it decodes no further than needed)
     auto Decode = [&]( long long llFrame ) {
         const long long tNeed = (long long)std::ceil( F2S( (double)( run.llFp + llFrame ) ) );
-        const long long tTo = tNeed + (long long)( StreamLookSecs * 1e6 * dSpeed );
+        const long long tTo = tNeed + ( bBass ? 0 : (long long)( StreamLookSecs * 1e6 * dSpeed ) );
         while ( !run.bDecoded && run.tDecoded < tTo && ( run.tDecoded < tNeed || run.q.size() < ( 4u << 20 ) ) )
         {
             long long llDue;
@@ -1705,16 +1798,124 @@ bool RenderAhead::StreamBlock( StreamRun &run, long long b, std::unique_lock< st
             for ( size_t i = 0; i < n; i++ ) run.Append( llF, pm[i] );
         }
     };
+    // BASSMIDI's auto-degrade, just in time: before each step, the spare time it has (how long until the block
+    // being made starts playing, less what the rest of it, a start's preroll included, takes at the last step's
+    // speed) sets how much of the notes coming are thinned out: up at once when it has under half a second,
+    // the more the further short it is; slowly down once it has 2.5 s spare or steps fast. Thinned all it can
+    // and still short, each instance's voices are cut back too (its last resort, at most every half second;
+    // given back slowly once the thinning has eased). A start's preroll is thinned too, so a start that could
+    // not be in time still is (only the block counts it)
+    double dSpareNow = 1e9;             // (the spare time Thin found, for Foresee)
+    auto Thin = [&]() {
+        double dLevel = 0.0;
+        dSpareNow = 1e9;
+        if ( bDegrade )
+        {
+            const double dFrameNow = m_Clock.Now() * (double)uRate / ( 1e6 * dSpeed );
+            const double dMade = (double)( run.llFp + run.llRendered );
+            const double dDue = ( (double)( b * BF ) - dFrameNow ) / uRate;
+            const double dLeft = std::max( 0.0, ( (double)( ( b + 1 ) * BF + XF ) - dMade ) / uRate );
+            const double rt = run.dStepRt;
+            const double dSpare = dDue - dLeft * std::max( rt, 0.05 );
+            dSpareNow = dSpare;
+            dLevel = run.dThin;
+            if ( dSpare < 0.5 && rt > 0.6 )
+                dLevel = std::min( 1.0, dLevel + 0.08 + 0.4 * std::max( 0.0, rt - 0.85 ) + std::clamp( -dSpare, 0.0, 2.0 ) * 0.15 );
+            else if ( dSpare > 2.5 || rt < 0.5 ) dLevel = std::max( 0.0, dLevel - 0.04 );
+            if ( bBass )
+            {
+                const unsigned uMin = std::max( 1u, run.uMax / 16 );
+                if ( run.iCapWait > 0 ) run.iCapWait--;
+                else if ( dLevel >= 1.0 && rt > 1.0 && dSpare < 0.5 && run.uCap > uMin )
+                {
+                    if ( run.uCap >= run.uMax ) m_llDegraded.fetch_add( 1, std::memory_order_relaxed );
+                    run.uCap = std::max( uMin, (unsigned)( run.uCap * 0.6 ) );
+                    run.p->SetCap( run.uCap );
+                    run.iCapWait = 4;
+                }
+                else if ( run.uCap < run.uMax && dLevel < 0.5 && dSpare > 2.5 )
+                {
+                    // (back a quarter a second; doubled each half second when it makes the audio at over twice the
+                    // speed it plays, so a cap cut in a burst does not cut the releases long after it)
+                    const bool bFast = rt < 0.5;
+                    run.uCap = std::min( run.uMax, run.uCap + std::max( 1u, bFast ? run.uCap : run.uCap / 4 ) );
+                    run.p->SetCap( run.uCap );
+                    run.iCapWait = bFast ? 4 : 8;
+                }
+            }
+        }
+        else if ( bBass && run.uCap < run.uMax ) { run.uCap = run.uMax; run.p->SetCap( run.uCap ); }
+        if ( dLevel > 0.0 && run.dThin <= 0.0 ) m_llDegraded.fetch_add( 1, std::memory_order_relaxed );
+        if ( dLevel != run.dThin ) run.p->SetThin( dLevel );
+        run.dThin = dLevel;
+        m_iThinNow.store( (int)std::lround( dLevel * 100.0 ), std::memory_order_relaxed );
+        if ( !bPreroll )
+        {
+            run.iThinBlock = std::max( run.iThinBlock, (int)std::lround( dLevel * 100.0 ) );
+            run.uCapBlock = std::min( run.uCapBlock, run.uCap );
+        }
+    };
+    // ... and before a step's notes go in, what they would cost at that thinning (its note-ons by velocity, at
+    // what a note-on has cost): a burst that would take more than its spare time (and its own length) thins
+    // further at once, as far as it needs, rather than after a step that has already fallen behind. Gives the
+    // note-ons the step puts in (by velocity, as thinned)
+    std::array< uint32_t, 128 > aOns{};
+    auto Kept = [&]( double dLevel ) {
+        double d = 0.0;
+        for ( int v = 1; v < 128; v++ ) if ( aOns[v] ) d += aOns[v] * ( dLevel > 0.0 ? RenderBackends::Stream::ThinKeep( dLevel, v ) : 1.0 );
+        return d;
+    };
+    auto Foresee = [&]( long long llEnd, long long n ) {
+        aOns.fill( 0 );
+        for ( const StreamRun::Ev &e : run.q )
+        {
+            if ( (long long)e.llFrame >= llEnd ) break;
+            if ( !e.bDead && ( e.uMsg & 0xF0 ) == 0x90 && ( e.uMsg >> 16 & 0x7F ) ) aOns[e.uMsg >> 16 & 0x7F] += e.uCount;
+        }
+        if ( !bDegrade || run.dUsPerOn <= 0.0 || dSpareNow >= 1e8 ) return;
+        const double dAllowUs = ( std::max( 0.0, dSpareNow - 0.25 ) + (double)n / uRate ) * 1e6;
+        if ( Kept( run.dThin ) * run.dUsPerOn <= dAllowUs ) return;
+        double dLevel = run.dThin;
+        while ( dLevel < 1.0 && Kept( dLevel ) * run.dUsPerOn > dAllowUs ) dLevel = std::min( 1.0, dLevel + 0.05 );
+        if ( run.dThin <= 0.0 ) m_llDegraded.fetch_add( 1, std::memory_order_relaxed );
+        run.p->SetThin( dLevel );
+        run.dThin = dLevel;
+        m_iThinNow.store( (int)std::lround( dLevel * 100.0 ), std::memory_order_relaxed );
+        if ( !bPreroll ) run.iThinBlock = std::max( run.iThinBlock, (int)std::lround( dLevel * 100.0 ) );
+    };
+    std::vector< int32_t > *pVoices = nullptr;     // (the block's voices, an eighth at a time, while it is made)
+    long long llBlockFrame = 0;
     auto Render = [&]( float *pOut, long long llFrames ) {
-        // (in steps, each with everything up to a Kestrel block past it pushed)
+        // (in steps, each with everything up to a Kestrel block past it pushed; BASSMIDI's an eighth of a
+        // second, its thinning set before each)
         while ( bOk && llFrames > 0 )
         {
             if ( claim.pCancel->load() ) { bOk = false; break; }
-            const long long n = std::min< long long >( llFrames, BF );
+            const long long n = std::min< long long >( llFrames, bBass ? BF / 8 : BF );
+            if ( bBass ) Thin();
+            const long long llStepT0 = Timer::NowMicroSecs();
             const long long llEnd = run.llRendered + n + KB;
             Decode( llEnd );
+            if ( bBass ) Foresee( llEnd, n );
             run.Push( llEnd );
             bOk = run.p->Render( pOut, (unsigned)n, sError );
+            const long long llStepUs = Timer::NowMicroSecs() - llStepT0;
+            if ( pVoices && bOk )
+            {
+                const long long llV = run.p->Voices();
+                const long long E = BF / 8;
+                for ( long long k = llBlockFrame / E; k < std::min< long long >( 8, ( llBlockFrame + n + E - 1 ) / E ); k++ )
+                    ( *pVoices )[(size_t)k] = (int32_t)std::clamp< long long >( llV, -1, INT32_MAX );
+                llBlockFrame += n;
+            }
+            run.dStepRt = llStepUs / ( n * 1e6 / uRate );
+            // (learnt from steps busy with notes: what each costs, its share of the rest counted in, so on the
+            // high side)
+            if ( bBass && bOk )
+            {
+                const double dKept = Kept( run.dThin );
+                if ( dKept >= 2000.0 ) run.dUsPerOn += ( run.dUsPerOn > 0.0 ? 0.3 : 1.0 ) * ( llStepUs / dKept - run.dUsPerOn );
+            }
             run.llRendered += n;
             pOut += n * 2;
             llFrames -= n;
@@ -1724,7 +1925,17 @@ bool RenderAhead::StreamBlock( StreamRun &run, long long b, std::unique_lock< st
     if ( bRestart )
     {
         // Started at the block, as a piece would be: its preroll (back to a note still held), the chase,
-        // the held notes struck again
+        // the held notes struck again. Another engine or soundfonts, or another sound: what it learnt of the
+        // last one's load (its thinning, speeds and cap) starts afresh, so the first seconds after a change are
+        // not made lighter for the one before
+        if ( run.pBank != pBank || run.uGen != uGen )
+        {
+            run.dThin = 0.0;
+            run.dStepRt = 0.0;
+            run.dUsPerOn = 0.0;
+            if ( run.pBank != pBank ) run.dSecUs = 5e5;
+            run.iCapWait = 0;
+        }
         run.p.reset();
         run.pBank = pBank;
         run.p = pBank->OpenStream( opts, sError );
@@ -1733,30 +1944,43 @@ bool RenderAhead::StreamBlock( StreamRun &run, long long b, std::unique_lock< st
             lock.lock();
             Unclaim();
             run.bUnavailable = true;
-            m_sRenderError = L"Kestrel's continuous render could not start (" + sError + L"): pieces instead";
+            if ( bBass && pBank == m_pBank ) m_bBassNoStream = true;
+            m_sRenderError = std::wstring( RenderBackends::EngineName( pBank->Engine() ) ) + L"'s continuous render could not start (" + sError + L"): pieces instead";
             return false;
         }
         run.uGen = uGen;
         run.uBase = uBase;
         run.dSpeed = dSpeed;
         run.uRate = uRate;
-        run.bLossless = bLossless;
+        run.bLossless = bLossless && !bBass;     // (BASSMIDI gets every note)
+        if ( run.dThin > 0.0 ) run.p->SetThin( run.dThin );    // (as it was: a start is as heavy as what went before)
         run.Reset();
-        long long Fp = b * BF - PRE;
+        // What the start may make before its block is due, at the speed it was last made at (with a fifth to
+        // spare): its preroll shortened to that (to a tenth of a second at least) and the held notes looked back
+        // for only as far as it leaves; struck again where it starts either way. A start that took its full
+        // preroll whatever the time left was given up again and again as the playback passed it, silent
+        // throughout, wherever making it was slower than it plays
+        double dHeldSecs = HeldSecs, dPreSecs = PrerollSecs;
+        if ( !m_Clock.Paused() && !m_uOfflineRate )
+        {
+            const double dFrameNow = m_Clock.Now() * (double)uRate / ( 1e6 * dSpeed );
+            const double dCanSecs = 0.8 * ( (double)( b * BF ) - dFrameNow ) / uRate / std::max( 0.05, run.dSecUs / 1e6 ) - 1.0;
+            dPreSecs = std::clamp( dCanSecs, 0.1, PrerollSecs );
+            dHeldSecs = std::clamp( dCanSecs - PrerollSecs, 0.0, HeldSecs );
+        }
+        long long Fp = b * BF - (long long)std::llround( dPreSecs * uRate );
         const long long tp0 = (long long)std::floor( F2S( (double)Fp ) );
-        const long long tHeld = bUrgent ? tp0 : HeldEarliest( tp0, tp0 - (long long)( HeldSecs * 1e6 * dSpeed ) );
+        const long long tHeld = bUrgent || dHeldSecs <= 0.0 ? tp0 : HeldEarliest( tp0, tp0 - (long long)( dHeldSecs * 1e6 * dSpeed ) );
         if ( tHeld < tp0 ) Fp = std::min( Fp, (long long)std::floor( S2F( (double)tHeld ) ) - 1 );
         run.llFp = Fp;
         run.tp = (long long)std::ceil( F2S( (double)Fp ) );
         run.pDec = std::make_unique< PlaybackDecoder >( *m_pSong );
-        run.pDec->SetMuteMask( m_pMuteMask );
         run.pDec->SetBendChase( snd.bTuning31 && snd.bTuningBend );
         std::vector< uint32_t > vStart;
         run.pDec->Seek( run.tp, run.tp, vStart );
         HeldNotes( run.tp, vStart, snd.dVelocityCorrect );
         run.params = PlaybackDecoder::Params();
         run.params.dVolumeCorrect = snd.dVelocityCorrect;
-        run.params.iMetronome = snd.iMetronome;
         run.params.iMinVelocity = snd.iMinVelocity;
         run.params.bCollapse = snd.bCollapse;
         run.params.llMaxSendsPerSec = snd.llMaxSendsPerSec;
@@ -1790,12 +2014,14 @@ bool RenderAhead::StreamBlock( StreamRun &run, long long b, std::unique_lock< st
         if ( run.uCap < run.uMax ) run.p->SetCap( run.uCap );
         // The preroll, thrown away, then the block's first fade frames
         std::vector< float > vSkip( (size_t)BF * 2 );
+        bPreroll = true;
         for ( long long left = b * BF - Fp; bOk && left > 0; )
         {
             const long long n = std::min( left, BF );
             Render( vSkip.data(), n );
             left -= n;
         }
+        bPreroll = false;
         run.vCarry.assign( (size_t)XF * 2, 0.0f );
         Render( run.vCarry.data(), XF );
     }
@@ -1803,35 +2029,49 @@ bool RenderAhead::StreamBlock( StreamRun &run, long long b, std::unique_lock< st
     // The block: what was made of it already, then the rest and the next one's first frames (its overrun)
     auto pBlock = std::make_shared< Block >();
     std::vector< float > vNew( (size_t)BF * 2 );
+    run.iThinBlock = (int)std::lround( run.dThin * 100.0 );
+    run.uCapBlock = run.uCap;
+    pBlock->vVoices.assign( 8, -1 );
+    pVoices = &pBlock->vVoices;
+    llBlockFrame = 0;
     if ( bOk ) Render( vNew.data(), BF );
+    pVoices = nullptr;
+    if ( std::all_of( pBlock->vVoices.begin(), pBlock->vVoices.end(), []( int32_t v ) { return v < 0; } ) ) pBlock->vVoices.clear();
     const long long llBusyUs = Timer::NowMicroSecs() - llT0;
+    // (the average a second takes, a start's preroll counted; a start cancelled part way by what it made)
+    {
+        const double dSecs = bOk ? (double)( bRestart ? b * BF - run.llFp + BF + XF : BF ) / BF : (double)( run.llRendered - llMadeFrom ) / BF;
+        if ( dSecs > 0.25 ) run.dSecUs += 0.3 * ( llBusyUs / dSecs - run.dSecUs );
+    }
     if ( bOk )
     {
-        // (the average a second takes, a start's preroll counted)
-        const double dSecs = (double)( bRestart ? b * BF - run.llFp + BF + XF : BF ) / BF;
-        run.dSecUs += 0.3 * ( llBusyUs / dSecs - run.dSecUs );
         pBlock->uGen = uGen;
         pBlock->bPieceStart = bRestart;
         pBlock->vAudio.assign( run.vCarry.begin(), run.vCarry.end() );
         pBlock->vAudio.insert( pBlock->vAudio.end(), vNew.begin(), vNew.begin() + ( BF - XF ) * 2 );
         pBlock->vOver.assign( vNew.begin() + ( BF - XF ) * 2, vNew.end() );
         run.vCarry = pBlock->vOver;
-        pBlock->bDegraded = run.uCap < run.uMax;
-        pBlock->uDegradeCap = pBlock->bDegraded ? run.uCap : 0;
+        const unsigned uCapNow = bBass ? run.uCapBlock : run.uCap;
+        pBlock->bDegraded = ( bBass && run.iThinBlock > 0 ) || uCapNow < run.uMax;
+        pBlock->iThinPct = bBass ? run.iThinBlock : 0;
+        pBlock->uDegradeCap = uCapNow < run.uMax ? uCapNow : 0;
+        const long long llParts = bBass ? std::max( 1, pBank->Parts( opts ) ) : 1;
+        pBlock->llVoiceCap = (long long)uCapNow * llParts;
+        pBlock->llVoiceMax = (long long)run.uMax * llParts;
         run.llNext = b + 1;
     }
     else run.p.reset();
     FILE *s_pLog = RenderLog();
     if ( s_pLog )
     {
-        fprintf( s_pLog, "%lld %lld 1 %lld %.1f 0 %d %d 0 %llu %d 0 -1 -1 -1 stream%s cap %u merged %llu%ls\n", llT0 / 1000, b, PlayBlock(), llBusyUs / 1000.0, bOk,
-                 claim.pCancel->load() ? 1 : 0, (unsigned long long)run.q.size(), pBlock->bDegraded, bRestart ? " start" : "", run.uCap, (unsigned long long)run.llMerged, sError.c_str() );
+        fprintf( s_pLog, "%lld %lld 1 %lld %.1f 0 %d %d 0 %llu %d 0 -1 -1 -1 stream%s cap %u merged %llu thin %d%ls\n", llT0 / 1000, b, PlayBlock(), llBusyUs / 1000.0, bOk,
+                 claim.pCancel->load() ? 1 : 0, (unsigned long long)run.q.size(), pBlock->bDegraded, bRestart ? " start" : "", run.uCap, (unsigned long long)run.llMerged, run.iThinBlock, sError.c_str() );
         fflush( s_pLog );
     }
 
     lock.lock();
     Unclaim();
-    if ( !bOk && !claim.pCancel->load() ) m_sRenderError = sError.empty() ? std::wstring( L"Kestrel's continuous render failed" ) : sError;
+    if ( !bOk && !claim.pCancel->load() ) m_sRenderError = sError.empty() ? std::wstring( RenderBackends::EngineName( pBank->Engine() ) ) + L"'s continuous render failed" : sError;
     else if ( bOk ) m_sRenderError.clear();
     if ( bOk && !claim.pCancel->load() && uBase == m_uBase )
     {
@@ -1844,7 +2084,8 @@ bool RenderAhead::StreamBlock( StreamRun &run, long long b, std::unique_lock< st
 
     // Auto-degrade: a block that takes longer than it plays while little is ready lowers the voice cap
     // (Kestrel steals down to it), by how much too long; once well ahead it rises again
-    if ( bOk && run.p && bDegrade )
+    if ( bBass ) {}     // (thinned as it was made: Thin)
+    else if ( bOk && run.p && bDegrade )
     {
         const long long Pn = PlayBlock(), nReady = ReadyBlocks( Pn );
         const double dBlockUs = 1e6;
@@ -1867,7 +2108,7 @@ bool RenderAhead::StreamBlock( StreamRun &run, long long b, std::unique_lock< st
     }
 
     // Sharing the graphics card with the picture, as between pieces
-    if ( bOk && m_Settings.iGpuShare < 100 )
+    if ( bOk && !bBass && m_Settings.iGpuShare < 100 )
     {
         const long long llRestUs = std::min< long long >( 3000000, llBusyUs * ( 100 - m_Settings.iGpuShare ) / std::max( 1, m_Settings.iGpuShare ) );
         const long long llUntil = Timer::NowMicroSecs() + llRestUs;

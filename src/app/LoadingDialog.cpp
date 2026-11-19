@@ -152,7 +152,7 @@ namespace
         pJob->progress.bLzVisual = cPerf.bCompactVisual;
         pJob->progress.bNoteStats = ( Config::GetConfig().GetVisualSettings().uStats & VisualSettings::NoteStats ) != 0 ||
                                     Config::GetConfig().GetVisualSettings().bGraph || Config::GetConfig().GetVisualSettings().bPfaLag;
-        pJob->progress.bFirstPairingOnly = cPerf.bIgnoreWeird;
+        // (weird notes always end at their later note-off: bFirstPairingOnly stays off)
         pJob->progress.bEndOpenNotes = cPerf.bEndOpenNotes;
         pJob->progress.bExactTempo = cPerf.bExactTempo;
         pJob->progress.bDedup = cPerf.bDedup;
@@ -286,7 +286,9 @@ namespace
         details.vRows.push_back( MakeRow( L"Read", MBText( (double)llBytes ) + L" of " + MBText( (double)p.llFileSize.load() ) ) );
         details.vRows.push_back( MakeRow( L"Speed", Fmt( L"%.0f MB/s", dCountSecs > 0 ? llBytes / 1048576.0 / dCountSecs : 0.0 ) ) );
         details.vRows.push_back( MakeRow( L"Peak memory", MBText( (double)p.llPrivatePeak.load() ) ) );
-        m.vSections = { stages, details };
+        // (Misc > Show the full loading statistics: the counting's details too; else the stages only)
+        if ( Config::GetConfig().GetPerformanceSettings().bFullLoadStats ) m.vSections = { stages, details };
+        else m.vSections = { stages };
         LoadView::Set( View(), std::move( m ) );
     }
 
@@ -320,6 +322,10 @@ namespace
                      { Fmt( L"%.0f MB/s", st.llFileSize / 1048576.0 / dTotal ), Compact( st.llEvents / dTotal ) + L" events/s" },
                      { MBText( (double)st.llPrivatePeak ), L"Peak memory" } };
 
+        // A summary unless the full statistics are on (Misc): the totals, each stage's time, and the song's
+        // tracks, events and notes
+        const bool bFull = Config::GetConfig().GetPerformanceSettings().bFullLoadStats;
+
         // Where the time went: each stage's share of the load, and its parts
         LoadView::Section time;
         time.sTitle = L"TIME BY STAGE";
@@ -330,7 +336,7 @@ namespace
             if ( st.aStagePeak[i] ) r.sNote = L"peak " + MBText( (double)st.aStagePeak[i] );
             time.vRows.push_back( r );
             for ( const LoadStats::Step &s : st.vSteps )
-                if ( s.iStage == i )
+                if ( bFull && s.iStage == i )
                 {
                     LoadView::Row part = MakeRow( s.sName, Fmt( L"%.3f s", s.dSeconds ), 1 );
                     part.dBar = s.dSeconds / dTotal;
@@ -353,6 +359,16 @@ namespace
         song.vRows.push_back( MakeRow( L"Paired more than once", Commas( (long long)st.llWeirdNotes ), 1 ) );
         song.vRows.push_back( MakeRow( L"Unique ticks", Commas( (long long)st.llUniqueTicks ) ) );
         song.vRows.push_back( MakeRow( L"Tick groups", Commas( (long long)st.llGroups ) + ( st.bBitmapMerge ? L" (bitmap merge)" : L" (sort merge)" ) ) );
+        if ( !bFull )
+        {
+            LoadView::Section brief;
+            brief.sTitle = L"SONG";
+            brief.vRows.push_back( MakeRow( L"Tracks", Commas( (long long)st.llTracks ) ) );
+            brief.vRows.push_back( MakeRow( L"Channel events", Commas( (long long)st.llEvents ) ) );
+            brief.vRows.push_back( MakeRow( L"Notes", Commas( (long long)st.llNotes ) ) );
+            m.vSections = { time, brief };
+            return m;
+        }
 
         // The process's memory
         LoadView::Section mem;
@@ -411,7 +427,6 @@ namespace
         LoadView::Set( View(), StatsModel( g_pLast->stats, g_pLast->sFile, g_pLast->sError ) );
         ShowWindow( GetDlgItem( g_hWndDlg, IDC_LOAD_COPY ), SW_SHOW );
         SetDlgItemTextW( g_hWndDlg, IDCANCEL, L"Close" );
-        SetWindowTextW( g_hWndDlg, L"Loading statistics - PFAviz++" );
         // Wide enough for two columns, then as tall as they need, as the screen allows (kept centred where it was)
         HWND hView = View();
         RECT rcView, rcDlg;
@@ -431,6 +446,8 @@ namespace
             int y = std::clamp< int >( ( rcDlg.top + rcDlg.bottom - cy ) / 2, w.top, w.bottom - cy );
             SetWindowPos( g_hWndDlg, nullptr, rcDlg.left, y, rcDlg.right - rcDlg.left, cy, SWP_NOZORDER );
         }
+        // (titled last: where the statistics were last put, and at the size they were given by hand, wins; app/OnScreen.h)
+        SetWindowTextW( g_hWndDlg, L"Loading statistics - PFAviz++" );
     }
 
     void CopyStats()
@@ -564,6 +581,8 @@ void ChooseMidiEntry( LPARAM lParam )
 
 static std::wstring g_sOpenedFile;
 const std::wstring &GetOpenedFile() { return g_sOpenedFile; }
+static std::weak_ptr< const Song > g_wpOpenedSong;
+std::shared_ptr< const Song > GetOpenedSong() { return g_wpOpenedSong.lock(); }
 
 void FinishLoad( LPARAM lParam )
 {
@@ -602,13 +621,14 @@ void FinishLoad( LPARAM lParam )
         std::wstring sTitle = pJob->sFile.substr( pJob->sFile.find_last_of( L'\\' ) + 1 );
         SetWindowTextW( g_hWnd, ( pJob->bRenderOnly ? sTitle + L" (render only, no playback)" : sTitle ).c_str() );
         g_sOpenedFile = pJob->sFile;
+        g_wpOpenedSong = pSong;
         HandOffMsg( WM_COMMAND, ID_CHANGESTATE, ( LPARAM )pGameState );
         if ( const wchar_t *sRender = _wgetenv( L"PFAVIZ_RENDER" ) ) PostMessageW( g_hWnd, WM_APP_RENDERVIDEO, 0, ( LPARAM )sRender );
         else if ( pJob->bRenderOnly ) PostMessageW( g_hWnd, WM_APP_RENDERSONG, 0, 0 );
     }
     pJob->song.reset();
 
-    // Its statistics kept, to show again (File > Loading Statistics, or the Performance tab)
+    // Its statistics kept, to show again (File > Loading Statistics)
     if ( g_pJob == pJob ) g_pJob = nullptr;
     if ( bCancelled ) delete pJob;
     else

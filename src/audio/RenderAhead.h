@@ -1,9 +1,12 @@
-// Audio rendered ahead (Preferences > Rendered audio): instead of sending MIDI to a synth as the song
+// Audio rendered ahead (Preferences > Audio > Pre-Render): instead of sending MIDI to a synth as the song
 // plays, the song is made into audio in the background, ahead of the playback position, and played
 // from there through the sound device (AudioOut), so even the densest passages play every note.
 //
 // The song is cut into blocks of one second of audio on its own clock (at the current speed: a change
-// of speed starts again). A piece is a run of blocks made in one go: one block next to the playback
+// of speed starts again). As it plays, BASSMIDI and Kestrel make them one after another with a synth kept
+// from block to block (their continuous render, StreamBlock: started at a block as a piece is, with its
+// preroll and chase, then fed the events as the audio is made). Otherwise (Merlin, the video's audio, and
+// blocks made again in full) a piece is a run of blocks made in one go: one block next to the playback
 // position (a quick start after a seek), up to RunBlocks further ahead. Several pieces are made at once
 // on the CPU (BASSMIDI), one at a time on the graphics card (Kestrel, Merlin). A piece is written as a
 // small MIDI file in memory and handed to the synth (RenderBackends):
@@ -11,15 +14,16 @@
 //     sound right. A note still held there moves the start back to its own start (at most HeldSecs);
 //     notes held from even earlier are struck again at the start, out of hearing.
 //   - Its first event is the seek chase: every controller, program and bend as they are there.
-//   - Its events are the playback decoder's (mute, the velocity correction, the velocity floor and the
-//     metronome as set), each at its exact time; nothing is skipped or collapsed.
+//   - Its events are the playback decoder's (mute, the velocity correction and the velocity floor as
+//     set), each at its exact time; nothing is skipped or collapsed.
 //   - It runs CrossfadeFrames past its end; the next piece fades in over them, so the joins are smooth.
-// Blocks further than RamAheadSecs ahead (or RamBehindSecs behind) are kept in a temporary file once more
-// than those are made, and read back before they play, so a long buffer costs disk space, not memory.
+// Blocks further than RamAheadSecs ahead are kept in a temporary file once more than those are made, and
+// read back before they play, so a long buffer costs disk space, not memory. What was played is thrown
+// away at once (BehindBlocks), and so is the old engine's audio on a switch of engine.
 // Offline (the video renderer), it has no sound device: RenderOffline makes the audio from one time
 // to another in order, waiting for each block, with the same joins, gain and limiter.
 //
-// A change that alters the sound (muting a channel, the velocity floor, the metronome) makes everything
+// A change that alters the sound (the velocity floor, collapsing, 31-EDO) makes everything
 // again from the playback position on; until then the old audio plays. The volume is a gain on the
 // output (squared, as velocity is), so moving it does not make anything again. A limiter keeps the
 // joined audio under full scale.
@@ -52,11 +56,10 @@ public:
         bool bOn = false;
         int eEngine = RenderBackends::EngineBass;
         std::vector< std::wstring > vFonts;
-        int iBassVoices = 1000, iKestrelVoices = 1 << 20;
+        int iBassVoices = 1000, iKestrelVoices = 100000;
         int iBassThreads = 1;           // BASSMIDI instances a piece is split over (by key), each with iBassVoices
         bool bBassByChannel = false;    // ... and by channel: 16 x iBassThreads instances (OmniMIDI's delegation)
         int iAheadSecs = 30;            // (MinAheadSecs to MaxAheadSecs)
-        int iBehindSecs = 300;          // what was made is kept this far behind the playback position (0 to MaxAheadSecs)
         // BASSMIDI: each instance takes at most this many notes a second (0: no limit), the quietest let go
         // first as it nears it (OmniMIDI's limiter, an instance's own, as BASSMIDI synths limit each instance)
         int iBassNps = 0;
@@ -69,12 +72,12 @@ public:
         // reads Spiderweb's repeat marks; Kestrel merges such copies into one voice at their summed
         // loudness itself (its coalescing, on for every piece). Lossless; BASSMIDI gets every note
         bool bLossless = true;
-        // When the next piece would not be made before the block playing ends (going by how long pieces
-        // have taken), it is made lighter: BASSMIDI skips its quietest notes, Kestrel lowers its voice
-        // cap, Merlin hands it to Kestrel with a voice cap. Made again in full once well ahead
-        bool bAutoDegrade = false;
-        // Switching engines throws away the audio the old one made (else it plays until made again)
-        bool bDiscardOnSwitch = false;
+        // When the audio would not be made in time it is made lighter: BASSMIDI's continuous render thins
+        // out the quiet note-ons as it goes (just in time, by how far ahead it is and how fast it makes
+        // audio; never every note of a velocity), Kestrel lowers its voice cap, a piece that would be late
+        // skips its quietest notes (BASSMIDI) or goes to Kestrel with a voice cap (Merlin). Made again in
+        // full once well ahead
+        bool bAutoDegrade = true;
         // Offline (the video's audio): Kestrel and Merlin make the song in their own whole renders, a piece of
         // up to WholeRunBlocks at a time, one after another (no continuous render, no short pieces);
         // BASSMIDI as before
@@ -102,13 +105,16 @@ public:
         uint64_t llGaps = 0;            // frames played as silence because nothing was made yet
         uint64_t llDegraded = 0;        // pieces made lighter to be in time
         std::wstring sDegrade;          // how much lighter the audio playing is ("off" when auto-degrade is)
+        long long llVoices = -1;        // the voices sounding in the audio playing (-1: not known: pieces, or none playing)
+        long long llVoiceCap = 0;       // ... the voice limit it was made with, in all (lowered when degraded)
+        long long llVoiceMax = 0;       // ... the voice limit as set, in all
         std::wstring sWarning;          // what loading the soundfonts reported, Merlin refusing them, ...
         int iGpuShare = 0;
     };
 
-    RenderAhead( std::shared_ptr< const Song > pSong, PlaybackClock &clock, const std::atomic< uint16_t > *pMuteMask );
+    RenderAhead( std::shared_ptr< const Song > pSong, PlaybackClock &clock );
     // Offline, at uRate frames a second and the song's own speed (its own clock, no sound device)
-    RenderAhead( std::shared_ptr< const Song > pSong, const std::atomic< uint16_t > *pMuteMask, unsigned uRate );
+    RenderAhead( std::shared_ptr< const Song > pSong, unsigned uRate );
     ~RenderAhead();
 
     void Start( const Settings &s );
@@ -124,7 +130,7 @@ public:
     struct Sound
     {
         double dVelocityCorrect = 1.0;
-        int iMetronome = 0, iMinVelocity = 0;
+        int iMinVelocity = 0;
         bool bCollapse = false;             // stack collapsing
         long long llMaxSendsPerSec = 0;     // the send budget (0: none)
         // 31-EDO (Performance tab): the pieces are tuned as the MIDI output is, by scale tuning (the MIDI
@@ -133,7 +139,6 @@ public:
         bool operator==( const Sound & ) const = default;
     };
     void SetSound( const Sound &snd );
-    void MuteChanged();
     void SetMute( bool bMute ) { m_bMute.store( bMute, std::memory_order_relaxed ); }
     void SetVolume( double dVolume ) { m_dGain.store( dVolume * dVolume, std::memory_order_relaxed ); }
     Status GetStatus();
@@ -164,10 +169,13 @@ public:
     static const int FirstRunBlocks = 1;
     static constexpr double PrerollSecs = 1.0;
     static constexpr double HeldSecs = 10.0;
+    // Made and played this far past the song's last event, so releases and reverb ring out
+    static constexpr long long TailSecs = 8;
     static constexpr double PostSecs = 0.3;  // (events past a piece's end: Merlin's look-ahead; Spiderweb measured 0.3 s as a whole render)
     // Blocks kept in memory around the playback position, at most (the rest on disk): ahead and behind as
     // far as the buffer goes, up to these
-    static const int RamAheadSecs = 600, RamBehindSecs = 300;
+    static const int RamAheadSecs = 600;
+    static const int BehindBlocks = 1;      // kept behind the block playing (its overrun: the next piece's fade-in)
 
 private:
     // The temporary file blocks are kept in (one per timebase: slots of one block's audio and overrun),
@@ -198,8 +206,13 @@ private:
     {
         unsigned uGen = 0;              // the sound it was made with (older ones play until replaced)
         bool bDegraded = false;         // made lighter to be in time (made again once well ahead)
-        int iDegradeVel = 0;            // ... BASSMIDI: note-ons below this velocity skipped
-        unsigned uDegradeCap = 0;       // ... Kestrel: this voice cap
+        int iDegradeVel = 0;            // ... BASSMIDI's pieces: note-ons below this velocity skipped
+        int iThinPct = 0;               // ... BASSMIDI's continuous render: its thinning at the most (percent of level)
+        unsigned uDegradeCap = 0;       // ... this voice cap (Kestrel's in all; BASSMIDI's each instance's)
+        // The continuous renders: the voices sounding at the end of each eighth of it (empty: not known), and
+        // the voice limits in all it was made with and as set
+        std::vector< int32_t > vVoices;
+        long long llVoiceCap = 0, llVoiceMax = 0;
         bool bPieceStart = false;       // the first block of its piece: fades in over the piece before's overrun
         std::vector< float > vAudio;    // stereo frames
         std::vector< float > vOver;     // the last block of a piece: CrossfadeFrames after it
@@ -225,9 +238,9 @@ private:
     void LoaderThread();
     void WorkerThread( int k );
     void PagerThread();                 // blocks to and from the disk
-    // Kestrel's continuous render (a worker's): one block, b, made by it, started (again) there when it is not
-    // where the run is, with a piece's preroll and chase. False when there is none (pieces then). Called and
-    // returns under m_mx; unlocked while it works
+    // The continuous render (Kestrel's, or BASSMIDI's as it plays; a worker's): one block, b, made by it,
+    // started (again) there when it is not where the run is, with a piece's preroll and chase. False when
+    // there is none (pieces then). Called and returns under m_mx; unlocked while it works
     struct StreamRun;
     bool StreamBlock( StreamRun &run, long long b, std::unique_lock< std::mutex > &lock, const RenderBackends::PieceOpts &opts );
     static constexpr double StreamLookSecs = 4.0;   // (how far past what it pushes it reads, for stacked copies' offs)
@@ -270,7 +283,6 @@ private:
     const unsigned m_uOfflineRate = 0;  // offline: its rate (else 0)
     PlaybackClock m_OwnClock;           // (offline: the clock, at the block being written)
     PlaybackClock &m_Clock;
-    const std::atomic< uint16_t > *m_pMuteMask;
     AudioOut m_Out;
 
     std::mutex m_mx;
@@ -292,9 +304,17 @@ private:
     CostModel m_CostMerlin;             // (Merlin's pieces: a cost of their own, much more per piece)
     std::set< long long > m_sNoRedo;    // lighter blocks not made again in full (it would not be in time)
     std::atomic< uint64_t > m_llDegraded{ 0 };
+    std::atomic< int > m_iThinNow{ 0 };     // BASSMIDI's continuous render: its thinning now (percent of the level)
     std::vector< Claim > m_vClaims;
     bool m_bStop = false;
     bool m_bHold = false;
+    // BASSMIDI's continuous render (worker 0's) could not start with the bank loaded: the other workers make
+    // pieces too, as they would without it (cleared when another bank is loaded)
+    bool m_bBassNoStream = false;
+    // The player at the song's end: playing (so the tail plays on once the clock stops there), the tail played
+    // out (the player stays at its end), or neither (paused elsewhere, or after a seek)
+    enum { TailNone, TailArmed, TailDone };
+    int m_iTail = TailNone;
     std::shared_ptr< SpillFile > m_pSpill;      // (the timebase's)
     int m_iWorkers = 0;
     long long m_llEndUs = 0;            // the song's last event plus a ring-out

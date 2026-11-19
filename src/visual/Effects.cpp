@@ -78,6 +78,21 @@ float Effects::Released( const EffectSettings &fx, float fFrom, long long llUs )
 // Look
 //-----------------------------------------------------------------------------
 
+// The Kiva look's note colours from a note's own (Kiva's Notes.fx, in 0 to 1 clamped): the inside from
+// it lightened by 0.1 at the left to darkened by 0.3 at the right, the outline a fifth of it less 0.05
+template< class T > static void KivaNote( D3DCOLOR c, T &p, T &d, T &vd )
+{
+    auto Add = []( D3DCOLOR c, float f ) {
+        D3DCOLOR r = c & 0xFF000000;
+        for ( int s = 0; s < 24; s += 8 )
+            r |= (D3DCOLOR)std::clamp( (int)( ( ( c >> s ) & 0xFF ) + f * 255.0f + 0.5f ), 0, 255 ) << s;
+        return r;
+    };
+    p = Add( c, 0.1f );
+    d = Add( c, -0.3f );
+    vd = Add( Effects::Scale( c, 0.2f ), -0.05f );
+}
+
 ChannelSettings Effects::Look::Unlit( int ePart, const ChannelSettings &cs ) const
 {
     ChannelSettings r = cs;
@@ -87,6 +102,7 @@ ChannelSettings Effects::Look::Unlit( int ePart, const ChannelSettings &cs ) con
     if ( m_bFlat ) r.iDarkRGB = r.iVeryDarkRGB = r.iPrimaryRGB;
     // (the semi-flat look: the notes only; its keys keep their shades, DrawKeysSemiFlat's lips)
     if ( m_fSemiFlat >= 0.0f && ePart <= EffectSettings::PartShort ) { r.iDarkRGB = r.iPrimaryRGB; r.iVeryDarkRGB = Scale( r.iPrimaryRGB, m_fSemiFlat ); }
+    if ( m_bKiva && ePart <= EffectSettings::PartShort ) KivaNote( r.iPrimaryRGB, r.iPrimaryRGB, r.iDarkRGB, r.iVeryDarkRGB );
     return r;
 }
 
@@ -103,6 +119,7 @@ void Effects::Look::Prepare( const EffectSettings &fx, const std::vector< TrackS
     m_fInside = fx.iLightInsides / 100.0f;
     m_bFlat = fx.eLook == EffectSettings::LookFlat;
     m_fSemiFlat = fx.eLook == EffectSettings::LookSemiFlat ? 1.0f - fx.iSemiFlatOutline / 100.0f : -1.0f;
+    m_bKiva = fx.eLook == EffectSettings::LookKiva;
 
     // The scene's colours, darkened (the background and the keys each their own); the flat look's
     // lines one colour (the keys' own are DrawKeysFlat's)
@@ -118,6 +135,8 @@ void Effects::Look::Prepare( const EffectSettings &fx, const std::vector< TrackS
     }
     m_cBarGlow = Glow( EffectSettings::PartBar, c.csKBRed, 1.0f );
     if ( m_bFlat ) m_Colors.csBackground.iVeryDarkRGB = m_Colors.csBackground.iDarkRGB;
+    // (the Kiva look's black keys are black, their bevels lighter: DrawKeysKiva)
+    if ( m_bKiva ) m_Colors.csKBSharp.iPrimaryRGB = m_Colors.csKBSharp.iDarkRGB = m_Colors.csKBSharp.iVeryDarkRGB = 0;
 
     // The notes' at rest: only when anything changes them, and the short notes' only when they differ
     // (copied again when what they are made from changes)
@@ -154,6 +173,7 @@ ChannelSettings Effects::Look::Lit( int ePart, const ChannelSettings &base, cons
     D3DCOLOR p = Mix( base.iPrimaryRGB, cWhite, fUp ), d = Mix( base.iDarkRGB, cWhite, fUp ), vd = Mix( base.iVeryDarkRGB, cWhite, fUp );
     if ( m_bFlat ) d = vd = p;
     if ( m_fSemiFlat >= 0.0f && ePart <= EffectSettings::PartShort ) { d = p; vd = Scale( p, m_fSemiFlat ); }
+    if ( m_bKiva && ePart <= EffectSettings::PartShort ) KivaNote( Mix( base.iPrimaryRGB, cWhite, fUp ), p, d, vd );
     // A long note's light split: the inside its share; the outline (the very dark colour) its share up
     // to 1, and past it on towards the main colour, then white. A short note (the very dark colour
     // only, or the main colour) and a key are lit whole.

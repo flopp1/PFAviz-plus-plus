@@ -36,7 +36,7 @@ struct LoadProgress
     bool bFullVisual = false;           // tools only: keep the visual store in the Full layout
     bool bLzVisual = false;             // the Performance tab's "Compact visual store" (LZ groups)
     bool bNoteStats = true;             // the extra statistics (Song::noteStats)
-    bool bFirstPairingOnly = false;     // the Performance tab's "End weird notes at their first note-off" (Song::bFirstPairingOnly)
+    bool bFirstPairingOnly = false;     // each note keeps its first pairing (Song::bFirstPairingOnly; the harness's --firstpairing, no longer a setting)
     bool bEndOpenNotes = false;         // and its "Layered compressed files: notes without a note-off last until the song's end" (Song::bEndOpenNotes)
     bool bExactTempo = false;           // the Performance tab's "Exact tempo timing" (TempoMap::bExact; off: the original's)
     bool bDedup = false;                // the Performance tab's "Deduplicate repeated tracks" (song/Dedup.h)

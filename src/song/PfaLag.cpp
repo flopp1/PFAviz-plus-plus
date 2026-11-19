@@ -88,6 +88,15 @@ namespace
         return v;
     }
 
+    // Render (us, before the noise): the sounding notes and the events in view (note-ons, note-offs, others)
+    double RenderUs( const PfaLag::Cpu &cpu, double dPoly, double dOnsW, double dOffsW, double dOthersW )
+    {
+        const double dEventsW = dOnsW + dOffsW + dOthersW;
+        const double dDrawn = dPoly + dOnsW;
+        const double dBytes = dPoly * SoundingBytes + dEventsW * EventBytes;
+        return ( RenderBaseUs + dDrawn * DrawnNs / 1000.0 ) * cpu.dCore + ( dPoly * AtSize( cpu, RenderSoundingNs, dBytes ) + dEventsW * AtSize( cpu, RenderViewNs, dBytes ) ) / 1000.0;
+    }
+
     // A piece of song time within one bin of the note statistics and of the CC counts: its share of
     // the bin's note-ons, note-offs (the note-ons less what the polyphony grew by) and other events,
     // and the polyphony at its middle and its ends (inside a bin, taken along its events: a tick that
@@ -501,8 +510,8 @@ PfaLag::FrameCost PfaLag::Cost( const Song &song, const Cpu &cpuIn, const Params
         const double dScale = dTotal > 0.0 ? dLoopUs / dTotal : 0.0;
         const double dArcAll = ( dTotal > 0.0 ? 1.0 : 0.0 ) + 1.0;
         double dArc = 0.0, dWork = 0.0;
-        int k = 1;
-        ForPieces( song, llFrom, llTo, [&]( const Piece &q ) {
+        int k = p.bNoRamp ? M + 1 : 1;
+        if ( !p.bNoRamp ) ForPieces( song, llFrom, llTo, [&]( const Piece &q ) {
             if ( k > M ) return;
             const double dSentQ = q.dOns * ( p.bMuted ? 0.0 : 1.0 ) + q.dOffs + q.dOthers;
             const double dWalkEach = q.dOffs > 0.0 ? AtSize( cpu, WalkNs, q.dPoly * SoundingBytes ) / 1000.0 + dEvictUs : 0.0;
@@ -539,12 +548,9 @@ PfaLag::FrameCost PfaLag::Cost( const Song &song, const Cpu &cpuIn, const Params
         const long long llEnd = llTo + std::max< long long >( 1, p.llSpanUs );
         const double dOnsW = Ons( llTo, llEnd );
         const double dOffsW = std::clamp( dOnsW - ( (double)ns.Polyphony( llEnd ) - dPolyTo ), 0.0, dOnsW + dPolyTo );
-        const double dEventsW = dOnsW + dOffsW + Others( llTo, llEnd );
-        const double dDrawn = dPolyTo + dOnsW;
-        const double dBytes = dPolyTo * SoundingBytes + dEventsW * EventBytes;
-        const double dRender = ( RenderBaseUs + dDrawn * DrawnNs / 1000.0 ) * cpu.dCore + ( dPolyTo * AtSize( cpu, RenderSoundingNs, dBytes ) + dEventsW * AtSize( cpu, RenderViewNs, dBytes ) ) / 1000.0;
+        const double dRender = RenderUs( cpu, dPolyTo, dOnsW, dOffsW, Others( llTo, llEnd ) );
         f.dRenderUs = dRender * Spread( dRender );
-        f.llInView = (uint64_t)dDrawn;
+        f.llInView = (uint64_t)( dPolyTo + dOnsW );
     }
     // The odd stall (another thread scheduled in, a page fault): with the frame's Render
     if ( pNoise )
@@ -596,4 +602,117 @@ long long PfaLag::RiseIn( const Song &song, long long llFrom, long long llTo )
         }
     }
     return llBest;
+}
+
+// The lag spikes ahead (PfaLag.h). The song is cut into windows of a long light frame's song time and a bit
+// (LightUs of wall time, plus half that), each overlapping the next by all but a half: any frame playing at most
+// LightUs of wall time plays song time inside one of them. A window is light when its Logic, and its Render
+// with the most polyphony and notes in view it could have, take well under LightUs (twice over, for the noise
+// and the refresh). From a frame no longer than LightUs, every frame through light windows is too (each plays
+// at most LightUs, so takes less), so none is near the lead-in's length: no spike starts or goes on there, and
+// each frame plays the song time that passed, so the song goes on with the wall clock. Those stretches are
+// skipped but for their last SkipMarginUs of wall time before a window that is not light (where the frames are
+// worked out one by one again, so a spike's lead-in, its sudden rise and LagTracker's look back are exact)
+std::vector< PfaLag::Spike > PfaLag::Spikes( const Song &song, const Cpu &cpu, const Params &pIn, SpikeRun &run,
+                                             const std::function< bool( double ) > &fProgress )
+{
+    std::vector< Spike > v;
+    run.llFrames = 0;
+    run.bFrozen = false;
+    if ( !Ready( song ) ) return v;
+    const NoteStats &ns = song.noteStats;
+    const EventCounts &cc = song.ccCounts;
+    Params p = pIn;
+    p.bPaused = false;
+    p.bNoRamp = true;
+    const double dSpeed = std::clamp( run.dSpeed, 0.001, 1000.0 );
+    const double dCap = run.dCapUs > 0.0 ? run.dCapUs : 1e300;
+    const long long llFirst = std::min< long long >( 0, song.info.llFirstNote - 3000000 ), llEnd = (long long)song.info.llTotalMicroSecs;
+    if ( llEnd <= llFirst ) return v;
+
+    // The light windows: window k is song time [llFirst + k G, + llWin + G]; from each, the first one on that is not
+    const double LightUs = 200000.0, SkipMarginUs = (double)( LagTracker::RiseBackUs + LagTracker::ThresholdUs ) + 1000000.0;
+    const long long llWin = std::max< long long >( 2, (long long)( LightUs * dSpeed ) ), G = std::max< long long >( 1, llWin / 2 );
+    const long long nWin = run.bExact ? 0 : ( llEnd - llFirst ) / G + 2;
+    std::vector< long long > vNextBad( (size_t)nWin + 1, nWin );    // (nWin: none)
+    {
+        const long long B = std::max< long long >( 1, ns.llBinUs ), nBins = (long long)ns.vPoly.size();
+        auto Ons = [&]( long long a, long long b ) { return b > a ? (double)( ns.Passed( b ) - ns.Passed( a ) ) : 0.0; };
+        auto Others = [&]( long long a, long long b ) { return b > a && !cc.Empty() ? (double)( cc.Passed( b ) - cc.Passed( a ) ) : 0.0; };
+        const long long llSpan = std::max< long long >( 1, p.llSpanUs );
+        for ( long long k = nWin - 1; k >= 0; k-- )
+        {
+            if ( fProgress && k % 2048 == 0 && !fProgress( 0.1 * ( nWin - k ) / nWin ) ) return v;
+            const long long a = llFirst + k * G, b = a + llWin + G;
+            const FrameCost c = Cost( song, cpu, p, a, b );
+            double dPoly = 0.0;
+            for ( long long i = std::max< long long >( 0, a / B - 1 ); i <= b / B && i < nBins; i++ ) dPoly = std::max( dPoly, (double)ns.vPoly[(size_t)i] );
+            const double dOnsW = Ons( a, b + llSpan );
+            const double dWork = c.dLogicUs + RenderUs( cpu, dPoly, dOnsW, dOnsW + dPoly, Others( a, b + llSpan ) );
+            const bool bLight = 2.0 * dWork + 2.0 * run.dRefreshUs + 4.0 * StallUs <= LightUs;
+            vNextBad[(size_t)k] = bLight ? vNextBad[(size_t)k + 1] : k;
+        }
+    }
+
+    Noise noise( run.llSeed );
+    Noise *pNoise = run.llSeed ? &noise : nullptr;
+    LagTracker lag;
+    lag.pSong = &song;
+    long long s = llFirst;
+    double dWall = 0.0, dFrame = 1000.0;    // (the first frame: as if the last took a millisecond)
+    long long llLastEnd = -1;
+    int iSpikes = 0;
+    while ( s < llEnd )
+    {
+        // Light ahead: on to SkipMarginUs before the next window that is not light
+        if ( nWin && dFrame <= LightUs )
+        {
+            const long long k = std::max< long long >( 0, ( s - llFirst ) / G );
+            if ( k < nWin )
+            {
+                const long long llBad = vNextBad[(size_t)k] >= nWin ? llEnd : llFirst + vNextBad[(size_t)k] * G;
+                const long long llTo = std::min( llEnd, llBad - llWin - (long long)( SkipMarginUs * dSpeed ) );
+                if ( llTo - s >= (long long)( 100000 * dSpeed ) )
+                {
+                    const double dUs = ( llTo - s ) / dSpeed;
+                    if ( pNoise ) pNoise->Advance( dUs );
+                    dWall += dUs;
+                    s = llTo;
+                    if ( s >= llEnd ) break;
+                }
+            }
+        }
+        const long long llTo = std::min( llEnd, s + std::max< long long >( 1, (long long)( dFrame * dSpeed ) ) );
+        if ( pNoise ) pNoise->Advance( dFrame );
+        const FrameCost c = Cost( song, cpu, p, s, llTo, pNoise );
+        dFrame = std::min( dCap, c.dLogicUs + c.dRenderUs );
+        if ( dFrame >= dCap ) run.bFrozen = true;
+        if ( run.dRefreshUs > 0.0 ) dFrame = std::ceil( dFrame / run.dRefreshUs ) * run.dRefreshUs;
+        const long long llW0 = (long long)dWall, llW1 = (long long)( dWall + dFrame );
+        lag.Ended( llW0, llW1, s, llTo );
+        if ( lag.iSpikes != iSpikes )
+        {
+            iSpikes = lag.iSpikes;
+            Spike sp;
+            sp.llSongFrom = s;
+            sp.llWallFrom = lag.llStart;
+            for ( const LagTracker::Past &f : lag.vPast )
+                if ( f.llWallStart >= lag.llStart ) { sp.llSongFrom = f.llFrom; break; }
+            v.push_back( sp );
+            llLastEnd = -1;
+        }
+        if ( iSpikes && lag.llLastEnd != llLastEnd )
+        {
+            llLastEnd = lag.llLastEnd;
+            v.back().llSongTo = llTo;
+            v.back().llLagUs = lag.Length();
+            v.back().llWallTo = lag.llLastEnd;
+        }
+        dWall += dFrame;
+        s = llTo;
+        if ( ++run.llFrames % 4096 == 0 && fProgress && !fProgress( 0.1 + 0.9 * ( s - llFirst ) / ( llEnd - llFirst ) ) ) return v;
+        if ( dWall > 3600e6 * 24 * 3653 ) { run.bFrozen = true; break; }
+    }
+    if ( fProgress ) fProgress( 1.0 );
+    return v;
 }

@@ -33,6 +33,22 @@ bool EventStream::DecodeChunk( size_t c, uint8_t *pOut ) const
     return Lz4::Decompress( data.get() + k.llOffset, k.uSize, pOut, iRaw );
 }
 
+void NoteEnds::Decode( size_t c, std::vector< uint8_t > &out ) const
+{
+    const Chunk &k = vChunks[c];
+    out.resize( (size_t)k.uRaw + 16 );
+    if ( k.uPacked == k.uRaw ) memcpy( out.data(), k.data.get(), k.uRaw );
+    else Lz4::Decompress( k.data.get(), k.uPacked, out.data(), k.uRaw );
+    memset( out.data() + k.uRaw, 0, 16 );
+}
+
+size_t NoteEnds::MemoryBytes() const
+{
+    size_t n = vChunks.capacity() * sizeof( Chunk ) + vSeekOn.capacity() * 8;
+    for ( const Chunk &k : vChunks ) n += k.uPacked;
+    return n;
+}
+
 const EventStream::SeekPoint &EventStream::SeekPointFor( size_t u ) const
 {
     auto it = std::upper_bound( vSeek.begin(), vSeek.end(), (uint64_t)u, []( uint64_t v, const SeekPoint &s ) { return v < s.llU; } );
@@ -49,7 +65,7 @@ size_t Song::MemoryBytes() const
 {
     size_t n = stream.MemoryBytes() + vTracks.capacity() * sizeof( RefTrackInfo ) + vMeta.capacity() * sizeof( RefMetaEvent ) +
                ( vChase.capacity() + vParamChase.capacity() ) * sizeof( ChaseEvent ) + vTrackLastU.capacity() * 8 + visual.MemoryBytes() + noteStats.MemoryBytes() + ccCounts.MemoryBytes() +
-               aSendOns[0].MemoryBytes() + aSendOns[1].MemoryBytes();
+               aSendOns[0].MemoryBytes() + aSendOns[1].MemoryBytes() + ends.MemoryBytes();
     for ( const auto &v : vTrackMeta ) n += v.capacity() * sizeof( RefMetaEvent );
     return n;
 }

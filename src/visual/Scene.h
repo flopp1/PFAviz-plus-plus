@@ -10,11 +10,11 @@
 
 struct ChannelSettings
 {
-    ChannelSettings() { bHidden = bMuted = false; SetColor( 0x00000000 ); }
+    ChannelSettings() { bHidden = false; SetColor( 0x00000000 ); }
     void SetColor();
     void SetColor( unsigned int iColor, double dDark = 0.5, double dVeryDark = 0.2 );
 
-    bool bHidden, bMuted;
+    bool bHidden;
     unsigned int iPrimaryRGB, iDarkRGB, iVeryDarkRGB, iOrigBGR;
 };
 struct TrackSettings { ChannelSettings aChannels[16]; };
@@ -63,7 +63,9 @@ struct ViewInputs
     bool bEdo31 = false;              // the 256-key view in the 31-EDO layout (Visual tab)
     bool bFlat = false;               // the effects' flat look (DrawKeys)
     bool bSemiFlat = false;           // the effects' semi-flat look (DrawKeys)
+    bool bKiva = false;               // the effects' Kiva look (ComputeGlobals' keyboard height, GetNoteX, NoteDeflate, DrawKeys)
     bool bNoBar = false;              // the keyboard without its red bar
+    bool bFlatTop = false;            // ... cut off flat at the top (EffectSettings::bFlatTop)
     int iHitLine = -1;                // the effects' hit line in the red bar's place: its height, pixels at 1080p (-1: none)
 };
 
@@ -82,7 +84,9 @@ struct FrameGlobals
     bool bEdo31 = false;              // 31-EDO layout: 8 octaves of 31 keys and C to D#, by Scene's key table
     bool bFlat = false;               // flat keys, from the notes' bottom down
     bool bSemiFlat = false;           // keys without depth under the normal look's bar
+    bool bKiva = false;               // the Kiva look: Kiva's keyboard height, black key places, note borders and keys
     bool bNoBar = false;              // no red bar: the keys from the notes' bottom down
+    bool bFlatTop = false;            // ... the white and black keys from that one line (no spacer, no black keys' rise)
     bool bHitLine = false;            // the hit line instead of the red bar (DrawHitLine)
     float fHitLineCY = 0.0f;          // its place over the keys, as tall as it (0: none, or no keyboard)
 };
@@ -138,6 +142,9 @@ namespace Scene
     // The same in two parts: what depends only on the key, then each note of it
     struct NoteKey { float x, cx, fDeflate; };
     NoteKey GetNoteKey( const FrameGlobals &g, int iNote );
+    // A note's inner rect's inset, every side (the original's: by the white keys' width; the Kiva look's:
+    // by the frame's width, as Kiva's note border)
+    float NoteDeflate( const FrameGlobals &g );
     void NoteVertices( const FrameGlobals &g, const NoteKey &nk, long long llNoteStart, long long llNoteEnd,
                        const ChannelSettings &cs, Renderer::SCREEN_VERTEX *pOut );
     // Those vertices' colours made cs's, as NoteVertices gives them

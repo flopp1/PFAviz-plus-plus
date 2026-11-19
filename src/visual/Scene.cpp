@@ -46,6 +46,20 @@ namespace
     }
 }
 
+// A black key's shift right of its middle on the white keys' edge, in white keys: the original's C# and F#
+// left, D# and A# right, a fifth of a black key; Kiva's C# and D# 0.15 of one, F# and A# 0.25, G# not
+static float SharpNudge( const FrameGlobals &g, int iNote )
+{
+    using Scene::SharpRatio;
+    const Notes::Note eNote = Notes::NoteVal( iNote );
+    if ( g.bKiva )
+        return eNote == Notes::CS ? -SharpRatio * 0.15f : eNote == Notes::DS ? SharpRatio * 0.15f
+             : eNote == Notes::FS ? -SharpRatio * 0.25f : eNote == Notes::AS ? SharpRatio * 0.25f : 0.0f;
+    if ( eNote == Notes::CS || eNote == Notes::FS ) return -SharpRatio / 5.0f;
+    if ( eNote == Notes::AS || eNote == Notes::DS ) return SharpRatio / 5.0f;
+    return 0.0f;
+}
+
 //-----------------------------------------------------------------------------
 // Colours
 //-----------------------------------------------------------------------------
@@ -112,7 +126,9 @@ FrameGlobals Scene::ComputeGlobals( const ViewInputs &in )
     g.bLines = in.bLines;
     g.bFlat = in.bFlat;
     g.bSemiFlat = in.bSemiFlat && !in.bFlat;
-    g.bNoBar = in.bNoBar;
+    g.bKiva = in.bKiva && !in.bFlat && !in.bSemiFlat;
+    g.bNoBar = in.bNoBar || in.bFlatTop;
+    g.bFlatTop = in.bFlatTop;
     g.bHitLine = in.iHitLine >= 0;
 
     g.iStartNote = min( in.iFirstKey, in.iLastKey );
@@ -158,7 +174,7 @@ FrameGlobals Scene::ComputeGlobals( const ViewInputs &in )
         // Key 255 (D#) is the last there is: the field ends at its middle (its nudge right of the white key
         // edge) instead of half a sharp past it, so no part of the key after it is shown
         float fBuffer = ( Notes::IsSharp( g.iStartNote ) ? SharpRatio / 2.0f : 0.0f ) +
-                        ( g.iEndNote == 255 ? SharpRatio / 5.0f : Notes::IsSharp( g.iEndNote ) ? SharpRatio / 2.0f : 0.0f );
+                        ( g.iEndNote == 255 ? SharpNudge( g, 255 ) : Notes::IsSharp( g.iEndNote ) ? SharpRatio / 2.0f : 0.0f );
         g.fWhiteCX = g.fNotesCX / ( g.iAllWhiteKeys + fBuffer );
     }
 
@@ -172,6 +188,9 @@ FrameGlobals Scene::ComputeGlobals( const ViewInputs &in )
         float fIdealKeyCY = g.fWhiteCX / KeyRatio;
         // .95 for the top vs near. 2.0 for the spacer. .93 for the transition and the red. ESTIMATE.
         fIdealKeyCY = ( fIdealKeyCY / 0.95f + 2.0f ) / 0.93f;
+        // The Kiva look: Kiva's Big Keyboard, bar and keys 4% of its full 256-key layout's width (149.5
+        // white keys) tall, so 5.98 white keys whatever the range
+        if ( g.bKiva ) fIdealKeyCY = g.fWhiteCX * 0.04f * 149.5f;
         g.fNotesCY = floor( in.iBufferHeight - min( fIdealKeyCY, fMaxKeyCY ) + 0.5f );
         if ( in.iHitLine > 0 )
             g.fHitLineCY = min( max( 1.0f, floor( in.iHitLine * in.iBufferHeight / 1080.0f + 0.5f ) ),
@@ -201,12 +220,7 @@ float Scene::GetNoteX( const FrameGlobals &g, int iNote )
     if ( g.bEdo31 ) return g.fNotesX + g.fWhiteCX * Left31( iNote );
     int iWhiteKeys = Notes::WhiteCount( g.iStartNote, iNote );
     float fStartX = ( Notes::IsSharp( g.iStartNote ) - Notes::IsSharp( iNote ) ) * SharpRatio / 2.0f;
-    if ( Notes::IsSharp( iNote ) )
-    {
-        Notes::Note eNote = Notes::NoteVal( iNote );
-        if ( eNote == Notes::CS || eNote == Notes::FS ) fStartX -= SharpRatio / 5.0f;
-        else if ( eNote == Notes::AS || eNote == Notes::DS ) fStartX += SharpRatio / 5.0f;
-    }
+    if ( Notes::IsSharp( iNote ) ) fStartX += SharpNudge( g, iNote );
     return g.fNotesX + g.fWhiteCX * ( iWhiteKeys + fStartX );
 }
 
@@ -229,10 +243,17 @@ Scene::NoteKey Scene::GetNoteKey( const FrameGlobals &g, int iNote )
     NoteKey nk;
     nk.x = GetNoteX( g, iNote );
     nk.cx = g.bEdo31 ? g.fWhiteCX * ( Key31Of( iNote ).cx / 7.0f ) : Notes::IsSharp( iNote ) ? g.fWhiteCX * SharpRatio : g.fWhiteCX;
+    nk.fDeflate = NoteDeflate( g );
+    return nk;
+}
+
+float Scene::NoteDeflate( const FrameGlobals &g )
+{
+    // (Kiva: 0.091% of the width, whole pixels)
+    if ( g.bKiva ) return max( 1.0f, floor( g.iBufferWidth * 0.00091f + 0.5f ) );
     float fDeflate = g.fWhiteCX * 0.15f / 2.0f;
     fDeflate = floor( fDeflate + 0.5f );
-    nk.fDeflate = max( min( fDeflate, 3.0f ), 1.0f );
-    return nk;
+    return max( min( fDeflate, 3.0f ), 1.0f );
 }
 
 void Scene::NoteVertices( const FrameGlobals &g, const NoteKey &nk, long long llNoteStart, long long llNoteEnd,
@@ -502,7 +523,7 @@ void Scene::DrawHitLine( Renderer *pRenderer, const FrameGlobals &g, const HitLi
 
 float Scene::RedBarY( const FrameGlobals &g )
 {
-    return g.fNotesY + g.fNotesCY + ( g.bFlat || g.bNoBar || g.bHitLine ? 0.0f : TransitionCY( g.iBufferHeight - g.fNotesCY ) );
+    return g.fNotesY + g.fNotesCY + ( g.bFlat || g.bKiva || g.bNoBar || g.bHitLine ? 0.0f : TransitionCY( g.iBufferHeight - g.fNotesCY ) );
 }
 
 // a to b by t (0 to 1), each channel; a's alpha
@@ -681,10 +702,117 @@ static void DrawKeysSemiFlat( Renderer *pRenderer, const FrameGlobals &g, const 
         if ( Notes::IsSharp( i ) ) Black( i, fSharpCY, c.csKBSharp );
 }
 
+// Kiva's colour arithmetic (its shaders work in 0 to 1, clamped when drawn): c plus f, each channel; c times f
+static D3DCOLOR KivaAdd( D3DCOLOR c, float f )
+{
+    D3DCOLOR r = c & 0xFF000000;
+    for ( int s = 0; s < 24; s += 8 )
+        r |= (D3DCOLOR)std::clamp( (int)( ( ( c >> s ) & 0xFF ) + f * 255.0f + 0.5f ), 0, 255 ) << s;
+    return r;
+}
+static D3DCOLOR KivaMul( D3DCOLOR c, float f ) { return MixRGB( c & 0xFF000000, c, f ); }
+
+// The Kiva look's keys: Kiva's Big Keyboard (its KeyboardBig.fx), its proportions from the keyboard's
+// height K. The bar is K's top 6%, the bar's colour at its top to 80% of it at its bottom, with a shadow
+// above it over the notes (3% of K, to 40% black) and one below it over the white keys (4% of K, from 40%
+// black). The white keys are the other 94% (h), side by side with a 1-pixel line at each one's right, a
+// face from 80% of their colour at the top to all of it, over a front 5.6% of h tall (pressed: 1.3%) from
+// their colour less 0.31 to 70% of it less 0.31. The black keys come down 63.5% of h from the white keys'
+// top: a face, with bevels 1.5% of h wide on their sides and front, the face reaching 2.5 bevels above the
+// white keys' top and stopping 2.5 above the front's bottom (pressed: at the top, and 1 bevel up). Unpressed
+// the face is black, the sides 0.3 lighter, the front 0.19; pressed, the note's colour, 0.3 darker, the left
+// side 0.12, the right 0.22 and the front 0.12. A pressed key is its note's colour, an unpressed white key
+// white (or the effects' own colours, as with the other looks).
+static void DrawKeysKiva( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c, const ChannelSettings *const pKeyColor[256],
+                          const KeyLook *pLook )
+{
+    using namespace Scene;
+    const float fKbY = g.fNotesY + g.fNotesCY, fKbCY = g.iBufferHeight - g.fNotesCY;
+    const bool bBar = !g.bNoBar && !g.bHitLine;
+    const float fBarCY = g.bHitLine ? g.fHitLineCY : bBar ? floor( fKbCY * 0.06f + 0.5f ) : 0.0f;
+    const float fKeysY = fKbY + fBarCY, fKeysCY = fKbCY - fBarCY;
+    const D3DCOLOR cClear = 0xFF000000, cShade = 0x99000000;    // black, not drawn and 40% (the alpha is 1 - opacity)
+    pRenderer->DrawRect( g.fNotesX, fKbY, g.fNotesCX, fKbCY, c.csKBBackground.iVeryDarkRGB );
+
+    auto Lit = [&]( int i ) -> const ChannelSettings * { return i >= 0 && i < 256 ? pKeyColor[i] : nullptr; };
+    auto Own = [&]( int i, const ChannelSettings &cs ) -> const ChannelSettings & { return pLook && i >= 0 && i < 256 && pLook->apUnlit[i] ? *pLook->apUnlit[i] : cs; };
+    auto Glow = [&]( int i, float x, float y, float cx, float cy ) {
+        if ( pLook && pLook->pGlow ) pLook->pGlow->push_back( { x, y, cx, cy, i >= 0 && i < 256 ? pLook->aGlow[i] : 0 } );
+    };
+    // (a face's top: fDim of its colour, or whitened with KeyLook::fTopWhite)
+    const bool bWhiten = pLook && pLook->fTopWhite >= 0.0f;
+    auto Top = [&]( D3DCOLOR col, float fDim ) { return bWhiten ? MixRGB( col, 0x00FFFFFF, pLook->fTopWhite ) : KivaMul( col, fDim ); };
+
+    // The white keys
+    const D3DCOLOR cLine = c.csKBBackground.iDarkRGB;   // 24% grey, as Kiva's line
+    int iStartRender = ( Notes::IsSharp( g.iStartNote ) ? g.iStartNote - 1 : g.iStartNote );
+    int iEndRender = ( Notes::IsSharp( g.iEndNote ) && g.iEndNote < 255 ? g.iEndNote + 1 : g.iEndNote );
+    float fCurX = g.fNotesX + ( Notes::IsSharp( g.iStartNote ) ? g.fWhiteCX * ( SharpRatio / 2.0f - 1.0f ) : 0.0f );
+    for ( int i = iStartRender; i <= iEndRender; i++ )
+    {
+        if ( g.bEdo31 ? KeyLayer( g, i ) != 0 : Notes::IsSharp( i ) ) continue;
+        const ChannelSettings *pLit = Lit( i );
+        const D3DCOLOR col = pLit ? pLit->iPrimaryRGB : Own( i, c.csKBWhite ).iPrimaryRGB;
+        const float fFrontCY = floor( fKeysCY * ( pLit ? 0.04f / 3.0f : 0.04f * 1.4f ) + 0.5f );
+        const float x0 = floor( fCurX + 0.5f ), x1 = floor( fCurX + g.fWhiteCX + 0.5f );
+        const D3DCOLOR cTop = Top( col, 0.8f );
+        pRenderer->DrawRect( x0, fKeysY, x1 - x0, fKeysCY - fFrontCY, cTop, cTop, col, col );
+        const D3DCOLOR cFront = KivaAdd( col, -0.31f ), cFrontBottom = KivaAdd( KivaMul( col, 0.7f ), -0.31f );
+        pRenderer->DrawRect( x0, fKeysY + fKeysCY - fFrontCY, x1 - x0, fFrontCY, cFront, cFront, cFrontBottom, cFrontBottom );
+        pRenderer->DrawRect( x1 - 1.0f, fKeysY, 1.0f, fKeysCY, cLine );
+        Glow( i, x0, fKeysY, x1 - x0, fKeysCY );
+        fCurX += g.fWhiteCX;
+    }
+
+    // The bar (the hit line: its place, black), and its shadows: above it over the notes, below it over the white keys
+    if ( g.bHitLine && fBarCY > 0.0f ) pRenderer->DrawRect( g.fNotesX, fKbY, g.fNotesCX, fBarCY, c.csKBBackground.iVeryDarkRGB );
+    if ( bBar )
+    {
+        const D3DCOLOR cBar = c.csKBRed.iPrimaryRGB, cBarBottom = KivaMul( cBar, 0.8f );
+        pRenderer->DrawRect( g.fNotesX, fKbY, g.fNotesCX, fBarCY, cBar, cBar, cBarBottom, cBarBottom );
+        if ( pLook && pLook->pGlow ) pLook->pGlow->push_back( { g.fNotesX, fKbY, g.fNotesCX, fBarCY, pLook->cBarGlow } );
+        const float fAboveCY = floor( fKbCY * 0.03f + 0.5f ), fBelowCY = floor( fKbCY * 0.04f + 0.5f );
+        pRenderer->DrawRect( g.fNotesX, fKbY - fAboveCY, g.fNotesCX, fAboveCY, cClear, cClear, cShade, cShade );
+        pRenderer->DrawRect( g.fNotesX, fKeysY, g.fNotesCX, fBelowCY, cShade, cShade, cClear, cClear );
+    }
+
+    // The black keys (31-EDO: the half keys as long, then the full ones half as long over them), in the notes' columns
+    const float fBevel = fKeysCY * 0.015f;
+    auto Black = [&]( int i, float fLong, const ChannelSettings &cs ) {
+        const NoteKey nk = GetNoteKey( g, i );
+        const ChannelSettings *pLit = Lit( i );
+        const D3DCOLOR col = pLit ? pLit->iPrimaryRGB : Own( i, cs ).iPrimaryRGB;
+        const float l = nk.x, r = nk.x + nk.cx, il = l + fBevel, ir = r - fBevel;
+        const float t = fKeysY, b = floor( fKeysY + fLong + 0.5f );
+        const float it = pLit ? t : t - fBevel * 2.5f, ib = b - fBevel * ( pLit ? 1.0f : 2.5f );
+        const D3DCOLOR cFace = KivaAdd( col, pLit ? -0.3f : 0.0f ), cFaceTop = bWhiten ? Top( cFace, 1.0f ) : cFace;
+        const D3DCOLOR cLeft = KivaAdd( col, pLit ? -0.12f : 0.3f ), cRight = KivaAdd( col, pLit ? -0.22f : 0.3f );
+        const D3DCOLOR cFront = KivaAdd( col, pLit ? -0.12f : 0.19f );
+        pRenderer->DrawRect( il, it, ir - il, ib - it, cFaceTop, cFaceTop, cFace, cFace );
+        pRenderer->DrawSkew( l, t, il, it, il, ib, l, b, cLeft );
+        pRenderer->DrawSkew( ir, it, r, t, r, b, ir, ib, cRight );
+        pRenderer->DrawSkew( il, ib, ir, ib, r, b, l, b, cFront );
+        Glow( i, l, it, nk.cx, b - it );
+    };
+    const float fSharpCY = fKeysCY * 0.635f;
+    if ( g.bEdo31 )
+    {
+        for ( int iLayer = 1; iLayer <= 2; iLayer++ )
+            for ( int i = g.iStartNote; i <= g.iEndNote; i++ )
+                if ( KeyLayer( g, i ) == iLayer )
+                    Black( i, iLayer == 1 ? fSharpCY : fSharpCY * 0.5f,
+                           iLayer == 1 ? c.csKBHalf : Key31Of( i ).kind == Sharp ? c.csKBSharp31 : c.csKBSharp );
+        return;
+    }
+    for ( int i = g.iStartNote; i <= g.iEndNote; i++ )
+        if ( Notes::IsSharp( i ) ) Black( i, fSharpCY, c.csKBSharp );
+}
+
 void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneColors &c, const ChannelSettings *const pKeyColor[256],
                       const KeyLook *pLook )
 {
     if ( g.bFlat ) return DrawKeysFlat( pRenderer, g, c, pKeyColor, pLook );
+    if ( g.bKiva ) return DrawKeysKiva( pRenderer, g, c, pKeyColor, pLook );
     // Screen info
     float fKeysY = g.fNotesY + g.fNotesCY;
     float fKeysCY = g.iBufferHeight - g.fNotesCY;
@@ -693,7 +821,7 @@ void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneCol
     float fTransitionCY = g.bNoBar || g.bHitLine ? 0.0f : TransitionCY( fKeysCY );
     float fRedPct = .05f;
     float fRedCY = g.bHitLine ? g.fHitLineCY : g.bNoBar ? 0.0f : floor( fKeysCY * fRedPct + 0.5f );
-    float fSpacerCY = g.bHitLine ? 0.0f : 2.0f;
+    float fSpacerCY = g.bHitLine || g.bFlatTop ? 0.0f : 2.0f;
     float fTopCY = floor( ( fKeysCY - fSpacerCY - fRedCY - fTransitionCY ) * 0.95f + 0.5f );
     float fNearCY = fKeysCY - fSpacerCY - fRedCY - fTransitionCY - fTopCY;
 
@@ -775,6 +903,16 @@ void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneCol
     // A black key (31-EDO: also the half and full sharps and flats, fSharpCY tall from the black keys' top)
     auto DrawSharp = [&]( float x, float cx, float fSharpTopX1, float fSharpTopX2, float fSharpCY,
                           const ChannelSettings &csKBS, const ChannelSettings *pLit, float fExtend, float fDrop, float fRaise ) {
+        // (a flat top: the key its depth lower, so its top is the white keys' top, cut off there: its sides
+        // straight up to it, and pressed, its top there too)
+        const float fCutY = fCurY;
+        if ( g.bFlatTop )
+        {
+            fCurY += fNearCY;
+            fRaise = fNearCY;
+            fExtend = fNearCY * 0.75f;
+        }
+        struct Restore { float &y; float v; ~Restore() { y = v; } } restore{ fCurY, fCutY };
         if ( !pLit )
         {
             // (fDrop: the top lowered that much, the front edge staying where it is; fRaise: the sides go
@@ -815,13 +953,14 @@ void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneCol
                                  fSharpTopX2, fCurY + fSharpCY - fNewNear,
                                  x + cx, fCurY + fSharpCY, x, fCurY + fSharpCY,
                                  csKBSharp.iPrimaryRGB, csKBSharp.iPrimaryRGB, csKBSharp.iDarkRGB, csKBSharp.iDarkRGB );
+            const float fSideTop = g.bFlatTop ? fCutY : fCurY - fExtend;
             pRenderer->DrawSkew( fSharpTopX1, fTop,
                                  fSharpTopX1, fCurY + fSharpCY - fNewNear,
-                                 x, fCurY + fSharpCY, x, fCurY - fExtend,
+                                 x, fCurY + fSharpCY, x, fSideTop,
                                  csKBSharp.iPrimaryRGB, csKBSharp.iPrimaryRGB, csKBSharp.iDarkRGB, csKBSharp.iDarkRGB );
             pRenderer->DrawSkew( fSharpTopX2, fCurY + fSharpCY - fNewNear,
                                  fSharpTopX2, fTop,
-                                 x + cx, fCurY - fExtend, x + cx, fCurY + fSharpCY,
+                                 x + cx, fSideTop, x + cx, fCurY + fSharpCY,
                                  csKBSharp.iPrimaryRGB, csKBSharp.iPrimaryRGB, csKBSharp.iDarkRGB, csKBSharp.iDarkRGB );
             pRenderer->DrawRect( fSharpTopX1, fTop, fSharpTopX2 - fSharpTopX1, fFaceCY, csKBSharp.iDarkRGB );
             // (whitening: the face's top band, from white-ish at its top)
@@ -902,7 +1041,7 @@ void Scene::DrawKeys( Renderer *pRenderer, const FrameGlobals &g, const SceneCol
             const float fSharpTopX2 = fSharpTopX1 + g.fWhiteCX * fSharpTop;
 
             const bool bKey = i >= 0 && i < 256;
-            if ( pLook && pLook->pGlow ) pLook->pGlow->push_back( { x, fCurY - fNearCY, cx, fNearCY + fSharpCY, bKey ? pLook->aGlow[i] : 0 } );
+            if ( pLook && pLook->pGlow ) pLook->pGlow->push_back( { x, g.bFlatTop ? fCurY : fCurY - fNearCY, cx, fNearCY + fSharpCY, bKey ? pLook->aGlow[i] : 0 } );
             DrawSharp( x, cx, fSharpTopX1, fSharpTopX2, fSharpCY, pLook && bKey && pLook->apUnlit[i] ? *pLook->apUnlit[i] : csKBS,
                        bKey ? pKeyColor[i] : nullptr, 0.0f, 0.0f, 0.0f );
         }

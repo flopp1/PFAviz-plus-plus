@@ -19,6 +19,9 @@ namespace Lz4
     // The same, searched harder (liblz4's HC at iLevel, 1 to 12): what is kept once loaded (the event
     // stream's chunks, the compact visual store's groups) takes 8-30 % less and decodes as fast
     const int HcLevel = 9;
+    // The event stream's chunks: about half the time of HcLevel for 0-1.5 % more (the loader's largest step
+    // after the copy, on files of many tracks)
+    const int StreamHcLevel = 4;
     size_t CompressHC( const uint8_t *src, size_t n, uint8_t *dst, int iLevel = HcLevel );
 
     // Decompresses exactly iRaw bytes into dst; false if the input is malformed. dst must have Slack

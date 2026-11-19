@@ -72,7 +72,7 @@ namespace
 IniFile Config::Settings() const
 {
     IniFile ini;
-    ini.SetInt( "General", "ConfigVersion", 3 );
+    ini.SetInt( "General", "ConfigVersion", 5 );
     m_VisualSettings.Save( ini );
     m_AudioSettings.Save( ini );
     m_VideoSettings.Save( ini );
@@ -98,6 +98,8 @@ void Config::LoadConfigValues()
     m_ExportSettings.Load( ini );
     m_PlaybackSettings.Load( ini );
     m_ViewSettings.Load( ini );
+    // (remembered before the changes below, so a save writes them: only what changed is merged)
+    RememberSaved();
 
     // Version 1 configs (before the preferences dialog existed) only ever saved the default
     // "all 88 keys"; the default is now all 128 keys
@@ -105,7 +107,20 @@ void Config::LoadConfigValues()
         m_VisualSettings.eKeysShown = VisualSettings::All128;
     // Version 2 configs saved LodCache=0 while the cache did not exist yet; it is on by default now
     if ( ini.GetInt( "General", "ConfigVersion", 1 ) < 3 ) m_PerformanceSettings.bLodCache = true;
-    RememberSaved();
+    // Version 3 configs saved CleanDrawing=0 as the default, and the audio file's offset from its first
+    // sound; clean drawing is on by default now, and the offset is from the song's start
+    if ( ini.GetInt( "General", "ConfigVersion", 1 ) < 4 )
+    {
+        if ( m_VisualSettings.uClean == 0 ) m_VisualSettings.uClean = 7;
+        m_ExportSettings.iAudioOffsetMs = 0;
+    }
+    // Version 4 configs saved the defaults of before: BASSMIDI without a notes-a-second limit, and the
+    // loading statistics shown after every load; now 20,000 and off
+    if ( ini.GetInt( "General", "ConfigVersion", 1 ) < 5 )
+    {
+        if ( m_AudioSettings.iBassNps == 0 ) m_AudioSettings.iBassNps = 20000;
+        m_PerformanceSettings.bShowLoadStats = false;
+    }
 }
 
 void Config::RememberSaved()
@@ -147,20 +162,20 @@ const int VisualSettings::StatSections[StatCount] = {
     SectionPipeline, SectionPipeline, SectionPipeline, SectionPipeline, SectionPipeline,
     SectionGeneral, SectionSynth, SectionSynth, SectionNotes, SectionNotes, SectionNotes, SectionSynth, SectionSynth, SectionGeneral };
 const wchar_t *const VisualSettings::StatLabels[StatCount] = {
-    L"Time:", L"FPS:", L"Score:", L"Notes:", L"NPS:", L"Polyphony:",
+    L"Time:", L"FPS:", L"", L"Notes:", L"NPS:", L"Polyphony:",
     L"Sent/s:", L"Skipped/s:", L"Collapsed/s:", L"Lag:", L"Skipping:",
     L"Other ms:", L"Notes ms:", L"Scene ms:", L"Present ms:",
     L"Decoded/s:", L"Decoder busy:", L"Sender busy:", L"Ring:", L"Send cost:",
-    L"Tempo:", L"Voices:", L"Synth CPU:", L"CC events:", L"Max NPS:", L"Max Poly:", L"Rendered:", L"Degraded:", L"Lag time:" };
+    L"Tempo:", L"Voices:", L"Synth CPU:", L"CC events:", L"Max NPS:", L"Max Poly:", L"Audio buffer:", L"Degraded:", L"Lag time:" };
 const wchar_t *const VisualSettings::StatNames[StatCount] = {
-    L"Time", L"Frame rate", L"Score", L"Notes passed", L"NPS", L"Polyphony",
-    L"Messages sent", L"Skipped", L"Collapsed", L"Lag", L"Skipping threshold",
+    L"Time", L"Frame rate", L"", L"Notes passed", L"NPS", L"Polyphony",
+    L"Messages sent", L"Skipped", L"Collapsed", L"Lag", L"Velocity skip threshold",
     L"Other (frame ms)", L"Notes (frame ms)", L"Scene (frame ms)", L"Present (frame ms)",
     L"Messages decoded", L"Decoder busy", L"Sender busy", L"Ring fill", L"Send cost",
-    L"Tempo (BPM)", L"Synth voices (KDMAPI)", L"Synth CPU (KDMAPI)", L"CC events passed", L"Max NPS (so far)", L"Max Poly (so far)", L"Audio rendered ahead", L"Rendered audio made lighter", L"Lag duration (PFA lag simulation)" };
+    L"Tempo (BPM)", L"Synth voices (KDMAPI, Pre-Render)", L"Synth CPU (KDMAPI)", L"CC events passed", L"Max NPS (so far)", L"Max Poly (so far)", L"Audio buffer", L"Degraded", L"Lag duration (PFA lag simulation)" };
 // The order the lines had before they could be moved: general, notes, synth, pipeline, frame time
 const unsigned char VisualSettings::DefaultStatOrder[StatCount] = {
-    StatTime, StatFPS, StatPfaLagTime, StatScore, StatTempo, StatNotes, StatNPS, StatMaxNPS, StatPolyphony, StatMaxPoly, StatCC,
+    StatTime, StatFPS, StatPfaLagTime, StatRetired, StatTempo, StatNotes, StatNPS, StatMaxNPS, StatPolyphony, StatMaxPoly, StatCC,
     StatSent, StatSkipped, StatCollapsed, StatLag, StatRendered, StatDegrade, StatSkipping, StatVoices, StatSynthCpu,
     StatDecoded, StatDecoderBusy, StatSenderBusy, StatRing, StatSendCost,
     StatOtherMs, StatNotesMs, StatSceneMs, StatPresentMs };
@@ -169,7 +184,8 @@ void VisualSettings::LoadDefaultValues()
 {
     eKeysShown = All128;
     bAlwaysShowControls = false;
-    uStats = ( 1u << StatTime ) | ( 1u << StatScore ) | NoteStats;
+    uStats = ( 1u << StatTime ) | NoteStats;
+    bAdvancedStats = false;
     std::copy( DefaultStatOrder, DefaultStatOrder + StatCount, aStatOrder );
     iFirstKey = Notes::A0;
     iLastKey = Notes::C8;
@@ -180,7 +196,7 @@ void VisualSettings::LoadDefaultValues()
     sBkgImage.clear();
     iBkgFit = 2;    // Renderer::FitStretch: the whole image in the notes area
     iBkgOpacity = 100;
-    uClean = 0;
+    uClean = 7;     // all of the Clean flags (visual/Scene.h)
     bHideLines = false;
     bTickBased = false;
     bPfaLag = false;
@@ -189,7 +205,6 @@ void VisualSettings::LoadDefaultValues()
     iPfaL2KB = iPfaL3KB = 0;
     iPfaSendNs = 50;
     dPfaCpuPct = 100.0;
-    bHideSpeedBoxes = false;
     bLoopColors = false;
     bUniqueColors = false;
     bEdo31Keys = false;
@@ -200,7 +215,6 @@ void VisualSettings::LoadDefaultValues()
     sStatsFont = L"Tahoma";
     bStatsBackground = true;
     bStatsShadow = true;
-    bStatsShadowMirror = false;
     bStatsFontSet = false;
     iStatsFontPx = 15;
     bStatsPfaSize = true;
@@ -209,9 +223,7 @@ void VisualSettings::LoadDefaultValues()
     graph.aColor[GraphSettings::NPS] = 0x00FFA050;
     graph.aColor[GraphSettings::Polyphony] = 0x0040B0FF;
     graph.aColor[GraphSettings::Tempo] = 0x0080E060;
-    graph.bTogether = false;
     graph.bZero = true;
-    graph.bMiddle = false;
     graph.iCorner = StatsLeft;
     graph.iSpanMs = 1000;
     graph.iCX = 800;
@@ -220,7 +232,6 @@ void VisualSettings::LoadDefaultValues()
     graph.iGrowMs = 60;
     graph.iShrinkMs = 60;
     graph.bScale = false;
-    graph.bScaleSide = true;
     graph.bMaxLine = false;
     graph.uMaxColor = 0x0000FFFF;
     fx.LoadDefaultValues();
@@ -272,10 +283,6 @@ void VisualSettings::GraphSettings::Fix()
     unsigned uPlaces = 0;
     for ( int i = 0; i < SeriesCount; i++ ) if ( aiPlace[i] >= 0 && aiPlace[i] < SeriesCount ) uPlaces |= 1u << aiPlace[i];
     if ( uPlaces != ( 1u << SeriesCount ) - 1 ) for ( int i = 0; i < SeriesCount; i++ ) aiPlace[i] = i;
-    if ( !bTogether ) return;
-    bool bFilled = false;
-    for ( int i = 0; i < SeriesCount; i++ )
-        if ( abShow[i] && !abLine[i] ) { if ( bFilled ) abLine[i] = true; bFilled = true; }
 }
 
 static std::string FormatHex( unsigned c )
@@ -312,7 +319,7 @@ void VisualSettings::Load( const IniFile &ini )
     {
         // A config from before the Statistics dialog: its separate stats box switches
         uStats = ( ini.GetBool( "Visual", "ShowTime", true ) ? 1u << StatTime : 0 ) | ( ini.GetBool( "Video", "ShowFPS", false ) ? 1u << StatFPS : 0 ) |
-                 ( ini.GetBool( "Visual", "ShowScore", true ) ? 1u << StatScore : 0 ) | ( ini.GetBool( "Performance", "ExtraStats", true ) ? NoteStats : 0 ) |
+                 ( ini.GetBool( "Performance", "ExtraStats", true ) ? NoteStats : 0 ) |
                  ( ini.GetBool( "Performance", "ShowPlaybackStats", false ) ? ( SynthStats & ~VoiceStats ) | FrameStats : 0 );
     }
     // The order: the saved lines in their order, then any line it lacks in the default order
@@ -345,6 +352,8 @@ void VisualSettings::Load( const IniFile &ini )
             if ( !s.empty() && i > 0 && ( uStats >> DefaultStatOrder[i - 1] ) & 1 && uStat != StatPfaLagTime ) uStats |= 1u << uStat;   // (the lag time: only when asked for)
         }
     }
+    // (a config from before the switch: on when it shows any of those lines, so they stay)
+    bAdvancedStats = ini.GetBool( "Visual", "AdvancedStats", ( uStats & AdvancedStats ) != 0 );
     iFirstKey = std::clamp( ini.GetInt( "Visual", "FirstKey", iFirstKey ), 0, 255 );
     iLastKey = std::clamp( ini.GetInt( "Visual", "LastKey", iLastKey ), 0, 255 );
     iColorCount = std::clamp( ini.GetInt( "Visual", "ColorCount", iColorCount ), 1, MaxColors );
@@ -379,7 +388,6 @@ void VisualSettings::Load( const IniFile &ini )
     if ( sStatsFont.empty() || sStatsFont.size() >= LF_FACESIZE ) sStatsFont = L"Tahoma";
     bStatsBackground = ini.GetBool( "Visual", "StatsBackground", bStatsBackground );
     bStatsShadow = ini.GetBool( "Visual", "StatsShadow", bStatsShadow );
-    bStatsShadowMirror = ini.GetBool( "Visual", "StatsShadowMirror", bStatsShadowMirror );
     bStatsFontSet = ini.GetBool( "Visual", "StatsFontSet", bStatsFontSet );
     iStatsFontPx = std::clamp( ini.GetInt( "Visual", "StatsFontPx", iStatsFontPx ), StatsFontMin, StatsFontMax );
     // (a height saved before this option: kept as set)
@@ -395,9 +403,7 @@ void VisualSettings::Load( const IniFile &ini )
         graph.aiPlace[i] = ini.GetInt( "Graphs", "Place" + sName, graph.aiPlace[i] );
         graph.aColor[i] = ParseRGB( ini.GetString( "Graphs", "Color" + sName ), graph.aColor[i] );
     }
-    graph.bTogether = ini.GetBool( "Graphs", "Together", graph.bTogether );
     graph.bZero = ini.GetBool( "Graphs", "Zero", graph.bZero );
-    graph.bMiddle = ini.GetBool( "Graphs", "Middle", graph.bMiddle );
     graph.iCorner = ini.GetInt( "Graphs", "Corner", graph.iCorner ) & 3;
     if ( ini.Has( "Graphs", "Seconds" ) ) graph.iSpanMs = ini.GetInt( "Graphs", "Seconds", 1 ) * 1000;    // (as saved before)
     graph.iSpanMs = std::clamp( ini.GetInt( "Graphs", "SpanMs", graph.iSpanMs ), 1, 600000 );
@@ -407,11 +413,9 @@ void VisualSettings::Load( const IniFile &ini )
     graph.iGrowMs = std::clamp( ini.GetInt( "Graphs", "GrowMs", graph.iGrowMs ), 0, 10000 );
     graph.iShrinkMs = std::clamp( ini.GetInt( "Graphs", "ShrinkMs", graph.iShrinkMs ), 0, 10000 );
     graph.bScale = ini.GetBool( "Graphs", "Scale", graph.bScale );
-    graph.bScaleSide = ini.GetBool( "Graphs", "ScaleAwayFromCorner", graph.bScaleSide );
     graph.bMaxLine = ini.GetBool( "Graphs", "MaxLine", graph.bMaxLine );
     graph.uMaxColor = ParseRGB( ini.GetString( "Graphs", "MaxColor" ), graph.uMaxColor );
     graph.Fix();
-    bHideSpeedBoxes = ini.GetBool( "Visual", "HideSpeedBoxes", bHideSpeedBoxes );
     fx.LoadConfigValues( ini );
     // The effects profiles: Name<i>, and <i>.<key> each as the Effects section's key (a config with
     // effects saved before them: those as the first, to keep them)
@@ -457,6 +461,7 @@ void VisualSettings::Save( IniFile &ini ) const
     ini.SetInt( "Visual", "KeysShown", eKeysShown );
     ini.SetInt( "Visual", "AlwaysShowControls", bAlwaysShowControls );
     ini.SetInt( "Visual", "Stats", (int)uStats );
+    ini.SetInt( "Visual", "AdvancedStats", bAdvancedStats );
     std::string sOrder;
     for ( int i = 0; i < StatCount; i++ ) sOrder += ( i ? "," : "" ) + std::to_string( aStatOrder[i] );
     ini.Set( "Visual", "StatOrder", sOrder );
@@ -491,7 +496,6 @@ void VisualSettings::Save( IniFile &ini ) const
     ini.Set( "Visual", "StatsFont", Util::WideToUtf8( sStatsFont ) );
     ini.SetInt( "Visual", "StatsBackground", bStatsBackground );
     ini.SetInt( "Visual", "StatsShadow", bStatsShadow );
-    ini.SetInt( "Visual", "StatsShadowMirror", bStatsShadowMirror );
     ini.SetInt( "Visual", "StatsFontSet", bStatsFontSet );
     ini.SetInt( "Visual", "StatsFontPx", iStatsFontPx );
     ini.SetInt( "Visual", "StatsPfaSize", bStatsPfaSize );
@@ -505,9 +509,7 @@ void VisualSettings::Save( IniFile &ini ) const
         ini.SetInt( "Graphs", "Place" + sName, graph.aiPlace[i] );
         ini.Set( "Graphs", "Color" + sName, FormatRGB( graph.aColor[i] ) );
     }
-    ini.SetInt( "Graphs", "Together", graph.bTogether );
     ini.SetInt( "Graphs", "Zero", graph.bZero );
-    ini.SetInt( "Graphs", "Middle", graph.bMiddle );
     ini.SetInt( "Graphs", "Corner", graph.iCorner );
     ini.SetInt( "Graphs", "SpanMs", graph.iSpanMs );
     ini.SetInt( "Graphs", "Width", graph.iCX );
@@ -516,10 +518,8 @@ void VisualSettings::Save( IniFile &ini ) const
     ini.SetInt( "Graphs", "GrowMs", graph.iGrowMs );
     ini.SetInt( "Graphs", "ShrinkMs", graph.iShrinkMs );
     ini.SetInt( "Graphs", "Scale", graph.bScale );
-    ini.SetInt( "Graphs", "ScaleAwayFromCorner", graph.bScaleSide );
     ini.SetInt( "Graphs", "MaxLine", graph.bMaxLine );
     ini.Set( "Graphs", "MaxColor", FormatRGB( graph.uMaxColor ) );
-    ini.SetInt( "Visual", "HideSpeedBoxes", bHideSpeedBoxes );
     fx.Save( ini );
     ini.SetInt( "EffectProfiles", "Count", (int)vFxProfiles.size() );
     for ( size_t i = 0; i < vFxProfiles.size(); i++ )
@@ -528,7 +528,7 @@ void VisualSettings::Save( IniFile &ini ) const
         IniFile one;
         vFxProfiles[i].fx.Save( one );
         for ( const auto &kv : one.Section( "Effects" ) )
-            if ( kv.first != "On" && kv.first != "Flat" ) ini.Set( "EffectProfiles", std::to_string( i ) + "." + kv.first, kv.second );
+            if ( kv.first != "On" && !EffectSettings::IsLookKey( kv.first ) ) ini.Set( "EffectProfiles", std::to_string( i ) + "." + kv.first, kv.second );
     }
 }
 
@@ -542,8 +542,10 @@ void EffectSettings::LoadDefaultValues()
     abKeyWhite[LookNormal] = false;
     abKeyWhite[LookFlat] = true;
     abKeyWhite[LookSemiFlat] = false;
+    abKeyWhite[LookKiva] = false;
     for ( int &i : aiKeyWhite ) i = 30;
     bNoBar = false;
+    bFlatTop = false;
     bHollow = false;
     bShortColor = false;
     bMergeOutlines = bMergeShort = bMergeShortLong = false;
@@ -578,9 +580,28 @@ void EffectSettings::LoadDefaultValues()
     iHitLineSmear = 16;
 }
 
+EffectSettings EffectSettings::Drawn() const
+{
+    if ( bOn ) return *this;
+    EffectSettings fx;
+    fx.LoadDefaultValues();
+    fx.SetLook( *this );
+    return fx;
+}
+
+void EffectSettings::SetLook( const EffectSettings &from )
+{
+    eLook = from.eLook;
+    bFlatBorders = from.bFlatBorders;
+    iSemiFlatOutline = from.iSemiFlatOutline;
+    bSemiFlatLip = from.bSemiFlatLip;
+    std::copy( from.abKeyWhite, from.abKeyWhite + LookCount, abKeyWhite );
+    std::copy( from.aiKeyWhite, from.aiKeyWhite + LookCount, aiKeyWhite );
+}
+
 bool EffectSettings::Any() const
 {
-    if ( !bOn ) return false;
+    if ( !bOn ) return Drawn().Any();
     if ( eLook != LookNormal || bNoBar || bHollow || bShortColor || iRestLight || iVignette || eDecay || bHitLine || abKeyWhite[0] || bMergeOutlines ) return true;
     for ( int p = 0; p < PartCount; p++ )
         if ( aDark[p] || aLightUp[p] || ( iBloom && aGlow[p] ) ) return true;
@@ -588,7 +609,12 @@ bool EffectSettings::Any() const
 }
 
 static const char *const PartNames[EffectSettings::PartCount] = { "Notes", "Short", "Keys", "Background", "Bar" };
-static const char *const KeyWhiteNames[EffectSettings::LookCount] = { "KeyWhite", "FlatKeyWhite", "SemiFlatKeyWhite" };
+static const char *const KeyWhiteNames[EffectSettings::LookCount] = { "KeyWhite", "FlatKeyWhite", "SemiFlatKeyWhite", "KivaKeyWhite" };
+
+bool EffectSettings::IsLookKey( const std::string &sKey )
+{
+    return sKey == "Look" || sKey == "Flat";
+}
 
 void EffectSettings::LoadConfigValues( const IniFile &ini )
 {
@@ -609,6 +635,7 @@ void EffectSettings::LoadConfigValues( const IniFile &ini )
         aiKeyWhite[i] = std::clamp( ini.GetInt( "Effects", sLook, aiKeyWhite[i] ), 0, 100 );
     }
     bNoBar = ini.GetBool( "Effects", "NoBar", bFlat );   // (the flat look once had no bar)
+    bFlatTop = bNoBar && ini.GetBool( "Effects", "FlatTopKeys", bFlatTop );
     bHollow = ini.GetBool( "Effects", "Hollow", bHollow );
     bShortColor = ini.GetBool( "Effects", "ShortColor", bShortColor );
     bMergeOutlines = ini.GetBool( "Effects", "MergeOutlines", bMergeOutlines );
@@ -677,6 +704,7 @@ void EffectSettings::Save( IniFile &ini ) const
         ini.SetInt( "Effects", sLook, aiKeyWhite[i] );
     }
     ini.SetInt( "Effects", "NoBar", bNoBar );
+    ini.SetInt( "Effects", "FlatTopKeys", bFlatTop );
     ini.SetInt( "Effects", "Hollow", bHollow );
     ini.SetInt( "Effects", "ShortColor", bShortColor );
     ini.SetInt( "Effects", "MergeOutlines", bMergeOutlines );
@@ -731,16 +759,14 @@ void AudioSettings::LoadDefaultValues()
     eRenderEngine = 0;
     sSoundfonts.clear();
     bRenderLossless = true;
-    bRenderDegrade = false;
-    bRenderDiscard = false;
+    bRenderDegrade = true;
     iBassVoices = 1000;
-    iKestrelVoices = 1 << 20;
+    iKestrelVoices = 100000;
     iBassThreads = 1;
     iGpuShare = 50;
     kb = RenderBackends::KestrelOpts();
     iAheadSecs = 30;
-    iBehindSecs = 300;
-    iBassNps = 0;
+    iBassNps = 20000;
     bBassByChannel = false;
     bLimiter = true;
     bRenderFx = true;
@@ -781,11 +807,9 @@ void AudioSettings::Load( const IniFile &ini )
     if ( ini.Has( "Audio", "Soundfonts" ) ) sSoundfonts = Util::Utf8ToWide( ini.GetString( "Audio", "Soundfonts" ) );
     bRenderLossless = ini.GetBool( "Audio", "RenderLossless", bRenderLossless );
     bRenderDegrade = ini.GetBool( "Audio", "RenderAutoDegrade", bRenderDegrade );
-    bRenderDiscard = ini.GetBool( "Audio", "RenderDiscardOnSwitch", bRenderDiscard );
     iBassVoices = std::clamp( ini.GetInt( "Audio", "BassVoices", iBassVoices ), 1, 100000 );
     iKestrelVoices = std::clamp( ini.GetInt( "Audio", "KestrelVoices", iKestrelVoices ), 1, 1 << 24 );
     iAheadSecs = std::clamp( ini.GetInt( "Audio", "RenderAheadSecs", iAheadSecs ), 5, 43200 );     // (RenderAhead::Settings::MinAheadSecs, MaxAheadSecs)
-    iBehindSecs = std::clamp( ini.GetInt( "Audio", "RenderBehindSecs", iBehindSecs ), 0, 43200 );
     iBassNps = std::clamp( ini.GetInt( "Audio", "BassNpsLimit", iBassNps ), 0, 1000000000 );
     bBassByChannel = ini.GetBool( "Audio", "BassByChannel", bBassByChannel );
     iBassThreads = std::clamp( ini.GetInt( "Audio", "BassThreads", iBassThreads ), 1, 64 );
@@ -823,11 +847,9 @@ void AudioSettings::Save( IniFile &ini ) const
     ini.Set( "Audio", "Soundfonts", Util::WideToUtf8( sSoundfonts ) );
     ini.SetInt( "Audio", "RenderLossless", bRenderLossless );
     ini.SetInt( "Audio", "RenderAutoDegrade", bRenderDegrade );
-    ini.SetInt( "Audio", "RenderDiscardOnSwitch", bRenderDiscard );
     ini.SetInt( "Audio", "BassVoices", iBassVoices );
     ini.SetInt( "Audio", "KestrelVoices", iKestrelVoices );
     ini.SetInt( "Audio", "RenderAheadSecs", iAheadSecs );
-    ini.SetInt( "Audio", "RenderBehindSecs", iBehindSecs );
     ini.SetInt( "Audio", "BassNpsLimit", iBassNps );
     ini.SetInt( "Audio", "BassByChannel", bBassByChannel );
     ini.SetInt( "Audio", "BassThreads", iBassThreads );
@@ -949,9 +971,10 @@ void ExportSettings::LoadDefaultValues()
     bShowStats = true;
     bAudio = false;
     sAudioFile.clear();
-    bAudioAlign = true;
     iAudioOffsetMs = 0;
     bRenderedAudio = false;
+    bEndAtAudio = false;
+    iEndMs = 500;
 }
 
 void ExportSettings::Load( const IniFile &ini )
@@ -982,9 +1005,10 @@ void ExportSettings::Load( const IniFile &ini )
     bShowStats = ini.GetBool( "Export", "ShowStats", bShowStats );
     sAudioFile = Util::Utf8ToWide( ini.GetString( "Export", "AudioFile" ) );
     bAudio = ini.GetBool( "Export", "Audio", !sAudioFile.empty() );     // before the switch: on when a file was set
-    bAudioAlign = ini.GetBool( "Export", "AudioAlign", bAudioAlign );
-    iAudioOffsetMs = std::clamp( ini.GetInt( "Export", "AudioOffsetMs", iAudioOffsetMs ), -3600000, 3600000 );
+    iAudioOffsetMs = std::clamp( ini.GetInt( "Export", "AudioOffsetMs", iAudioOffsetMs ), -60000, 60000 );
     bRenderedAudio = ini.GetBool( "Export", "RenderedAudio", bRenderedAudio );
+    bEndAtAudio = ini.GetBool( "Export", "EndAtAudio", bEndAtAudio );
+    iEndMs = std::clamp( ini.GetInt( "Export", "EndMs", iEndMs ), 0, 60000 );
 }
 
 void ExportSettings::Save( IniFile &ini ) const
@@ -1002,9 +1026,10 @@ void ExportSettings::Save( IniFile &ini ) const
     ini.SetInt( "Export", "ShowStats", bShowStats );
     ini.SetInt( "Export", "Audio", bAudio );
     ini.Set( "Export", "AudioFile", Util::WideToUtf8( sAudioFile ) );
-    ini.SetInt( "Export", "AudioAlign", bAudioAlign );
     ini.SetInt( "Export", "AudioOffsetMs", iAudioOffsetMs );
     ini.SetInt( "Export", "RenderedAudio", bRenderedAudio );
+    ini.SetInt( "Export", "EndAtAudio", bEndAtAudio );
+    ini.SetInt( "Export", "EndMs", iEndMs );
 }
 
 void PerformanceSettings::LoadDefaultValues()
@@ -1016,11 +1041,9 @@ void PerformanceSettings::LoadDefaultValues()
     bTuning31PitchBend = false;
     bKdmapiLongSends = false;
     bVelocitySkip = false;
-    iSkipLagMs = 100;
     bVelocityFloor = false;
     iMinVelocity = 20;
     bCollapseStacks = false;
-    bIgnoreWeird = false;
     bEndOpenNotes = true;
     bExactTempo = true;
     bDedup = false;
@@ -1031,7 +1054,8 @@ void PerformanceSettings::LoadDefaultValues()
     iBlockCacheMB = 64;
     bLodCache = true;
     bGpuInstancing = false;
-    bShowLoadStats = true;
+    bShowLoadStats = false;
+    bFullLoadStats = false;
 }
 
 void PerformanceSettings::Load( const IniFile &ini )
@@ -1044,11 +1068,9 @@ void PerformanceSettings::Load( const IniFile &ini )
     bTuning31PitchBend = ini.GetBool( "Performance", "Tuning31PitchBend", bTuning31PitchBend );
     bKdmapiLongSends = ini.GetBool( "Performance", "KdmapiLongSends", bKdmapiLongSends );
     bVelocitySkip = ini.GetBool( "Performance", "VelocitySkip", bVelocitySkip );
-    iSkipLagMs = std::clamp( ini.GetInt( "Performance", "SkipLagMs", iSkipLagMs ), 1, 10000 );
     bVelocityFloor = ini.GetBool( "Performance", "VelocityFloor", bVelocityFloor );
     iMinVelocity = std::clamp( ini.GetInt( "Performance", "MinVelocity", iMinVelocity ), 1, 128 );
     bCollapseStacks = ini.GetBool( "Performance", "CollapseStacks", bCollapseStacks );
-    bIgnoreWeird = ini.GetBool( "Performance", "IgnoreWeirdNotes", bIgnoreWeird );
     bEndOpenNotes = ini.GetBool( "Performance", "EndOpenNotes", bEndOpenNotes );
     bExactTempo = ini.GetBool( "Performance", "ExactTempo", bExactTempo );
     bDedup = ini.GetBool( "Performance", "Dedup", bDedup );
@@ -1060,6 +1082,7 @@ void PerformanceSettings::Load( const IniFile &ini )
     bLodCache = ini.GetBool( "Performance", "LodCache", bLodCache );
     bGpuInstancing = ini.GetBool( "Performance", "GpuInstancing", bGpuInstancing );
     bShowLoadStats = ini.GetBool( "Performance", "ShowLoadStats", bShowLoadStats );
+    bFullLoadStats = ini.GetBool( "Performance", "FullLoadStats", bFullLoadStats );
 }
 
 void PerformanceSettings::Save( IniFile &ini ) const
@@ -1071,11 +1094,9 @@ void PerformanceSettings::Save( IniFile &ini ) const
     ini.SetInt( "Performance", "Tuning31PitchBend", bTuning31PitchBend );
     ini.SetInt( "Performance", "KdmapiLongSends", bKdmapiLongSends );
     ini.SetInt( "Performance", "VelocitySkip", bVelocitySkip );
-    ini.SetInt( "Performance", "SkipLagMs", iSkipLagMs );
     ini.SetInt( "Performance", "VelocityFloor", bVelocityFloor );
     ini.SetInt( "Performance", "MinVelocity", iMinVelocity );
     ini.SetInt( "Performance", "CollapseStacks", bCollapseStacks );
-    ini.SetInt( "Performance", "IgnoreWeirdNotes", bIgnoreWeird );
     ini.SetInt( "Performance", "EndOpenNotes", bEndOpenNotes );
     ini.SetInt( "Performance", "ExactTempo", bExactTempo );
     ini.SetInt( "Performance", "Dedup", bDedup );
@@ -1087,6 +1108,7 @@ void PerformanceSettings::Save( IniFile &ini ) const
     ini.SetInt( "Performance", "LodCache", bLodCache );
     ini.SetInt( "Performance", "GpuInstancing", bGpuInstancing );
     ini.SetInt( "Performance", "ShowLoadStats", bShowLoadStats );
+    ini.SetInt( "Performance", "FullLoadStats", bFullLoadStats );
 }
 
 //-----------------------------------------------------------------------------
@@ -1102,7 +1124,6 @@ void PlaybackSettings::LoadDefaultValues()
     m_dSpeed = 1.0;
     m_dNSpeed = 0.06;
     m_dVolume = 1.0;
-    m_eMetronome = Off;
 }
 
 void PlaybackSettings::Load( const IniFile &ini )
@@ -1110,7 +1131,6 @@ void PlaybackSettings::Load( const IniFile &ini )
     m_bMute = ini.GetBool( "Playback", "Mute", m_bMute );
     m_dNSpeed = std::clamp( ini.GetDouble( "Playback", "NoteSpeed", m_dNSpeed ), NSpeedMin, NSpeedMax );
     m_dVolume = std::clamp( ini.GetDouble( "Playback", "Volume", m_dVolume ), 0.0, 1.0 );
-    m_eMetronome = static_cast< Metronome >( std::clamp( ini.GetInt( "Playback", "Metronome", m_eMetronome ), 0, 2 ) );
 }
 
 void PlaybackSettings::Save( IniFile &ini ) const
@@ -1118,7 +1138,6 @@ void PlaybackSettings::Save( IniFile &ini ) const
     ini.SetInt( "Playback", "Mute", m_bMute );
     ini.SetDouble( "Playback", "Volume", m_dVolume );
     ini.SetDouble( "Playback", "NoteSpeed", m_dNSpeed );
-    ini.SetInt( "Playback", "Metronome", m_eMetronome );
 }
 
 void PlaybackSettings::SetPosition( int iPosition ) { ::SetPosition( iPosition ); }
@@ -1130,7 +1149,6 @@ void PlaybackSettings::SetSpeed( double d, bool bUpdateGUI ) { d = std::clamp( d
 void PlaybackSettings::SetNSpeed( double d, bool bUpdateGUI ) { d = std::clamp( d, NSpeedMin, NSpeedMax ); if ( bUpdateGUI ) ::SetNSpeed( d ); m_dNSpeed = d; }
 void PlaybackSettings::SetVolume( double d, bool bUpdateGUI ) { if ( bUpdateGUI ) ::SetVolume( d ); m_dVolume = d; }
 void PlaybackSettings::SetMute( bool b, bool bUpdateGUI ) { if ( bUpdateGUI ) ::SetMute( b ); m_bMute = b; }
-void PlaybackSettings::SetMetronome( Metronome e, bool bUpdateGUI ) { if ( bUpdateGUI ) ::SetMetronome( e ); m_eMetronome = e; }
 
 //-----------------------------------------------------------------------------
 // View
@@ -1166,6 +1184,37 @@ void ViewSettings::Load( const IniFile &ini )
     m_iMainWidth = ini.GetInt( "View", "MainWidth", m_iMainWidth );
     m_iMainHeight = ini.GetInt( "View", "MainHeight", m_iMainHeight );
     m_eTheme = std::clamp( ini.GetInt( "View", "Theme", m_eTheme ), 0, 2 );
+    std::lock_guard< std::mutex > lock( PlacesLock() );
+    m_mPlaces.clear();
+    for ( const auto &kv : ini.Section( "WindowPlaces" ) )
+    {
+        // x,y or x,y,width,height
+        Place pt;
+        const int n = sscanf( kv.second.c_str(), "%ld,%ld,%ld,%ld", &pt.x, &pt.y, &pt.cx, &pt.cy );
+        if ( n < 4 || pt.cx <= 0 || pt.cy <= 0 ) pt.cx = pt.cy = 0;
+        if ( n >= 2 ) m_mPlaces[Util::Utf8ToWide( kv.first )] = pt;
+    }
+}
+
+std::mutex &ViewSettings::PlacesLock()
+{
+    static std::mutex m;
+    return m;
+}
+
+void ViewSettings::SetPlace( const std::wstring &sTitle, Place pt )
+{
+    std::lock_guard< std::mutex > lock( PlacesLock() );
+    m_mPlaces[sTitle] = pt;
+}
+
+bool ViewSettings::GetPlace( const std::wstring &sTitle, Place &pt ) const
+{
+    std::lock_guard< std::mutex > lock( PlacesLock() );
+    auto it = m_mPlaces.find( sTitle );
+    if ( it == m_mPlaces.end() ) return false;
+    pt = it->second;
+    return true;
 }
 
 void ViewSettings::Save( IniFile &ini ) const
@@ -1181,6 +1230,13 @@ void ViewSettings::Save( IniFile &ini ) const
     ini.SetInt( "View", "MainWidth", m_iMainWidth );
     ini.SetInt( "View", "MainHeight", m_iMainHeight );
     ini.SetInt( "View", "Theme", m_eTheme );
+    std::lock_guard< std::mutex > lock( PlacesLock() );
+    for ( const auto &kv : m_mPlaces )
+    {
+        std::string s = std::to_string( kv.second.x ) + "," + std::to_string( kv.second.y );
+        if ( kv.second.cx > 0 ) s += "," + std::to_string( kv.second.cx ) + "," + std::to_string( kv.second.cy );
+        ini.Set( "WindowPlaces", Util::WideToUtf8( kv.first ), s );
+    }
 }
 
 void ViewSettings::SetControls( bool b, bool bUpdateGUI ) { m_bControls = b; if ( bUpdateGUI ) ::ShowControls( b ); }

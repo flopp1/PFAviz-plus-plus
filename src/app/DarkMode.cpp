@@ -437,6 +437,54 @@ namespace
         return DefSubclassProc( h, msg, wParam, lParam );
     }
 
+    // A list view's column header, drawn dark (the dark theme leaves it grey with black text): its parent,
+    // the list view, is asked how to draw it
+    LRESULT CALLBACK ListViewProc( HWND h, UINT msg, WPARAM wParam, LPARAM lParam, UINT_PTR, DWORD_PTR )
+    {
+        if ( msg == WM_NOTIFY && g_bOn )
+        {
+            LPNMHDR pnm = ( LPNMHDR )lParam;
+            if ( pnm->code == NM_CUSTOMDRAW && pnm->hwndFrom == ListView_GetHeader( h ) )
+            {
+                LPNMCUSTOMDRAW cd = ( LPNMCUSTOMDRAW )lParam;
+                if ( cd->dwDrawStage == CDDS_PREPAINT )
+                {
+                    // (the part past the last column too)
+                    SetDCBrushColor( cd->hdc, cBack );
+                    FillRect( cd->hdc, &cd->rc, ( HBRUSH )GetStockObject( DC_BRUSH ) );
+                    return CDRF_NOTIFYITEMDRAW;
+                }
+                if ( cd->dwDrawStage == CDDS_ITEMPREPAINT )
+                {
+                    wchar_t s[256] = {};
+                    HDITEMW hdi = {};
+                    hdi.mask = HDI_TEXT;
+                    hdi.pszText = s;
+                    hdi.cchTextMax = 256;
+                    Header_GetItem( pnm->hwndFrom, (int)cd->dwItemSpec, &hdi );
+                    RECT rc = cd->rc;
+                    SetDCBrushColor( cd->hdc, ( cd->uItemState & CDIS_SELECTED ) ? cSelected : cBack );
+                    FillRect( cd->hdc, &rc, ( HBRUSH )GetStockObject( DC_BRUSH ) );
+                    // The divider at its right, and the line under the header
+                    RECT rcLine = { rc.right - 1, rc.top + 2, rc.right, rc.bottom - 2 };
+                    SetDCBrushColor( cd->hdc, cEdge );
+                    FillRect( cd->hdc, &rcLine, ( HBRUSH )GetStockObject( DC_BRUSH ) );
+                    rcLine = { rc.left, rc.bottom - 1, rc.right, rc.bottom };
+                    FillRect( cd->hdc, &rcLine, ( HBRUSH )GetStockObject( DC_BRUSH ) );
+                    HGDIOBJ hOld = SelectObject( cd->hdc, ( HFONT )SendMessageW( pnm->hwndFrom, WM_GETFONT, 0, 0 ) );
+                    SetBkMode( cd->hdc, TRANSPARENT );
+                    SetTextColor( cd->hdc, cText );
+                    rc.left += 6;
+                    rc.right -= 4;
+                    DrawTextW( cd->hdc, s, -1, &rc, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS | DT_NOPREFIX );
+                    SelectObject( cd->hdc, hOld );
+                    return CDRF_SKIPDEFAULT;
+                }
+            }
+        }
+        return DefSubclassProc( h, msg, wParam, lParam );
+    }
+
     // The app's dialogs (made from its own templates) darkened as they are made
     LRESULT CALLBACK CbtProc( int iCode, WPARAM wParam, LPARAM lParam )
     {
@@ -477,6 +525,8 @@ namespace
         {
             SetWindowTheme( h, sExplorer, nullptr );
             SetWindowTheme( ListView_GetHeader( h ), g_bOn ? L"DarkMode_ItemsView" : nullptr, nullptr );
+            SetWindowSubclass( h, ListViewProc, 0, 0 );     // (draws only while dark)
+            InvalidateRect( ListView_GetHeader( h ), nullptr, TRUE );
             ListView_SetBkColor( h, g_bOn ? cField : GetSysColor( COLOR_WINDOW ) );
             ListView_SetTextBkColor( h, g_bOn ? cField : GetSysColor( COLOR_WINDOW ) );
             ListView_SetTextColor( h, g_bOn ? cText : GetSysColor( COLOR_WINDOWTEXT ) );

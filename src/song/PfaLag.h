@@ -27,6 +27,7 @@
 #include <climits>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <vector>
 
 struct Song;
@@ -70,6 +71,7 @@ namespace PfaLag
         double dSendUs = 0.05;
         bool bMuted = false;                // note-ons are not sent (everything else is)
         bool bPaused = false;               // no Logic work
+        bool bNoRamp = false;               // the frame's length only (FrameCost::aRamp is just its ends)
     };
 
     // What the rest of the computer does to the frames: slow random processes (cache taken by other
@@ -220,4 +222,28 @@ namespace PfaLag
         }
         long long Length() const { return llLastEnd - llStart; }    // (the last spike's)
     };
+
+    // The lag spikes (as LagTracker counts them) of playing the whole song from its start, worked out ahead in
+    // virtual time: where the song is light enough that no frame comes near the lead-in's length, the frames are
+    // not worked out one by one (the song and the wall clock go on together there), only from 5 s of wall time
+    // before anything heavier; so it takes about as long as the heavy parts do. Each spike: the song time
+    // playing when it starts and when it ends, and how long it lasts (wall time)
+    struct Spike
+    {
+        long long llSongFrom = 0, llSongTo = 0, llLagUs = 0;
+        long long llWallFrom = 0, llWallTo = 0;     // the wall time from playing the song's start (us)
+    };
+    struct SpikeRun
+    {
+        double dSpeed = 1.0;            // the playback speed (song time a microsecond of wall time)
+        double dRefreshUs = 0.0;        // Limit FPS: a frame ends on the display's refresh (0: not)
+        uint64_t llSeed = 1;            // the noise's (0: none)
+        bool bExact = false;            // every frame worked out (for checking the skipping)
+        double dCapUs = 0.0;            // a frame's longest (0: none, as the original's; the live simulation's is 10 minutes)
+        long long llFrames = 0;         // (out) frames worked out
+        bool bFrozen = false;           // (out) a frame hit dCapUs, or it stopped after 10 years of wall time
+    };
+    // fProgress (optional): how far through the song, 0 to 1, now and then; false stops it (what was found so far)
+    std::vector< Spike > Spikes( const Song &song, const Cpu &cpu, const Params &p, SpikeRun &run,
+                                 const std::function< bool( double ) > &fProgress = nullptr );
 }

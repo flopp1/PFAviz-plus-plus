@@ -179,7 +179,7 @@ void LodCache::Worker()
         unsigned uGen = m_uGen;
         lock.unlock();
         // A quarter of the cores: the frames keep the rest
-        int iThreads = std::max( 1, Parallel::ThreadCount( 0 ) / 4 );
+        int iThreads = std::max( 1, Parallel::LogicalProcessors() / 4 );
         std::shared_ptr< Segment > p = Build( i, iThreads, &m_uGen, uGen );
         lock.lock();
         if ( !p || m_uGen != uGen ) continue;

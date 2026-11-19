@@ -18,10 +18,10 @@ log = "0.4"
 
 # (Windows: DirectX 12 through its shader compiler, as Kestrel's own builds; Linux: Vulkan)
 [target.'cfg(windows)'.dependencies]
-kestrel = { git = "https://github.com/UnPrioritized/kestrel-midi", rev = "4a5f396a7d29a1877bc88f20effd8c88682dcca5", default-features = false, features = ["dx12-dxc"] }
+kestrel = { git = "https://github.com/UnPrioritized/kestrel-midi", rev = "a91cd6759ea8899aa9d4d16f9cc62bc59fde5d0d", default-features = false, features = ["dx12-dxc"] }
 
 [target.'cfg(not(windows))'.dependencies]
-kestrel = { git = "https://github.com/UnPrioritized/kestrel-midi", rev = "4a5f396a7d29a1877bc88f20effd8c88682dcca5", default-features = false }
+kestrel = { git = "https://github.com/UnPrioritized/kestrel-midi", rev = "a91cd6759ea8899aa9d4d16f9cc62bc59fde5d0d", default-features = false }
 
 [dev-dependencies]
 log = "0.4"

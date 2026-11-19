@@ -40,10 +40,8 @@ RenderAhead::Settings RenderAhead::FromConfig()
     s.kb = a.kb;
     s.bLossless = a.bRenderLossless;
     s.bAutoDegrade = a.bRenderDegrade;
-    s.bDiscardOnSwitch = a.bRenderDiscard;
     s.iKestrelVoices = a.iKestrelVoices;
     s.iAheadSecs = a.iAheadSecs;
-    s.iBehindSecs = a.iBehindSecs;
     s.iBassNps = a.iBassNps;
     s.bBassByChannel = a.bBassByChannel;
     s.bLimiter = a.bLimiter;

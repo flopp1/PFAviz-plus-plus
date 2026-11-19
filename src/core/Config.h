@@ -4,6 +4,7 @@
 
 #include "audio/RenderBackends.h"
 #include <atomic>
+#include <map>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -19,15 +20,23 @@ class IniFile;
 
 namespace PlayMode { enum State { Intro = 0, Splash = 1, Play = 160 }; }
 
-// Eye candy (Preferences > Effects; visual/Effects.h). All off by default, which draws the original's look
+// Eye candy (Preferences > Look & effects; visual/Effects.h). All off by default, which draws the original's look.
+// The look (eLook) is kept here but is not an effect: it is drawn with the effects off too (with each look's
+// own settings: bFlatBorders, iSemiFlatOutline, bSemiFlatLip, abKeyWhite, aiKeyWhite), and the effect
+// profiles neither keep nor change it (they do keep those settings)
 struct EffectSettings
 {
     void LoadDefaultValues();
     void LoadConfigValues( const IniFile &ini );
     void Save( IniFile &ini ) const;
-    bool Any() const;           // any effect to draw (none while bOn is off)
+    bool Any() const;           // any effect or look to draw (with bOn off: the look's only)
+    // What is drawn: these settings, or with the effects off the default effects under this look
+    EffectSettings Drawn() const;
+    // The look and each look's own settings from 'from' (the rest as they are)
+    void SetLook( const EffectSettings &from );
+    static bool IsLookKey( const std::string &sKey );   // a key of the Effects section that Save writes for eLook
 
-    bool bOn;                   // the effects at all (off: none, whatever they are set to)
+    bool bOn;                   // the effects at all (off: none, whatever they are set to; the look still is)
 
     // Light: every note and key has a light of 0 to 1. A note rests at iRestLight; one playing at the
     // hit line, and the key it presses, rise from there to 1 and fall along the curve (eDecay). Each
@@ -38,8 +47,9 @@ struct EffectSettings
     enum Part { PartNotes, PartShort, PartKeys, PartBackground, PartBar, PartCount };
     // The look: normal (the original's); flat (plain keys, notes one flat colour without outlines); semi-flat
     // (the normal look's bar over keys without depth, pressed and unpressed told apart by their colours
-    // only; notes one colour, their outlines iSemiFlatOutline darker)
-    enum Look { LookNormal, LookFlat, LookSemiFlat, LookCount };
+    // only; notes one colour, their outlines iSemiFlatOutline darker); Kiva (the Kiva MIDI player's Big
+    // Keyboard: its keyboard, bar and notes, Scene's DrawKeysKiva and Effects::Look)
+    enum Look { LookNormal, LookFlat, LookSemiFlat, LookKiva, LookCount };
     int eLook;
     bool bFlatBorders;          // the flat keys have gaps between them (off: the white keys meet)
     int iSemiFlatOutline;       // percent: the semi-flat look's note outlines that much darker than their insides
@@ -49,6 +59,9 @@ struct EffectSettings
     bool abKeyWhite[LookCount];
     int aiKeyWhite[LookCount];
     bool bNoBar;                // the keyboard without its red bar
+    // ... and cut off flat at the top as Ultralight MIDI Player's is: the white and black keys from one line,
+    // without the line between the notes and the keys or the black keys' rise above the white ones (with bNoBar)
+    bool bFlatTop;
     bool bHollow;               // the notes' insides are not drawn: only their outlines, the scene showing through
     bool bShortColor;           // short notes are drawn in their main colour, not their outline's
     // Merged outlines: touching notes of one track and channel share one outline, around them all (not with
@@ -110,16 +123,22 @@ struct VisualSettings
     bool bAlwaysShowControls;
     // The stats box's lines (Visual > Statistics...); uStats has bit 1 << Stat for each one shown, and
     // aStatOrder lists them all top to bottom. New lines are added at the end, so saved bits stay put.
-    enum Stat { StatTime, StatFPS, StatScore, StatNotes, StatNPS, StatPolyphony, StatSent, StatSkipped, StatCollapsed, StatLag,
+    enum Stat { StatTime, StatFPS, StatRetired, StatNotes, StatNPS, StatPolyphony, StatSent, StatSkipped, StatCollapsed, StatLag,
                 StatSkipping, StatOtherMs, StatNotesMs, StatSceneMs, StatPresentMs,
                 StatDecoded, StatDecoderBusy, StatSenderBusy, StatRing, StatSendCost, StatTempo, StatVoices, StatSynthCpu, StatCC,
                 StatMaxNPS, StatMaxPoly, StatRendered, StatDegrade, StatPfaLagTime, StatCount };
     static constexpr unsigned NoteStats = 7u << StatNotes | 3u << StatMaxNPS;      // counted while a song loads (Song::noteStats)
     static constexpr unsigned PipelineStats = 31u << StatDecoded;
-    static constexpr unsigned VoiceStats = 3u << StatVoices;    // asked of the synth (KDMAPI only)
+    static constexpr unsigned VoiceStats = 3u << StatVoices;    // asked of the synth (KDMAPI; voices: the continuous renders too)
     static constexpr unsigned SynthStats = 31u << StatSent | PipelineStats | VoiceStats | 1u << StatRendered | 1u << StatDegrade;  // need playback
     static constexpr unsigned FrameStats = 15u << StatOtherMs;  // frame time parts, live only
-    static constexpr unsigned AllStats = ( 1u << StatCount ) - 1;
+    // StatRetired: the original's "Score: N/A" line, removed (its bit and place kept so saved settings stay put)
+    static constexpr unsigned AllStats = ( ( 1u << StatCount ) - 1 ) & ~( 1u << StatRetired );
+    // The lines for troubleshooting playback, listed and drawn only with bAdvancedStats: what is sent, the
+    // pipeline and the frame time (not the audio buffer, degrading, the skip threshold, voices or synth CPU)
+    static constexpr unsigned AdvancedStats = 15u << StatSent | PipelineStats | FrameStats;
+    // The lines drawn: uStats, less the advanced ones unless they are on
+    unsigned ShownStats() const { return uStats & AllStats & ( bAdvancedStats ? ~0u : ~AdvancedStats ); }
     // The Statistics dialog's sections, each line's section, its label in the stats box and its name
     enum StatSection { SectionGeneral, SectionNotes, SectionSynth, SectionPipeline, SectionFrame, SectionCount };
     static const wchar_t *const SectionNames[SectionCount];
@@ -128,6 +147,7 @@ struct VisualSettings
     static const wchar_t *const StatNames[StatCount];
     static const unsigned char DefaultStatOrder[StatCount];
     unsigned uStats;
+    bool bAdvancedStats;        // the advanced lines (AdvancedStats) can be chosen and are drawn
     unsigned char aStatOrder[StatCount];
     static const int MaxColors = 128;
     unsigned int colors[MaxColors], iBkgColor;     // the track colors: the first iColorCount are used
@@ -136,7 +156,7 @@ struct VisualSettings
     // The user's saved palettes (Visual tab: chosen, they replace the track colors), each its colours in order
     struct Palette { std::wstring sName; std::vector< unsigned > vColors; };
     std::vector< Palette > vPalettes;
-    // The user's saved effects profiles (Effects tab: chosen, they fill it), each every effect setting
+    // The user's saved effects profiles (Look & effects tab: chosen, they fill it but the look chosen), each every effect setting
     // but bOn. A config from before them: its effects as the first one (VisualSettings::Load)
     struct FxProfile { std::wstring sName; EffectSettings fx; };
     std::vector< FxProfile > vFxProfiles;
@@ -154,7 +174,6 @@ struct VisualSettings
     int iPfaSendNs;             // what one MIDI message costs it on average (midiOutShortMsg), nanoseconds (50: the KDMAPI patch)
     double dPfaCpuPct;          // its CPU's speed, percent of this computer's (100: this one, as benchmarked; PfaCpuMin to PfaCpuMax)
     static constexpr double PfaCpuMin = 1e-4, PfaCpuMax = 1e9;
-    bool bHideSpeedBoxes;       // the toolbar as the original's: sliders only, without the exact speed boxes
     bool bLoopColors;           // the track colors repeat (channel n gets colors[n % iColorCount]); off: random after them
     bool bUniqueColors;         // (not looping) the random colours each different, from each other and the track colours (Util::UniqueColors)
     bool bEdo31Keys;            // the 256-key view in the 31-EDO layout (31 keys an octave; Scene.cpp)
@@ -170,7 +189,6 @@ struct VisualSettings
     std::wstring sStatsFont;    // the box's font (the original's: Tahoma)
     bool bStatsBackground;      // the box's translucent black background
     bool bStatsShadow;          // the text's shadow
-    bool bStatsShadowMirror;    // the text's shadow mirrored with the corner (off: always down and right, as the original)
     // The graphs of notes per second, polyphony and tempo over time (on in View > Graphs; set in
     // Visual > Graphs...)
     bool bGraph;
@@ -183,9 +201,7 @@ struct VisualSettings
         unsigned aColor[SeriesCount];   // its colour (a COLORREF)
         int aiPlace[SeriesCount];       // its place top to bottom, 0 first, in any corner (in one box: its
                                         // text's place); each place held by one
-        bool bTogether;                 // all in one box (then only one filled), not a box each
         bool bZero;                     // the bottom at zero (off: at the lowest value shown)
-        bool bMiddle;                   // the time now in the middle (off: at the right edge)
         int iCorner;                    // StatsCorner bits (with the stats box there: next to it)
         int iSpanMs;                    // the time shown, ms (at least the counts' 1 ms bin)
         int iCX, iCY;                   // a box's size, pixels as at 1080p
@@ -193,12 +209,9 @@ struct VisualSettings
         int iGrowMs, iShrinkMs;         // how quickly a scale follows its values up and down: the time to
                                         // get most of the way there (0: at once), ms of song time
         bool bScale;                    // a vertical scale: values at the left, lines across at them
-        bool bScaleSide;                // the scale on the side away from the boxes' corner (left corners: at the
-                                        // right), so the graph stays put as its values' width changes
         bool bMaxLine;                  // a line across at the highest value shown, with it written
         unsigned uMaxColor;             // its colour (a COLORREF)
-        void Fix();                     // together: only the first filled one stays filled; places not
-                                        // each held once: back to the series' order
+        void Fix();                     // places not each held once: back to the series' order
     } graph;
     enum StatsCorner { StatsLeft = 1, StatsBottom = 2 };    // bottom: on the keyboard's red bar
     static const int StatsCXMin = 20, StatsCXMax = 3840, StatsCYMin = 8, StatsCYMax = 2160, StatsFontMin = 4, StatsFontMax = 400;
@@ -227,14 +240,12 @@ struct AudioSettings
     int iGpuShare;                  // Kestrel and Merlin: most of the graphics card's time, once well ahead (percent)
     RenderBackends::KestrelOpts kb; // Kestrel's and Merlin's advanced settings
     int iAheadSecs;                 // how far ahead of the playback position it is made
-    int iBehindSecs;                // how far behind it what was made is kept
     int iBassNps;                   // BASSMIDI: each instance's notes-a-second limit (0: none)
     bool bBassByChannel;            // BASSMIDI: pieces split by channel as well as key (16 x iBassThreads instances)
     bool bLimiter;                  // keeps the joined audio under full scale
     bool bRenderFx;                 // BASSMIDI's reverb and chorus
     bool bRenderLossless;           // stacks of identical notes sent once with their count (Kestrel, Merlin)
     bool bRenderDegrade;            // pieces made lighter when they would be late
-    bool bRenderDiscard;            // switching engines throws away the old one's audio
 };
 
 struct VideoSettings
@@ -274,10 +285,12 @@ struct ExportSettings
     bool bShowStats;            // the top-right stats area
     bool bAudio;                // sAudioFile is muxed in (off: a silent video; the file is kept for next time)
     std::wstring sAudioFile;    // anything ffmpeg reads: WAV up to 64-bit float, FLAC up to 24-bit, ...
-    bool bAudioAlign;           // its first sound is moved to where the song's first note sounds
-    int iAudioOffsetMs;         // and then by this much (positive: later)
+    int iAudioOffsetMs;         // the file starts at the song's 0 s mark, moved by this much (positive: later; -60 s to +60 s)
     bool bRenderedAudio;        // instead of the file: the audio made by the audio renderer (AudioSettings' rendered
                                 // audio settings), made from the start for the video, in time with it
+    bool bEndAtAudio;           // the video ends when its audio does (never before the song's last event); else
+    int iEndMs;                 // ... this long after the song's last event (0 to 60 s), the audio fading out over the
+                                // last of it (a second at most)
     static const wchar_t *const Presets[];
     static const int PresetCount;
     enum Codec { H264, Hevc, Av1, ProRes, Ffv1, CodecCount };
@@ -306,7 +319,6 @@ struct PerformanceSettings
     bool bTuning31PitchBend;
     bool bKdmapiLongSends;      // KDMAPI: each batch goes out as one long message of raw MIDI bytes (off: one call an event)
     bool bVelocitySkip;         // skip quiet note-ons while the output lags (off: every event is sent)
-    int iSkipLagMs;             // the lag above which velocity skipping starts
     bool bVelocityFloor;        // always skip note-ons quieter than iMinVelocity
     int iMinVelocity;
     bool bCollapseStacks;       // one voice per channel, key and tick (PlaybackDecoder::Params::bCollapse)
@@ -315,20 +327,18 @@ struct PerformanceSettings
     bool bCompactVisual;
     int iBlockCacheMB;
     bool bLodCache;             // the fast renderer's LOD cache (DESIGN.md 8.11)
-    bool bIgnoreWeird;          // keep each note's first pairing (Song::bFirstPairingOnly); off: weird notes end at their later off
     bool bEndOpenNotes;         // layered compressed files: notes without a note-off last until the song's end (Song::bEndOpenNotes); on by default
     bool bExactTempo;           // exact tempo timing (TempoMap::bExact); on by default, off: the original's rounding per tempo segment
     bool bGpuInstancing;        // notes drawn by Renderer::DrawNoteInstances (not pixel-exact), off by default
     bool bDedup;                // identical tracks, and repeats in layered compressed files, loaded once (song/Dedup.h); off by default
     bool bDedupAssume;          // with it: the rest of a layer taken as repeats of its first tile when its size fits (on by default)
-    bool bShowLoadStats;
+    bool bShowLoadStats;        // the loading window stays open with the statistics once a file has loaded (off by default)
+    bool bFullLoadStats;        // the loading window's full statistics (off: a summary, while loading and after)
 };
 
 class PlaybackSettings
 {
 public:
-    enum Metronome { Off, EveryBeat, EveryMeasure };
-
     void LoadDefaultValues();
     void Load( const IniFile &ini );
     void Save( IniFile &ini ) const;
@@ -350,7 +360,6 @@ public:
     void SetNSpeed( double dNSpeed, bool bUpdateGUI = false );
     void SetVolume( double dVolume, bool bUpdateGUI = false );
     void SetMute( bool bMute, bool bUpdateGUI = false );
-    void SetMetronome( Metronome eMetronome, bool bUpdateGUI = false );
 
     PlayMode::State GetPlayMode() const { return m_ePlayMode; }
     bool GetPlayable() const { return m_bPlayable; }
@@ -359,13 +368,11 @@ public:
     double GetSpeed() const { return m_dSpeed; }
     double GetNSpeed() const { return m_dNSpeed; }
     double GetVolume() const { return m_dVolume; }
-    Metronome GetMetronome() const { return m_eMetronome; }
 
 private:
     PlayMode::State m_ePlayMode;
     bool m_bPlayable, m_bPaused, m_bMute;
     double m_dSpeed, m_dNSpeed, m_dVolume;
-    Metronome m_eMetronome;
 };
 
 class ViewSettings
@@ -391,6 +398,12 @@ public:
     void SetFullScreen( bool b, bool bUpdateGUI = false );
     void SetZoomMove( bool b, bool bUpdateGUI = false );
     void SetTheme( int eTheme, bool bUpdateGUI = false );   // DarkMode::Theme
+    // The other windows' places (the app's dialogs, by their titles): where each was last, for next time
+    // A window's place: its top left, and its size when it can be resized (cx 0: none kept). Locked, as
+    // windows of other threads keep theirs too
+    struct Place { long x, y, cx = 0, cy = 0; };
+    bool GetPlace( const std::wstring &sTitle, Place &pt ) const;
+    void SetPlace( const std::wstring &sTitle, Place pt );
 
     int GetMainLeft() const { return m_iMainLeft; }
     int GetMainTop() const { return m_iMainTop; }
@@ -411,6 +424,8 @@ private:
     float m_fOffsetX, m_fOffsetY, m_fZoomX;
     int m_iMainLeft, m_iMainTop, m_iMainWidth, m_iMainHeight;
     int m_eTheme;
+    std::map< std::wstring, Place > m_mPlaces;
+    static std::mutex &PlacesLock();
 };
 
 class Config

@@ -1,8 +1,10 @@
 // The synths that make audio rendered ahead (RenderAhead.h) out of small MIDI files in memory, each
 // loaded at run time, so the program runs without them:
-//   - BASSMIDI (bass.dll + bassmidi.dll, un4seen): on the CPU. Each piece can be split by key over
-//     several BASSMIDI instances on threads of their own, each with the voice limit set (one instance
-//     keeps up with only a few thousand voices), and their audio summed.
+//   - BASSMIDI (bass.dll + bassmidi.dll, un4seen): on the CPU, continuously as it plays (a stream of
+//     instances kept from block to block, fed the events as the audio is made), or in pieces (offline,
+//     and blocks made again in full). The notes can be split by key (and channel) over several BASSMIDI
+//     instances on threads of their own, each with the voice limit set (one instance keeps up with only a
+//     few thousand voices), and their audio summed.
 //   - Kestrel and Merlin (kestrel_bridge.dll: Spiderweb's C connector over the Kestrel GPU synth): on
 //     the graphics card, one piece at a time. Merlin renders per key and never drops a note; Kestrel
 //     has a voice limit. Neither reads every soundfont opcode or controller BASSMIDI does.
@@ -15,6 +17,7 @@
 // so adding or removing another only sends the set to the graphics card again (CloseShared frees all).
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <memory>
@@ -26,7 +29,7 @@ namespace RenderBackends
     enum Engine { EngineBass = 0, EngineKestrel = 1, EngineMerlin = 2, EngineCount };
     const wchar_t *EngineName( int eEngine );
 
-    // Kestrel's and Merlin's advanced settings (Preferences > Rendered audio > Advanced), Kestrel's own
+    // Kestrel's and Merlin's advanced settings (Preferences > Audio > Pre-Render > Advanced), Kestrel's own
     // defaults. Merlin reads the soundfont ones (filters, LFOs, modulation envelopes, layers, the DC
     // blocker) but not the voice ones (it has no voice limit) or the interpolation
     struct KestrelOpts
@@ -65,6 +68,10 @@ namespace RenderBackends
         bool operator==( const BankKey & ) const = default;
     };
 
+    // (developer switch PFAVIZ_OLDSPLIT=1: split by channel as before, each channel on its own 1/16 of the
+    // instances; to compare)
+    bool OldSplit();
+
     // Per piece: what a synth is asked for besides the MIDI
     struct PieceOpts
     {
@@ -75,15 +82,16 @@ namespace RenderBackends
         bool bBassByChannel = false;
         uint16_t uChannels = 0xFFFF;
         bool bFx = true;                        // BASSMIDI's reverb and chorus
+        long long llBassNps = 0;                // BASSMIDI's continuous render: each instance's notes-a-second limit (0: none)
         int eEngine = EngineBass;               // Kestrel or Merlin, on a Kestrel bank
         bool bForceKestrel = false;             // Merlin chosen: this piece on Kestrel (auto-degrade: its voice cap)
         KestrelOpts kb;
         std::atomic< float > *pProgress = nullptr;  // (when given: how far the piece is, 0 to 1, as the engine knows it)
     };
 
-    // A continuous render (Kestrel: one synth kept from block to block, as a live host keeps it): events
-    // pushed at their frame from its start, before the audio holding them is asked for; then the next
-    // frames, in order. The voice cap can move while it plays
+    // A continuous render (Kestrel, BASSMIDI: the synth kept from block to block, as a live host keeps it):
+    // events pushed at their frame from its start, before the audio holding them is asked for; then the
+    // next frames, in order. The voice cap (Kestrel) or the thinning (BASSMIDI) can move while it plays
     class Stream
     {
     public:
@@ -95,6 +103,19 @@ namespace RenderBackends
         // The next uFrames frames (everything up to 16384 frames past them pushed already)
         virtual bool Render( float *pOut, unsigned uFrames, std::wstring &sError ) = 0;
         virtual void SetCap( unsigned uVoices ) = 0;
+        // The voices sounding after the last Render, in all (-1: not known)
+        virtual long long Voices() const { return -1; }
+        // Just-in-time degrading (BASSMIDI): from now on a share of the note-ons is left out (with their offs),
+        // each velocity its own share, the quieter the more, but never all of one: at level dLevel (0: none, 1:
+        // the most) velocity v keeps 1 - dLevel x (1 - (v / 127)^2 / 4) of its notes, at least ThinMinKeep
+        // (so at the most, a quarter of the loudest notes and a sixteenth of the quiet ones)
+        virtual void SetThin( double dLevel ) {}
+        static constexpr double ThinMinKeep = 1.0 / 16.0;
+        static double ThinKeep( double dLevel, int iVelocity )
+        {
+            const double r = std::clamp( iVelocity, 1, 127 ) / 127.0;
+            return std::max( ThinMinKeep, 1.0 - std::clamp( dLevel, 0.0, 1.0 ) * ( 1.0 - 0.25 * r * r ) );
+        }
     };
 
     class Bank
@@ -116,6 +137,11 @@ namespace RenderBackends
         {
             if ( iParts <= 1 ) return 0;
             if ( !o.bBassByChannel ) return (int)( uKey % (uint32_t)iParts );
+            // By channel as well: each channel's keys over all the instances in turn, as without, each channel
+            // starting one instance further on, so one key's channels go to different instances. (Each
+            // channel on its own 1/16 of them, as before, left a song's busiest channel on those: half of
+            // 9KX2's voices on one instance of 16, so the others' voices went unused.)
+            if ( !OldSplit() ) return (int)( ( uKey + uCh ) % (uint32_t)iParts );
             const uint32_t uGroups = (uint32_t)iParts / 16;
             return (int)( uCh * uGroups + uKey % uGroups );
         }

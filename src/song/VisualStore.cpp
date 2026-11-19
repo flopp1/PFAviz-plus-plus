@@ -1884,6 +1884,41 @@ namespace
         uint32_t uOrd;          // ordinal of the event in its track's group (OrderKey)
         uint8_t cKey;
         uint8_t cCh;            // channel, | 0x80 for a NoteOn with velocity > 0
+        uint32_t uEnd;          // with the end channel (Song::ends): end - start + 1 in unique ticks, 0: unpaired
+    };
+
+    // Song::ends read in order from a NoteOn on
+    class EndsReader
+    {
+    public:
+        void Seek( const NoteEnds &e, uint64_t o )
+        {
+            m_p = &e;
+            m_c = (size_t)( o >> NoteEnds::ChunkShift );
+            Load();
+            for ( uint64_t n = o & ( ( uint64_t( 1 ) << NoteEnds::ChunkShift ) - 1 ); n; n-- ) Next();
+        }
+        uint32_t Next()
+        {
+            if ( !m_uLeft ) { m_c++; Load(); }
+            m_uLeft--;
+            return (uint32_t)EventStream::ReadVar( m_q );
+        }
+    private:
+        void Load()
+        {
+            m_uLeft = 0;
+            if ( m_c >= m_p->vChunks.size() ) return;
+            m_p->Decode( m_c, m_vBuf );
+            m_q = m_vBuf.data();
+            uint64_t llFirst = (uint64_t)m_c << NoteEnds::ChunkShift;
+            m_uLeft = (uint32_t)std::min< uint64_t >( uint64_t( 1 ) << NoteEnds::ChunkShift, m_p->llNotes - llFirst );
+        }
+        const NoteEnds *m_p = nullptr;
+        size_t m_c = 0;
+        uint32_t m_uLeft = 0;
+        std::vector< uint8_t > m_vBuf;
+        const uint8_t *m_q = nullptr;
     };
 
     class DecodeLanes
@@ -1900,14 +1935,19 @@ namespace
             size_t U = es.UniqueTicks();
             m_vCuts.push_back( 0 );
             std::vector< uint64_t > vRaw = { 0 };
+            m_vCutSeek.push_back( 0 );
             uint64_t llNext = SegmentBytes;
-            for ( const EventStream::SeekPoint &sp : es.vSeek )
+            for ( size_t i = 0; i < es.vSeek.size(); i++ )
+            {
+                const EventStream::SeekPoint &sp = es.vSeek[i];
                 if ( sp.llRaw >= llNext && sp.llU > m_vCuts.back() && sp.llU < U )
                 {
                     m_vCuts.push_back( sp.llU );
+                    m_vCutSeek.push_back( i );
                     vRaw.push_back( sp.llRaw );
                     llNext = sp.llRaw + SegmentBytes;
                 }
+            }
             m_vCuts.push_back( U );
             vRaw.push_back( es.llRawBytes );
             size_t iSegments = m_vCuts.size() - 1;
@@ -1924,6 +1964,8 @@ namespace
         }
 
         int Lanes() const { return (int)m_vLanes.size(); }
+        // With the end channel: only NoteOns are routed, each with its end
+        void SetEnds( const NoteEnds *p ) { m_pEnds = p; }
         void Abort()
         {
             m_bAbort.store( true );
@@ -1936,6 +1978,7 @@ namespace
             Lane &ln = *m_vLanes[l];
             size_t L = m_vLanes.size(), iSegments = m_vCuts.size() - 1;
             uint64_t s = 0;     // the lane's batch sequence
+            EndsReader er;
             for ( size_t g = 0; g < iSegments && !m_bAbort.load(); g++ )
             {
                 bool bGiant = m_vGiant[g];
@@ -1964,6 +2007,9 @@ namespace
                     uint64_t llGroups = 0;
                     std::vector< NoteRec > *pPer = pB->vPer.data();
                     uint64_t llBase = pB->llBaseU;
+                    // (a segment starts at a seek point: the end channel's place there is known)
+                    const NoteEnds *pEnds = m_pEnds;
+                    if ( pEnds ) er.Seek( *pEnds, pEnds->vSeekOn[m_vCutSeek[g]] );
                     while ( u < u1 )
                     {
                         r.Need();
@@ -1988,6 +2034,12 @@ namespace
                                 k = *r.p++;
                                 unsigned key = ( k & 0x7F ) | bank;
                                 int w = pRoute[key];
+                                uint32_t uEnd = 0;
+                                if ( pEnds )
+                                {
+                                    if ( op != 0 ) w = -1;
+                                    else if ( bEmit ) uEnd = er.Next();
+                                }
                                 if ( w >= 0 && bEmit )
                                 {
                                     if ( n >= BatchRecs || u - llBase >= UINT32_MAX )
@@ -2001,7 +2053,7 @@ namespace
                                         pB->llCompleteU = llComplete;
                                         pPer = pB->vPer.data();
                                     }
-                                    pPer[w].push_back( { (uint32_t)( u - llBase ), uTrack, uOrd, (uint8_t)key, cCh } );
+                                    pPer[w].push_back( { (uint32_t)( u - llBase ), uTrack, uOrd, (uint8_t)key, cCh, uEnd } );
                                     n++;
                                 }
                                 uOrd++;
@@ -2118,6 +2170,8 @@ namespace
         int m_iWorkers;
         int16_t m_aRoute[256];                       // per key: its worker (-1: none)
         std::vector< uint64_t > m_vCuts;            // segment g is ticks [m_vCuts[g], m_vCuts[g + 1])
+        std::vector< size_t > m_vCutSeek;           // and starts at seek point m_vCutSeek[g]
+        const NoteEnds *m_pEnds = nullptr;
         std::vector< bool > m_vGiant;
         std::vector< std::unique_ptr< Lane > > m_vLanes;
         std::atomic< bool > m_bAbort{ false };
@@ -2708,6 +2762,99 @@ bool PairAll( const Song &song, VisualStore &vs, int iThreads, std::atomic< uint
     for ( const KeyStore &ks : vs.aKeys ) vs.llStored += ks.Size();
     return true;
 }
+
+// The pairing pass with every NoteOn's end known (Song::ends, DESIGN.md 5.5): the lanes route only the
+// NoteOns, each with its end, and every note is final at once, so each key's notes go to its compactor in
+// order, with no pairing state and nothing waiting. The same Compact store as the compacting pass, which
+// pairs from the offs. (The NoteStats come from the loader's build then: Loader.cpp.)
+bool PairEnds( const Song &song, VisualStore &vs, int iThreads, std::atomic< uint64_t > *pDone, const std::atomic< bool > *pCancel, double *pSteps )
+{
+    long long llT = Timer::NowMicroSecs();
+    auto Mark = [&]( int i ) { long long t = Timer::NowMicroSecs(); pSteps[i] += ( t - llT ) / 1e6; llT = t; vs.adStepPrivate[i] = PrivateBytes(); };
+    vs = VisualStore();
+    const EventStream &es = song.stream;
+    size_t U = es.UniqueTicks();
+    int iAll = Parallel::ThreadCount( iThreads );
+
+    // A lane per three threads (each parses about 250 M events/s; the workers have little to do), the rest
+    // workers; keys over the workers, largest first onto the least loaded
+    std::vector< int > vOrder;
+    for ( int k = 0; k < 256; k++ )
+        if ( song.aKeyNoteCounts[k] ) vOrder.push_back( k );
+    std::sort( vOrder.begin(), vOrder.end(), [&]( int a, int b ) { return song.aKeyNoteCounts[a] > song.aKeyNoteCounts[b]; } );
+    int iLanes = std::max( 1, std::min( 4, iAll / 3 ) );
+    int iWorkers = std::max( 1, std::min< int >( std::max( 1, iAll - iLanes ), (int)vOrder.size() ) );
+    std::vector< std::vector< int > > vSets( iWorkers );
+    std::vector< uint64_t > vLoad( iWorkers, 0 );
+    for ( int k : vOrder )
+    {
+        int t = (int)( std::min_element( vLoad.begin(), vLoad.end() ) - vLoad.begin() );
+        vSets[t].push_back( k );
+        vLoad[t] += song.aKeyNoteCounts[k] + 1;
+    }
+
+    std::vector< KeyStore > vCompact( 256 );
+    std::vector< std::unique_ptr< StreamCompactor > > vSc( 256 );
+    for ( int k = 0; k < 256; k++ ) vSc[k].reset( new StreamCompactor( vCompact[k], es.times, (size_t)song.aKeyNoteCounts[k], nullptr ) );
+    const uint64_t llOpenEnd = song.bEndOpenNotes && U ? U - 1 : UINT64_MAX;
+
+    std::vector< uint64_t > vNotes( iWorkers, 0 ), vUnpaired( iWorkers, 0 );
+    std::vector< uint64_t > vFirst( 256, UINT64_MAX );
+    std::atomic< bool > bOk{ true };
+    if ( !vOrder.empty() )
+    {
+        int aOwner[256];
+        for ( int k = 0; k < 256; k++ ) aOwner[k] = -1;
+        for ( int t = 0; t < iWorkers; t++ ) for ( int k : vSets[t] ) aOwner[k] = t;
+        DecodeLanes dl( es, aOwner, iWorkers, iLanes );
+        dl.SetEnds( &song.ends );
+        int L = dl.Lanes();
+        Parallel::For( iWorkers + L, (size_t)( iWorkers + L ), [&]( size_t i, int ) {
+            if ( (int)i < L ) { dl.Produce( (int)i, pCancel, nullptr ); return; }
+            int t = (int)i - L;
+            uint64_t aPos[256] = {};
+            uint64_t llUnp = 0;
+            bool bDone = dl.Consume( t, [&]( const std::vector< NoteRec > &v, uint64_t llBase, uint64_t llComplete ) {
+                for ( const NoteRec &r : v )
+                {
+                    unsigned key = r.cKey;
+                    uint64_t pos = aPos[key]++;
+                    uint64_t u = llBase + r.uDU;
+                    uint64_t e;
+                    if ( r.uEnd ) e = u + r.uEnd - 1;
+                    else if ( llOpenEnd != UINT64_MAX ) e = std::max( llOpenEnd, u );
+                    else { llUnp++; continue; }
+                    if ( vFirst[key] == UINT64_MAX ) vFirst[key] = u;
+                    vSc[key]->Feed( u, e, r.uTrack * 16 + ( r.cCh & 0x0F ), r.uOrd, pos );
+                }
+                if ( t == 0 && pDone ) pDone->store( llComplete, std::memory_order_relaxed );
+                return !( pCancel && pCancel->load( std::memory_order_relaxed ) );
+            } );
+            uint64_t n = 0;
+            for ( uint64_t c : aPos ) n += c;
+            vNotes[t] = n;
+            vUnpaired[t] = llUnp;
+            if ( !bDone ) bOk = false;
+        } );
+    }
+    if ( pDone && bOk ) pDone->store( U, std::memory_order_relaxed );
+    Mark( VisualStore::StepPair );
+    if ( !bOk ) return false;
+
+    Parallel::For( iThreads, 256, [&]( size_t k, int ) { vSc[k]->Finish(); vs.aKeys[k] = std::move( vCompact[k] ); vSc[k].reset(); } );
+    Mark( VisualStore::StepFinish );
+    for ( int t = 0; t < iWorkers; t++ ) { vs.llUnpaired += vUnpaired[t]; vs.llNotes += vNotes[t] - vUnpaired[t]; }
+    for ( int k = 0; k < 256; k++ )
+        if ( vFirst[k] != UINT64_MAX )
+        {
+            long long t = (long long)es.times.Get( (size_t)vFirst[k] );
+            if ( vs.llFirstNote < 0 || t < vs.llFirstNote ) vs.llFirstNote = t;
+        }
+    vs.bCompact = true;
+    vs.llStored = 0;
+    for ( const KeyStore &ks : vs.aKeys ) vs.llStored += ks.Size();
+    return true;
+}
 }
 
 bool BuildVisualStore( Song &song, int iThreads, std::atomic< uint64_t > *pDone, const std::atomic< bool > *pCancel, bool bCompact, bool bLz,
@@ -2718,7 +2865,11 @@ bool BuildVisualStore( Song &song, int iThreads, std::atomic< uint64_t > *pDone,
     // with them, for the jump-walk tables
     double adSteps[VisualStore::StepCount] = {};
     uint64_t adPrivate[VisualStore::StepCount] = {};
-    if ( !PairAll( song, song.visual, iThreads, pDone, pCancel, !bCompact, bCompact, adSteps, bCompact, nullptr, pStats ) ) return false;
+    // With every NoteOn's end from the count pass (Song::ends), no pairing here at all
+    bool bPaired = bCompact && song.ends.bValid ? PairEnds( song, song.visual, iThreads, pDone, pCancel, adSteps )
+                                                : PairAll( song, song.visual, iThreads, pDone, pCancel, !bCompact, bCompact, adSteps, bCompact, nullptr, pStats );
+    song.ends = NoteEnds();
+    if ( !bPaired ) return false;
     std::copy( song.visual.adStepPrivate, song.visual.adStepPrivate + VisualStore::StepCount, adPrivate );
     if ( song.visual.bWeird && bCompact )
     {

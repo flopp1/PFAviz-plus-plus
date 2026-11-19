@@ -38,7 +38,7 @@ void MainScreen::InitSong()
     m_pMeter = new MeterTracker( m_pSong->vMeta, m_pSong->info );
     m_vTrackSettings.resize( m_pSong->info.iNumTracks );
     if ( m_pSong && m_bWithPlayback ) m_pPlayback = std::make_unique< PlaybackEngine >( m_pSong, m_Clock, Config::GetConfig().GetPerformanceSettings().iPlaybackThreads );
-    // (for the Rendered audio page: what of this song Merlin does not do properly)
+    // (for the Audio page's Merlin tab: what of this song Merlin does not do properly)
     if ( m_pSong && m_bWithPlayback ) RenderBackends::SetNote( RenderBackends::NoteSong, RenderAhead::MerlinIssues( *m_pSong ) );
 
     std::vector< TextPath::TextPathVertex > vPath;
@@ -100,13 +100,12 @@ GameState::GameError MainScreen::Init()
     if ( m_pPlayback )
     {
         const PerformanceSettings &cPerf = config.GetPerformanceSettings();
-        m_pPlayback->SetSkipping( cPerf.bVelocitySkip, cPerf.iSkipLagMs );
+        m_pPlayback->SetSkipping( cPerf.bVelocitySkip );
         m_pPlayback->SetSendLimits( cPerf.bCollapseStacks, cPerf.bSendLimit ? cPerf.iMaxSendsPerSec : 0 );
         m_pPlayback->SetMinVelocity( cPerf.bVelocityFloor ? cPerf.iMinVelocity : 0 );
         m_pPlayback->SetTuning( cPerf.bTuning31, cPerf.bTuning31PitchBend );
         MidiOutputs::SetKdmapiLongSends( cPerf.bKdmapiLongSends );
         m_pPlayback->SetMute( m_bMute );
-        m_pPlayback->SetMetronome( cPlayback.GetMetronome() );
         m_Clock.SetSpeed( cPlayback.GetSpeed() );
         m_Clock.SetPaused( cPlayback.GetPaused() );
         m_pPlayback->SetRendered( RenderAhead::FromConfig() );
@@ -121,46 +120,12 @@ GameState::GameError MainScreen::Init()
     return Success;
 }
 
-void MainScreen::HideChannel( int iTrack, int iChannel, bool bHidden )
-{
-    bool &b = m_vTrackSettings[iTrack].aChannels[iChannel].bHidden;
-    if ( b != bHidden ) m_bHiddenChanged = true;
-    m_uTracksGen++;
-    b = bHidden;
-}
-
-void MainScreen::MuteChannel( int iTrack, int iChannel, bool bMuted )
-{
-    m_vTrackSettings[iTrack].aChannels[iChannel].bMuted = bMuted;
-    if ( m_pPlayback ) m_pPlayback->SetChannelMuted( iTrack, iChannel, bMuted );
-}
-
 void MainScreen::ColorChannel( int iTrack, int iChannel, unsigned int iColor, bool bRandom )
 {
     if ( bRandom && m_pUnique ) m_vTrackSettings[iTrack].aChannels[iChannel].SetColor( m_pUnique->Next(), 0.6, 0.2 );
     else if ( bRandom ) m_vTrackSettings[iTrack].aChannels[iChannel].SetColor();
     else m_vTrackSettings[iTrack].aChannels[iChannel].SetColor( iColor );
     m_uTracksGen++;
-}
-
-ChannelSettings *MainScreen::GetChannelSettings( int iTrack, int *piTrack, int *piChannel )
-{
-    m_uTracksGen++;     // (the caller may change it)
-    const std::vector< RefTrackInfo > &vTracks = m_pSong->vTracks;
-    int iPos = 0;
-    for ( size_t i = 0; i < vTracks.size(); i++ )
-        for ( int j = 0; j < 16; j++ )
-            if ( vTracks[i].aNoteCount[j] > 0 )
-            {
-                if ( iPos == iTrack )
-                {
-                    if ( piTrack ) *piTrack = (int)i;
-                    if ( piChannel ) *piChannel = j;
-                    return &m_vTrackSettings[i].aChannels[j];
-                }
-                iPos++;
-            }
-    return nullptr;
 }
 
 void MainScreen::SetChannelColors( const unsigned *aColor, int iColors )
@@ -313,22 +278,6 @@ GameState::GameError MainScreen::MsgProc( HWND hWnd, UINT msg, WPARAM wParam, LP
                 case 'M':
                     cPlayback.ToggleMute( true );
                     return Success;
-                case '1': case '2': case '3': case '4': case '5': case '6': case '7': case '8': case '9': case '0':
-                {
-                    if ( bAlt ) return Success;
-                    int iTrack = 0, iChannel = 0;
-                    ChannelSettings *pSettings = GetChannelSettings( wParam == '0' ? 9 : (int)wParam - '1', &iTrack, &iChannel );
-                    if ( !pSettings ) return Success;
-
-                    if ( bCtrl ) HideChannel( iTrack, iChannel, !pSettings->bHidden );
-                    else MuteChannel( iTrack, iChannel, !pSettings->bMuted );
-
-                    swprintf( m_sBuf, 128, L"%ls Track %d",
-                        bCtrl && pSettings->bHidden ? L"Hiding" : bCtrl ? L"Showing" : pSettings->bMuted ? L"Muting" : L"Unmuting",
-                        wParam == '0' ? 9 + 1 : (int)wParam - '1' + 1 );
-                    m_tpMessage.Reset( m_pRenderer->GetBufferWidth() / 2.0f, m_pRenderer->GetBufferHeight() * ( 1.0f - KBPercent ) / 2.0f - 35.0f / 2.0f, pSettings->iPrimaryRGB, m_sBuf );
-                    return Success;
-                }
             }
             break;
         }
@@ -435,7 +384,7 @@ GameState::GameError MainScreen::Logic()
     m_fOffsetY = cView.GetOffsetY();
     m_fZoomX = cView.GetZoomX();
     if ( !m_bZoomMove ) m_bTrackPos = m_bTrackZoom = false;
-    m_uStats = cVisual.uStats & ( m_pPlayback ? VisualSettings::AllStats : ~VisualSettings::SynthStats );
+    m_uStats = cVisual.ShownStats() & ( m_pPlayback ? VisualSettings::AllStats : ~VisualSettings::SynthStats );
     m_pRenderer->SetLimitFPS( cVideo.bLimitFPS );
     m_Colors.SetBackground( cVisual.iBkgColor );
     // The track colours changed (Preferences > Visual): the song coloured again from them (as it was when
@@ -486,8 +435,7 @@ GameState::GameError MainScreen::Logic()
         m_pPlayback->SetMute( m_bMute );
         m_pPlayback->SetVolumeCorrect( m_dVolumeCorrect );
         m_pPlayback->SetVolume( m_dVolume, min( dVolumeCorrect, dMaxCorrect ) );
-        m_pPlayback->SetMetronome( cPlayback.GetMetronome() );
-        m_pPlayback->SetSkipping( cPerf.bVelocitySkip, cPerf.iSkipLagMs );
+        m_pPlayback->SetSkipping( cPerf.bVelocitySkip );
         m_pPlayback->SetSendLimits( cPerf.bCollapseStacks, cPerf.bSendLimit ? cPerf.iMaxSendsPerSec : 0 );
         m_pPlayback->SetMinVelocity( cPerf.bVelocityFloor ? cPerf.iMinVelocity : 0 );
         m_pPlayback->SetMaxThreads( cPerf.iPlaybackThreads );
@@ -611,28 +559,41 @@ GameState::GameError MainScreen::Logic()
         {
             const RenderAhead::Status st = m_pPlayback->RenderStatus();
             if ( !st.sState.empty() ) swprintf( m_sRendered, 48, L"%ls", st.sState.c_str() );
-            else if ( st.dAheadSecs < 600 ) swprintf( m_sRendered, 48, L"%.1f of %.0f s (%ls)", st.dReadySecs, st.dAheadSecs, st.sEngine.c_str() );
             else
             {
-                // (a long buffer as minutes and seconds, or hours)
+                // (as minutes and seconds whatever its length, as the original shows the song's time: the
+                // minutes go on past 59)
                 auto Hms = []( double d, wchar_t *s ) {
                     const long long t = (long long)d;
-                    if ( t >= 3600 ) swprintf( s, 16, L"%lld:%02lld:%02lld", t / 3600, t / 60 % 60, t % 60 );
-                    else swprintf( s, 16, L"%lld:%02lld", t / 60, t % 60 );
+                    swprintf( s, 16, L"%lld:%02lld", t / 60, t % 60 );
                 };
                 wchar_t a[16], b[16];
                 Hms( st.dReadySecs, a );
                 Hms( st.dAheadSecs, b );
-                swprintf( m_sRendered, 48, L"%ls of %ls (%ls)", a, b, st.sEngine.c_str() );
+                swprintf( m_sRendered, 48, L"%ls/%ls", a, b );
             }
             const bool bProblem = !st.sState.empty() && st.sState != L"loading the soundfonts";
             if ( bProblem && st.sState != m_sRenderedShown )
             {
-                swprintf( m_sBuf, 128, L"Rendered audio: %ls", st.sState.c_str() );
+                swprintf( m_sBuf, 128, L"Pre-Render: %ls", st.sState.c_str() );
                 m_tpMessage.Reset( m_pRenderer->GetBufferWidth() / 2.0f, m_pRenderer->GetBufferHeight() * ( 1.0f - KBPercent ) / 2.0f - 35.0f / 2.0f, 0xFFFFFFFF, m_sBuf );
             }
             m_sRenderedShown = bProblem ? st.sState : std::wstring();
             swprintf( m_sDegrade, 48, L"%ls", st.sDegrade.c_str() );
+            // The voices sounding in what plays (the continuous renders), of the limit it was made with: what
+            // thinning, the NPS limit and the song leave, and a limit cut by auto-degrade marked so
+            m_sVoices[0] = 0;
+            if ( st.llVoices >= 0 )
+            {
+                auto Group = []( long long v ) {
+                    std::wstring s = std::to_wstring( v );
+                    for ( int i = (int)s.size() - 3; i > 0; i -= 3 ) s.insert( (size_t)i, L"," );
+                    return s;
+                };
+                std::wstring s = Group( st.llVoices );
+                if ( st.llVoiceCap > 0 ) s += L" / " + Group( st.llVoiceCap ) + ( st.llVoiceCap < st.llVoiceMax ? L" (cut)" : L"" );
+                swprintf( m_sVoices, 48, L"%ls", s.c_str() );
+            }
             // What loading the soundfonts reported (Merlin refusing them, unsupported SFZ opcodes, ...): its
             // first line, once
             if ( st.sWarning != m_sWarningShown )
@@ -641,12 +602,12 @@ GameState::GameError MainScreen::Logic()
                 if ( !st.sWarning.empty() )
                 {
                     std::wstring sFirst = st.sWarning.substr( 0, st.sWarning.find( L'\n' ) );
-                    swprintf( m_sBuf, 128, L"Rendered audio: %ls", sFirst.c_str() );
+                    swprintf( m_sBuf, 128, L"Pre-Render: %ls", sFirst.c_str() );
                     m_tpMessage.Reset( m_pRenderer->GetBufferWidth() / 2.0f, m_pRenderer->GetBufferHeight() * ( 1.0f - KBPercent ) / 2.0f - 35.0f / 2.0f, 0xFFFFFFFF, m_sBuf );
                 }
             }
         }
-        else { wcscpy( m_sRendered, L"off (MIDI output)" ); wcscpy( m_sDegrade, L"off" ); }
+        else { wcscpy( m_sRendered, L"off (MIDI output)" ); wcscpy( m_sDegrade, L"off" ); m_sVoices[0] = 0; }
         if ( ( m_uStats & VisualSettings::VoiceStats ) && m_pPlayback->OutputName() == MidiOutputs::KdmapiName() )
         {
             unsigned uVoices = 0;
@@ -1000,11 +961,14 @@ ViewInputs MainScreen::GetViewInputs( int iWidth, int iHeight, long long llSongT
     in.uClean = cVisual.uClean;
     in.bLines = !cVisual.bHideLines;
     in.bEdo31 = cVisual.bEdo31Keys;
-    const bool bFx = cVisual.fx.bOn;
-    in.bFlat = bFx && cVisual.fx.eLook == EffectSettings::LookFlat;
-    in.bSemiFlat = bFx && cVisual.fx.eLook == EffectSettings::LookSemiFlat;
-    in.bNoBar = bFx && cVisual.fx.bNoBar;
-    in.iHitLine = bFx && cVisual.fx.bHitLine ? cVisual.fx.iHitLineSize : -1;
+    // (the look whether the effects are on or not; the effects only when they are)
+    const EffectSettings fx = cVisual.fx.Drawn();
+    in.bFlat = fx.eLook == EffectSettings::LookFlat;
+    in.bSemiFlat = fx.eLook == EffectSettings::LookSemiFlat;
+    in.bKiva = fx.eLook == EffectSettings::LookKiva;
+    in.bNoBar = fx.bNoBar;
+    in.bFlatTop = in.bNoBar && fx.bFlatTop;
+    in.iHitLine = fx.bHitLine ? fx.iHitLineSize : -1;
     return in;
 }
 
@@ -1012,7 +976,8 @@ ViewInputs MainScreen::GetViewInputs( int iWidth, int iHeight, long long llSongT
 void MainScreen::DrawFrame( Renderer *pRenderer, const FrameGlobals &g, FastEngine &engine, const MeterTracker &meter, long long iTick,
                             Effects::Look &look, Effects::KeyLights &lights, const std::function< void( float ) > &fnStats, long long *pNotesUs )
 {
-    const EffectSettings &fx = Config::GetConfig().GetVisualSettings().fx;
+    // (with the effects off, the look still: the default effects under it)
+    const EffectSettings fx = Config::GetConfig().GetVisualSettings().fx.Drawn();
     if ( !fx.Any() )
     {
         Scene::DrawBackground( pRenderer, g, m_Colors );
@@ -1225,8 +1190,8 @@ void MainScreen::RenderGraph( Renderer *pRenderer, int iWidth, int iHeight, int 
     if ( !iShown ) return;
     const double u = iHeight / 1080.0;
     auto Px = [&]( double v ) { return std::max( 1, (int)std::lround( v * u ) ); };
-    const int iBoxes = gs.bTogether ? 1 : iShown;
-    const bool bScale = gs.bScale && !gs.bTogether, bMaxLine = gs.bMaxLine && !gs.bTogether;
+    const int iBoxes = iShown;      // (a box each)
+    const bool bScale = gs.bScale, bMaxLine = gs.bMaxLine;
 
     auto Dark = [&]( D3DCOLOR c ) { return fDark < 1.0f ? ( c & 0xFF000000 ) | ( Effects::Scale( c, fDark ) & 0x00FFFFFF ) : c; };
     D3DCOLOR aColor[GS::SeriesCount];     // (no alpha)
@@ -1236,7 +1201,7 @@ void MainScreen::RenderGraph( Renderer *pRenderer, int iWidth, int iHeight, int 
     const NoteStats &ns = m_pSong->noteStats;
 
     // The plot's size (the box: the text above it, and the scale, when shown, at its left, or at its right
-    // in a left corner with bScaleSide: the side away from the corner, so the plot never moves)
+    // in a left corner: the side away from the corner, so the plot never moves)
     const int iPlotCY = std::min( Px( gs.iCY ), iHeight - iLabelCY - iPad );
     const int n = std::min( Px( gs.iCX ), iWidth - iPad * 2 );
     if ( n < 2 || iPlotCY < 2 ) return;
@@ -1244,7 +1209,7 @@ void MainScreen::RenderGraph( Renderer *pRenderer, int iWidth, int iHeight, int 
 
     // The values (counts: none when the song was loaded without them)
     const long long llNow = llTime + llPastEnd, llSpan = gs.iSpanMs * 1000LL;
-    const long long llT0 = llNow - ( gs.bMiddle ? llSpan / 2 : llSpan );
+    const long long llT0 = llNow - llSpan;     // (the time now at the right edge)
     static thread_local std::vector< double > av[GS::SeriesCount];
     double adMax[GS::SeriesCount], adMin[GS::SeriesCount];
     bool abHave[GS::SeriesCount];
@@ -1300,6 +1265,15 @@ void MainScreen::RenderGraph( Renderer *pRenderer, int iWidth, int iHeight, int 
         scale.adTop[s] += ( dTop - scale.adTop[s] ) * ( dTop > scale.adTop[s] ? kFast : kSlow );
         scale.adBottom[s] += ( dBottom - scale.adBottom[s] ) * ( dBottom < scale.adBottom[s] ? kFast : kSlow );
         if ( scale.adTop[s] < scale.adBottom[s] + 1.0 ) scale.adTop[s] = scale.adBottom[s] + 1.0;
+        // The line at the highest value shown, held: it rises at once, and comes down only once the highest
+        // value has stayed under it for a second of song time, so a peak that comes and goes as the window
+        // slides (a song's repeating bursts) does not make it flick between values
+        const long long MaxHoldUs = 1000000;
+        if ( bSnap || llNow < scale.allMaxAt[s] || adMax[s] >= scale.adMaxLine[s] || llNow - scale.allMaxAt[s] > MaxHoldUs )
+        {
+            scale.adMaxLine[s] = adMax[s];
+            scale.allMaxAt[s] = llNow;
+        }
     }
 
     auto Count = []( double d, int s ) {
@@ -1316,7 +1290,7 @@ void MainScreen::RenderGraph( Renderer *pRenderer, int iWidth, int iHeight, int 
         return t;
     };
     static const wchar_t *const asName[GS::SeriesCount] = { L"NPS", L"Polyphony", L"BPM" };
-    const int iNowCol = gs.bMiddle ? n / 2 : n - 1;
+    const int iNowCol = n - 1;
     const D3DCOLOR cMax = 0xFF000000 | ( gs.uMaxColor & 0xFF ) << 16 | ( gs.uMaxColor & 0xFF00 ) | ( gs.uMaxColor >> 16 & 0xFF );
     const int iThick = Px( 2 );
     // A point's height in the plot, from its top
@@ -1360,8 +1334,8 @@ void MainScreen::RenderGraph( Renderer *pRenderer, int iWidth, int iHeight, int 
             }
         }
         // (where a line graph's top is drawn)
-        if ( bMaxLine && abHave[sScale] && adMax[sScale] > 0.0 )
-            avMax[iBox].push_back( { std::min( YOf( sScale, adMax[sScale] ), iPlotCY - iThick ) + iThick / 2, Tick( adMax[sScale], 2, sScale ), Dark( cMax ) } );
+        if ( bMaxLine && abHave[sScale] && scale.adMaxLine[sScale] > 0.0 )
+            avMax[iBox].push_back( { std::min( YOf( sScale, scale.adMaxLine[sScale] ), iPlotCY - iThick ) + iThick / 2, Tick( scale.adMaxLine[sScale], 2, sScale ), Dark( cMax ) } );
         // (the scale's values a highest value's would overlap are left out)
         auto &v = avMarks[iBox];
         v.erase( std::remove_if( v.begin(), v.end(), [&]( const Mark &m ) {
@@ -1378,7 +1352,7 @@ void MainScreen::RenderGraph( Renderer *pRenderer, int iWidth, int iHeight, int 
     const int iScaleCX = bScale ? iWidest + iPad : 0;
     const int iCX = std::min( iWidth, n + iPad * 2 + iScaleCX );
     const bool bBottom = ( gs.iCorner & VisualSettings::StatsBottom ) != 0;
-    const bool bScaleRight = bScale && gs.bScaleSide && ( gs.iCorner & VisualSettings::StatsLeft );
+    const bool bScaleRight = bScale && ( gs.iCorner & VisualSettings::StatsLeft );
     const int x = ( gs.iCorner & VisualSettings::StatsLeft ) ? 0 : iWidth - iCX;
     int y = bBottom ? std::clamp( iBottomY, iCY, std::max( iCY, iHeight ) ) - iCY : 0;
     if ( pStats && gs.iCorner == cVisual.iStatsCorner ) y = bBottom ? pStats->rc.top - iCY : pStats->rc.bottom;
@@ -1389,7 +1363,7 @@ void MainScreen::RenderGraph( Renderer *pRenderer, int iWidth, int iHeight, int 
         const int yBox = y + iBox * iCY;
         if ( cVisual.bStatsBackground ) pRenderer->DrawRect( (float)x, (float)yBox, (float)iCX, (float)iCY, 0x80000000 );
         const int iX0 = x + iPad + ( bScaleRight ? 0 : iScaleCX ), iY0 = yBox + iLabelCY, iY1 = iY0 + iPlotCY;
-        const int iFirst = gs.bTogether ? 0 : iBox, iLast = gs.bTogether ? iShown : iBox + 1;
+        const int iFirst = iBox, iLast = iBox + 1;
         const std::vector< Mark > &vMarks = avMarks[iBox], &vMax = avMax[iBox];
         for ( const Mark &m : vMarks ) pRenderer->DrawRect( (float)iX0, (float)( iY0 + m.y ), (float)n, 1.0f, Dark( 0xC0FFFFFF ) );   // (a rect's alpha: how clear)
 
@@ -1433,7 +1407,6 @@ void MainScreen::RenderGraph( Renderer *pRenderer, int iWidth, int iHeight, int 
             }
         // The line at the highest value shown, over the graph
         for ( const Mark &m : vMax ) pRenderer->DrawRect( (float)iX0, (float)( iY0 + m.y - iThick / 2 ), (float)n, (float)iThick, Dark( cMax & 0x00FFFFFF ) );
-        if ( gs.bMiddle ) pRenderer->DrawRect( (float)( iX0 + n / 2 ), (float)iY0, 1.0f, (float)iPlotCY, Dark( 0x80FFFFFF ) );
 
         // The text: each series' name and value now, the left ones from the left, the right ones from the
         // right, in their colours
@@ -1528,10 +1501,10 @@ MainScreen::StatsBox MainScreen::FitStats( Renderer *pRenderer, int iWidth, int 
     const int iLines = StatusLines( uStats );
     StatsBox box = StatsLayout( iWidth, iHeight, iLines, iBottomY );
     static const wchar_t *const aWidest[VS::StatCount] = {
-        L"00:00.0 / 00:00.0", L"000.0", L"N/A", L"000,000,000", L"00,000,000", L"000,000", L"000.0K", L"000.0K", L"000.0K",
+        L"00:00.0 / 00:00.0", L"000.0", L"", L"000,000,000", L"00,000,000", L"000,000", L"000.0K", L"000.0K", L"000.0K",
         L"0000.0 ms", L"< 000, 000 at 000%", L"00.00 / 00.00", L"00.00 / 00.00", L"00.00 / 00.00", L"00.00 / 00.00",
         L"000.00M", L"000% \u00d700", L"000%", L"000% avg, 000% max", L"0000.0 ns/msg", L"000.00 BPM", L"0000", L"000.0%",
-        L"000,000,000", L"00,000,000", L"000,000", L"000.0 of 000 s (BASSMIDI)", L"000000 voices (0000 so far)", L"00:00:00.0 (lagging)" };
+        L"000,000,000", L"00,000,000", L"000,000", L"000.0/000 s", L"000000 voices (0000 so far)", L"00:00:00.0 (lagging)" };
     static std::wstring sFace;
     static int iFontCY = -1, iTextCX = 0;
     static unsigned uMeasured = 0;
@@ -1573,11 +1546,8 @@ MainScreen::StatsBox MainScreen::StatsLayout( int iWidth, int iHeight, int iLine
     if ( b.iLineCY == 16 && cVisual.sStatsFont == L"Tahoma" ) b.iFontCY = 0;
     if ( !cVisual.bStatsShadow ) b.iShadowX = b.iShadowY = 0;
     // The shadow mirrored with the corner: to the left in the left ones, up in the bottom ones
-    if ( cVisual.bStatsShadowMirror )
-    {
-        if ( cVisual.iStatsCorner & VisualSettings::StatsLeft ) b.iShadowX = -b.iShadowX;
-        if ( cVisual.iStatsCorner & VisualSettings::StatsBottom ) b.iShadowY = -b.iShadowY;
-    }
+    if ( cVisual.iStatsCorner & VisualSettings::StatsLeft ) b.iShadowX = -b.iShadowX;
+    if ( cVisual.iStatsCorner & VisualSettings::StatsBottom ) b.iShadowY = -b.iShadowY;
     iBoxCX = std::min( iWidth, std::max( iBoxCX, iTextCX + b.iPadX * 2 ) );
     int iBoxCY = b.iPadY * 2 + b.iLineCY * iLines;
     int x = ( cVisual.iStatsCorner & VisualSettings::StatsLeft ) ? 0 : iWidth - iBoxCX;
@@ -1640,8 +1610,6 @@ void MainScreen::RenderStatus( Renderer *pRenderer, const StatsBox &box, long lo
             else swprintf( aValue[VS::StatPfaLagTime], 48, L"%.1f s%ls", llUs / 1e6, bLagging ? L" (lagging)" : L"" );
         }
     }
-    // Scoring was removed; the line is kept as the original shows it with no input device
-    wcscpy( aValue[VS::StatScore], L"N/A" );
     if ( Shown( VS::StatTempo ) ) swprintf( aValue[VS::StatTempo], 48, L"%.2f BPM", 60000000.0 / TempoAt( m_pSong->vMeta, llTime ) );
 
     auto Count = []( wchar_t *s, uint64_t n ) {
@@ -1700,8 +1668,9 @@ void MainScreen::RenderStatus( Renderer *pRenderer, const StatsBox &box, long lo
         swprintf( aValue[VS::StatSenderBusy], 48, L"%.0f%%", m_dSenderBusy * 100.0 );
         swprintf( aValue[VS::StatRing], 48, L"%.0f%% avg, %.0f%% max", m_dRingAvg * 100.0, m_dRingMax * 100.0 );
         swprintf( aValue[VS::StatSendCost], 48, L"%.1f ns/msg", m_Stats.dNsPerMsg );
-        // The synth's own counts, when it is KDMAPI and its version has them
-        if ( m_iSynthVoices >= 0 ) swprintf( aValue[VS::StatVoices], 48, L"%d", m_iSynthVoices );
+        // The synth's own counts, when it is KDMAPI and its version has them, or the rendered audio's voices
+        if ( m_sVoices[0] ) wcscpy( aValue[VS::StatVoices], m_sVoices );
+        else if ( m_iSynthVoices >= 0 ) swprintf( aValue[VS::StatVoices], 48, L"%d", m_iSynthVoices );
         else wcscpy( aValue[VS::StatVoices], L"N/A" );
         if ( m_dSynthCpu >= 0.0 ) swprintf( aValue[VS::StatSynthCpu], 48, L"%.1f%%", m_dSynthCpu );
         else wcscpy( aValue[VS::StatSynthCpu], L"N/A" );

@@ -9,10 +9,6 @@ PlaybackDecoder::PlaybackDecoder( const Song &song ) : m_Song( song ), m_Stream(
     m_Cursor.Attach( &m_Stream );
     m_Tempo.bExact = song.bExactTempo;
     m_Tempo.Build( song.vMeta, song.info.iDivision );
-    for ( const RefMetaEvent &m : song.vMeta )
-        if ( m.cType == RefMetaEvent::TimeSignature && m.iDataLen == 4 )
-            m_vSignatures.push_back( { m.llTick, m.aData[0], 1LL << std::min< int >( m.aData[1], 30 ) } );
-    m_bMetronome = !IsSmpteDivision( song.info.iDivision ) && song.info.iDivision > 0;
     ResetSendState();
 }
 
@@ -37,8 +33,6 @@ void PlaybackDecoder::Reset( long long llStartTime )
 {
     m_Cursor.Seek( 0 );
     m_uCachedTick = SIZE_MAX;
-    m_iLastMetronomeNote = 76;
-    SetBeat( GetBeatTick( CurrentTick( llStartTime ) ) );
     ResetSendState();
     m_iSkipVelocity = 0;
 }
@@ -54,9 +48,6 @@ void PlaybackDecoder::Seek( long long llTarget, long long, std::vector< uint32_t
     m_uCachedTick = SIZE_MAX;
 
     Chase( llTarget, vOut );
-
-    // AdvanceIterators( llStartTime, true ): the next beat at or after the current tick
-    SetBeat( GetBeatTick( CurrentTick( llTarget ) ) );
 
     // Everything sounding was stopped, so the skip balance starts over
     ResetSendState();
@@ -175,56 +166,6 @@ void PlaybackDecoder::Chase( long long llTarget, std::vector< uint32_t > &vOut )
 }
 
 //-----------------------------------------------------------------------------
-// Metronome (MainScreen::PlayMetronome and the MeterTracker helpers, 64-bit)
-//-----------------------------------------------------------------------------
-
-const PlaybackDecoder::Signature &PlaybackDecoder::SignatureAt( long long llTick ) const
-{
-    static const Signature sDefault = { 0, 4, 4 };
-    auto it = std::upper_bound( m_vSignatures.begin(), m_vSignatures.end(), llTick,
-                                []( long long t, const Signature &s ) { return t < s.llTick; } );
-    return it == m_vSignatures.begin() ? sDefault : *( it - 1 );
-}
-
-// Rounds up to the nearest beat
-long long PlaybackDecoder::GetBeat( long long iTick, const Signature &s ) const
-{
-    long long iDivision = m_Song.info.iDivision;
-    long long iTickOffset = iTick - s.llTick;
-    if ( iTickOffset > 0 )
-        return ( iTickOffset * s.iBeatType - 1 ) / ( iDivision * 4LL ) + 1;
-    return ( iTickOffset * s.iBeatType ) / ( iDivision * 4LL );
-}
-
-long long PlaybackDecoder::GetBeatTick( long long iTick ) const
-{
-    if ( !m_bMetronome ) return LLONG_MIN;
-    const Signature &s = SignatureAt( iTick );
-    long long iDivision = m_Song.info.iDivision;
-    return s.llTick + ( GetBeat( iTick, s ) * iDivision * 4 ) / s.iBeatType;
-}
-
-// MeterTracker::GetCurrentTick with the tempo in effect at llTime
-long long PlaybackDecoder::CurrentTick( long long llTime ) const
-{
-    if ( !m_bMetronome ) return -1;
-    const std::vector< TempoMap::Seg > &v = m_Tempo.vSegs;
-    auto it = std::upper_bound( v.begin(), v.end(), llTime, []( long long t, const TempoMap::Seg &s ) { return t < s.llMicroSec; } );
-    const TempoMap::Seg &s = it == v.begin() ? v.front() : *( it - 1 );
-    long long iDivision = m_Song.info.iDivision;
-    if ( s.llMicroSecsPerBeat <= 0 ) return -1;
-    if ( llTime >= s.llMicroSec )
-        return s.llTick + ( iDivision * ( llTime - s.llMicroSec ) ) / s.llMicroSecsPerBeat;
-    return s.llTick - ( ( iDivision * ( s.llMicroSec - llTime ) + 1 ) / s.llMicroSecsPerBeat ) - 1;
-}
-
-void PlaybackDecoder::SetBeat( long long llBeatTick )
-{
-    m_llNextBeatTick = llBeatTick;
-    m_llNextBeatTime = m_bMetronome && llBeatTick != LLONG_MIN ? m_Tempo.At( llBeatTick ) : LLONG_MAX;
-}
-
-//-----------------------------------------------------------------------------
 // Decoding
 //-----------------------------------------------------------------------------
 
@@ -239,10 +180,9 @@ long long PlaybackDecoder::EventTime()
     return m_llCachedTime;
 }
 
-long long PlaybackDecoder::NextTime( int iMetronome )
+long long PlaybackDecoder::NextTime()
 {
-    long long t = EventTime();
-    return iMetronome != MetOff ? std::min( t, m_llNextBeatTime ) : t;
+    return EventTime();
 }
 
 // A millisecond's events as PfaLag counts them (ForPieces): its note-ons, its note-offs (the note-ons
@@ -282,7 +222,7 @@ long long PlaybackDecoder::DueTime( const Params &p )
 {
     long long t = EventTime();
     if ( p.bShares ) t = ShareTime( t );
-    return p.iMetronome != MetOff ? std::min( t, m_llNextBeatTime ) : t;
+    return t;
 }
 
 // Note-ons below this velocity are skipped at a lag of llLagUs: none up to llSkipLagUs, then a
@@ -434,8 +374,8 @@ size_t PlaybackDecoder::Notes( uint32_t uTrack, uint32_t uBase, const uint8_t *p
     if ( ( uBase & 0xF0 ) == 0x90 && uVel )
     {
         // Muted: not sent, so its off is dropped too (DESIGN.md 1.6). Every other off is sent,
-        // muted or not: a note that was sounding when its channel was muted still ends
-        const bool bMuted = p.bMute || ( m_pMuteMask && ( ( m_pMuteMask[uTrack].load( std::memory_order_relaxed ) >> ch ) & 1 ) );
+        // muted or not: a note that was sounding when the sound was muted still ends
+        const bool bMuted = p.bMute;
         const bool bBelow = uVel < uMinVel;
         const uint32_t uOutVel = m_aVelLut[uVel], uOut = ( uBase & 0x80FF ) | ( uOutVel << 16 );
         if ( !bCollapse && !bCounting && !bMuted && !bBelow )
@@ -572,17 +512,11 @@ size_t PlaybackDecoder::Fill( uint32_t *pOut, size_t iCap, long long llHorizon, 
         m_dLutCorrect = p.dVolumeCorrect;
         for ( int v = 0; v < 128; v++ ) m_aVelLut[v] = (uint8_t)static_cast< int >( v * p.dVolumeCorrect + 0.5 );
     }
-    // Turning the metronome on resynchronises it to the next beat
-    if ( p.iMetronome != MetOff && m_iMetronome == MetOff )
-        SetBeat( GetBeatTick( CurrentTick( llNow ) ) );
-    m_iMetronome = p.iMetronome;
-
     llDue = DueTime( p );
     if ( llDue > llHorizon ) return 0;
     // (by shares, the horizon is already close: the clock a millisecond of real time on)
     long long llLimit = p.bShares ? llHorizon : std::min( llHorizon, llDue + std::max< long long >( 1, (long long)( p.llGroupUs * p.dSpeed ) ) );
 
-    const RefMidiInfo &info = m_Song.info;
     // Switching collapsing on or off: the held counts start over (a voice still sounding gets the off
     // of its first note)
     if ( p.bCollapse != m_bCollapse )
@@ -602,20 +536,6 @@ size_t PlaybackDecoder::Fill( uint32_t *pOut, size_t iCap, long long llHorizon, 
         long long tE = EventTime();
         // When it is due: its time, or by shares (ShareTime) where it is among its millisecond's events
         const long long tD = p.bShares ? ShareTime( tE ) : tE;
-        if ( p.iMetronome != MetOff && m_llNextBeatTime < tD && m_llNextBeatTime <= llLimit )
-        {
-            const Signature &s = SignatureAt( m_llNextBeatTick );
-            long long iBeat = GetBeat( m_llNextBeatTick, s );
-            bool bIsMeasure = s.iBeatsPerMeasure != 0 && !( ( iBeat < 0 ? -iBeat : iBeat ) % s.iBeatsPerMeasure );
-            if ( !p.bMute && info.llNoteCount > 0 && ( p.iMetronome == MetEveryBeat || ( bIsMeasure && p.iMetronome == MetEveryMeasure ) ) )
-            {
-                m_iLastMetronomeNote = m_iLastMetronomeNote == 76 ? 77 : 76;
-                int iVel = static_cast< int >( info.llVolumeSum * p.dVolumeCorrect / info.llNoteCount + -.5 );
-                pOut[n++] = 0x99 | ( m_iLastMetronomeNote << 8 ) | ( (uint32_t)( iVel & 0xFF ) << 16 );
-            }
-            SetBeat( GetBeatTick( m_llNextBeatTick + 1 ) );
-            continue;
-        }
         if ( tD > llLimit ) break;
 
         m_iSkipVelocity = p.bVelocitySkip ? VelocityThreshold( llNow - tD + p.llSenderLagUs, p.llSkipLagUs ) : 0;
@@ -739,9 +659,7 @@ void PlaybackDecoder::RunLane( const Batch &b, int k, const Params &p, LaneOut &
     m_dLaneTokens = std::min( b.dTokens, BudgetDepth( p.llMaxSendsPerSec ) );
     m_dTokens = 0.0;
     m_llTokenTime = EventTime();
-    Params q = p;
-    q.iMetronome = MetOff;              // clicks come from lane 0 and after the batch
-    FillLane( q, b.llNow, out );
+    FillLane( p, b.llNow, out );
 }
 
 void PlaybackDecoder::FinishBatch( const Batch &b, PlaybackDecoder *const *aLanes, LaneOut *aOut, int iLanes,
@@ -886,7 +804,7 @@ void PlaybackDecoder::FinishBatch( const Batch &b, PlaybackDecoder *const *aLane
     m_llPending = 0;
     for ( const KeyState &ks : m_aKey ) m_llPending += ks.uPending;
     // On from the batch's end: the budget's window starts over at the next tick, the bucket keeps
-    // what the lanes left, and the metronome goes to the next beat
+    // what the lanes left
     m_Cursor.Seek( b.uEnd );
     m_uCachedTick = SIZE_MAX;
     m_bAtTickStart = true;
@@ -898,5 +816,4 @@ void PlaybackDecoder::FinishBatch( const Batch &b, PlaybackDecoder *const *aLane
         m_dTokens = std::min( dTokens, m_dDepth );
         m_llTokenTime = std::max( m_llTokenTime, llEnd );
     }
-    if ( m_iMetronome != MetOff && m_llNextBeatTime < llEnd ) SetBeat( GetBeatTick( CurrentTick( llEnd ) ) );
 }

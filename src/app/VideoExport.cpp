@@ -7,6 +7,7 @@
 #include <cmath>
 #include <cstdarg>
 #include <cstdio>
+#include <cwctype>
 #include <shlobj.h>
 
 #include "app/LoadingDialog.h"
@@ -223,6 +224,19 @@ int FfmpegPipe::Run( const std::wstring &sFfmpeg, const std::wstring &sArgs, std
     return bTimedOut ? NotRun : (int)dwExit;
 }
 
+bool FfmpegPipe::AudioLength( const std::wstring &sFfmpeg, const std::wstring &sFile, double &dSecs )
+{
+    // (ffmpeg with an input and no output says its "Duration: hh:mm:ss.cc" and exits with an error)
+    std::string sOut;
+    if ( Run( sFfmpeg, L"-hide_banner -i " + Quoted( sFile ), sOut, 30000 ) == NotRun ) return false;
+    const size_t i = sOut.find( "Duration: " );
+    int h = 0, m = 0;
+    double s = 0.0;
+    if ( i == std::string::npos || sscanf( sOut.c_str() + i + 10, "%d:%d:%lf", &h, &m, &s ) != 3 ) return false;
+    dSecs = h * 3600.0 + m * 60.0 + s;
+    return dSecs > 0.0;
+}
+
 bool FfmpegPipe::TryEncoder( const VideoJob &job, std::wstring &sError )
 {
     std::wstring sArgs = Format( L"-hide_banner -nostats -loglevel error -f lavfi -i color=c=black:s=%dx%d:r=%d:d=1 -frames:v 1 ",
@@ -243,24 +257,6 @@ bool FfmpegPipe::TryEncoder( const VideoJob &job, std::wstring &sError )
     return false;
 }
 
-double FfmpegPipe::FirstSound( const std::wstring &sFfmpeg, const std::wstring &sAudio, std::wstring &sError )
-{
-    std::string sOut;
-    int iExit = Run( sFfmpeg, L"-hide_banner -nostats -t 600 -i " + Quoted( sAudio ) +
-                     L" -map 0:a:0 -af silencedetect=noise=-60dB:duration=0.01 -f null -", sOut, 120000 );
-    if ( iExit != 0 )
-    {
-        sError = L"The audio file could not be read";
-        sError += iExit == NotRun ? L": ffmpeg did not answer." : L".\n\nffmpeg said:\n" + LastLines( sOut, 6 );
-        return -1.0;
-    }
-    // Silence from the start: the sound starts where it ends (all silent: at 0)
-    size_t i = sOut.find( "silence_start: " );
-    if ( i == std::string::npos || atof( sOut.c_str() + i + 15 ) > 0.001 ) return 0.0;
-    size_t j = sOut.find( "silence_end: ", i );
-    return j == std::string::npos ? 0.0 : std::max( 0.0, atof( sOut.c_str() + j + 13 ) );
-}
-
 std::wstring FfmpegPipe::AudioArgs( const VideoJob &job )
 {
     // Each format's usual audio: AAC in MP4 (and MOV, but for ProRes), FLAC (up to 24-bit) in MKV, PCM in AVI
@@ -278,6 +274,7 @@ bool FfmpegPipe::Mux( const VideoJob &job, const std::wstring &sVideo, const std
 {
     std::wstring sArgs = L"-hide_banner -loglevel warning -nostats -progress pipe:1 -i " + Quoted( sVideo ) + Format( L" -f f32le -ar %u -ac 2 -i ", uRate ) + Quoted( sRaw ) +
                          L" -map 0:v:0 -map 1:a:0 -c:v copy" + AudioArgs( job ) + Format( L" -t %.6f", dSecs );
+    if ( job.dFadeSecs > 0.0 ) sArgs += Format( L" -af afade=t=out:st=%.6f:d=%.6f", std::max( 0.0, dSecs - job.dFadeSecs ), job.dFadeSecs );
     if ( job.iContainer == ExportSettings::Mp4 || job.iContainer == ExportSettings::Mov ) sArgs += L" -movflags +faststart";
     sArgs += L" -y " + Quoted( job.sOutFile );
     std::string sOut;
@@ -304,14 +301,8 @@ bool FfmpegPipe::Mux( const VideoJob &job, const std::wstring &sVideo, const std
 bool FfmpegPipe::Start( const VideoJob &job, std::wstring &sError )
 {
     typedef ExportSettings ES;
-    // The audio's place: its first sound at the first note's, then the offset (late: delayed; early: cut)
-    double dAudioDelay = job.iAudioOffsetMs / 1000.0;
-    if ( !job.sAudioFile.empty() && job.bAudioAlign )
-    {
-        double dFirst = FirstSound( job.sFfmpeg, job.sAudioFile, sError );
-        if ( dFirst < 0.0 ) return false;
-        dAudioDelay += job.dFirstNoteSecs - dFirst;
-    }
+    // The audio's place: its start at the song's 0 s mark, then the offset (late: delayed; early: cut)
+    const double dAudioDelay = job.dSongZeroSecs + job.iAudioOffsetMs / 1000.0;
 
     SECURITY_ATTRIBUTES sa = { sizeof( sa ), nullptr, TRUE };
     HANDLE hRead = nullptr;
@@ -346,7 +337,11 @@ bool FfmpegPipe::Start( const VideoJob &job, std::wstring &sError )
     if ( !bRgb ) sArgs += L" -colorspace bt709 -color_primaries bt709 -color_trc bt709 -color_range tv";
     if ( bAudio )
     {
-        if ( dAudioDelay > 0.0 ) sArgs += Format( L" -af adelay=delays=%lld:all=1", (long long)std::llround( dAudioDelay * 1000.0 ) );
+        std::wstring sFilters;
+        if ( dAudioDelay > 0.0 ) sFilters = Format( L"adelay=delays=%lld:all=1", (long long)std::llround( dAudioDelay * 1000.0 ) );
+        if ( job.dFadeSecs > 0.0 )
+            sFilters += ( sFilters.empty() ? L"" : L"," ) + Format( L"afade=t=out:st=%.6f:d=%.6f", std::max( 0.0, job.dDurationSecs - job.dFadeSecs ), job.dFadeSecs );
+        if ( !sFilters.empty() ) sArgs += L" -af " + sFilters;
         sArgs += AudioArgs( job );
         // No longer than the video
         sArgs += Format( L" -t %.6f", job.dDurationSecs );
@@ -556,14 +551,29 @@ namespace
         return sDir.empty() ? sName : InFolder( sDir, sName.c_str() );
     }
 
+    // The audio file's offset in seconds, as short as it reads: 0, 1.5, -0.25
+    std::wstring OffsetText( int iMs )
+    {
+        wchar_t buf[32];
+        swprintf( buf, 32, L"%.3f", iMs / 1000.0 );
+        std::wstring s = buf;
+        while ( s.back() == L'0' ) s.pop_back();
+        if ( s.back() == L'.' ) s.pop_back();
+        return s == L"-0" ? L"0" : s;
+    }
+
     // The audio area is in use only while Add audio is checked
     void UpdateAudioControls( HWND hWnd )
     {
         BOOL bOn = IsDlgButtonChecked( hWnd, IDC_VID_AUDIOON ) == BST_CHECKED;
         BOOL bFile = bOn && IsDlgButtonChecked( hWnd, IDC_VID_AUDIORENDERED ) != BST_CHECKED;
         for ( int id : { IDC_VID_AUDIOFROMFILE, IDC_VID_AUDIORENDERED } ) EnableWindow( GetDlgItem( hWnd, id ), bOn );
-        for ( int id : { IDC_VID_AUDIO, IDC_VID_AUDIOBROWSE, IDC_VID_AUDIOALIGN, IDC_VID_AUDIOMOVE, IDC_VID_AUDIOOFFSET, IDC_VID_AUDIOMS } )
+        for ( int id : { IDC_VID_AUDIO, IDC_VID_AUDIOBROWSE, IDC_VID_AUDIOMOVE, IDC_VID_AUDIOOFFSET, IDC_VID_AUDIOMS } )
             EnableWindow( GetDlgItem( hWnd, id ), bFile );
+        // (ending with the audio needs audio)
+        EnableWindow( GetDlgItem( hWnd, IDC_VID_ENDAUDIO ), bOn );
+        const BOOL bAfter = !bOn || IsDlgButtonChecked( hWnd, IDC_VID_ENDAUDIO ) != BST_CHECKED;
+        for ( int id : { IDC_VID_ENDSECS, IDC_VID_ENDNOTE } ) EnableWindow( GetDlgItem( hWnd, id ), bAfter );
     }
 
     // The encoder list for the codec: the hardware encoders only for H.264, HEVC and AV1
@@ -616,8 +626,8 @@ namespace
         GetDlgItemTextW( hWnd, IDC_VID_AUDIO, sAudio, MAX_PATH * 4 );
         s.sAudioFile = sAudio;
         s.bAudio = IsDlgButtonChecked( hWnd, IDC_VID_AUDIOON ) == BST_CHECKED;
-        s.bAudioAlign = IsDlgButtonChecked( hWnd, IDC_VID_AUDIOALIGN ) == BST_CHECKED;
         s.bRenderedAudio = IsDlgButtonChecked( hWnd, IDC_VID_AUDIORENDERED ) == BST_CHECKED;
+        s.bEndAtAudio = IsDlgButtonChecked( hWnd, IDC_VID_ENDAUDIO ) == BST_CHECKED;
 
         auto Bad = [&]( int iId, const wchar_t *sError ) {
             if ( bValidate )
@@ -657,16 +667,34 @@ namespace
         u = GetDlgItemInt( hWnd, IDC_VID_CRF, &bOk, FALSE );
         if ( !bOk || u > 51 ) return Bad( IDC_VID_CRF, L"Please specify a quality between 0 and 51." );
         s.iCRF = (int)u;
-        int iOffset = (int)GetDlgItemInt( hWnd, IDC_VID_AUDIOOFFSET, &bOk, TRUE );
-        bool bOffsetOk = bOk && iOffset >= -3600000 && iOffset <= 3600000;
+        // How long after the last event it ends, in seconds (to the millisecond), 0 to 60
+        {
+            wchar_t sNum[64] = {}, *pEnd = nullptr;
+            GetDlgItemTextW( hWnd, IDC_VID_ENDSECS, sNum, 64 );
+            const double d = wcstod( sNum, &pEnd );
+            while ( pEnd && iswspace( *pEnd ) ) pEnd++;
+            if ( pEnd != sNum && pEnd && !*pEnd && d >= 0.0 && d <= 60.0 ) s.iEndMs = (int)std::lround( d * 1000.0 );
+            else if ( !s.bEndAtAudio || !s.bAudio ) return Bad( IDC_VID_ENDSECS, L"Please specify how long after the song's last event the video ends, from 0 to 60 seconds." );
+        }
+        // The offset in seconds (to the millisecond), -60 to 60
+        int iOffset = 0;
+        bool bOffsetOk = false;
+        {
+            wchar_t sNum[64] = {}, *pEnd = nullptr;
+            GetDlgItemTextW( hWnd, IDC_VID_AUDIOOFFSET, sNum, 64 );
+            const double d = wcstod( sNum, &pEnd );
+            while ( pEnd && iswspace( *pEnd ) ) pEnd++;
+            bOffsetOk = pEnd != sNum && pEnd && !*pEnd && d >= -60.0 && d <= 60.0;
+            if ( bOffsetOk ) iOffset = (int)std::lround( d * 1000.0 );
+        }
         if ( s.bAudio && s.bRenderedAudio )
         {
             if ( bOffsetOk ) s.iAudioOffsetMs = iOffset;
             if ( RenderAhead::FromConfig().vFonts.empty() )
-                return Bad( IDC_VID_AUDIORENDERED, L"The audio renderer has no soundfont yet. Please add one in Preferences > Rendered audio, or choose an audio file." );
+                return Bad( IDC_VID_AUDIORENDERED, L"The audio renderer has no soundfont yet. Please add one in Preferences > Audio > Pre-Render, or choose an audio file." );
             return true;
         }
-        if ( !bOffsetOk && s.bAudio ) return Bad( IDC_VID_AUDIOOFFSET, L"Please specify the audio's move in milliseconds (negative: earlier)." );
+        if ( !bOffsetOk && s.bAudio ) return Bad( IDC_VID_AUDIOOFFSET, L"Please specify the audio's offset from the song's 0 s mark, from -60 to 60 seconds (negative: earlier)." );
         if ( bOffsetOk ) s.iAudioOffsetMs = iOffset;     // (audio off: a bad one is left as it was)
         if ( s.bAudio && s.sAudioFile.empty() ) return Bad( IDC_VID_AUDIO, L"Please choose an audio file, or uncheck Add audio for a silent video." );
         if ( s.bAudio && !IsFile( s.sAudioFile ) ) return Bad( IDC_VID_AUDIO, L"The audio file was not found. Please choose an existing file, or uncheck Add audio for a silent video." );
@@ -951,8 +979,9 @@ namespace
         pJob->iContainer = s.iContainer;
         pJob->bRenderedAudio = s.bAudio && s.bRenderedAudio;
         pJob->sAudioFile = s.bAudio && !s.bRenderedAudio ? s.sAudioFile : std::wstring();   // empty: a silent video (or the rendered audio)
-        pJob->bAudioAlign = s.bAudioAlign;
         pJob->iAudioOffsetMs = s.iAudioOffsetMs;
+        pJob->bEndAtAudio = s.bEndAtAudio;
+        pJob->iEndMs = s.iEndMs;
         if ( s.bUseWindowSize ) WindowSize( pJob->iWidth, pJob->iHeight );
         else { pJob->iWidth = s.iWidth; pJob->iHeight = s.iHeight; }
         pJob->iFPS = s.iFPS;
@@ -1028,153 +1057,205 @@ namespace
         return true;
     }
 
+    // The settings' controls (the dialog's, or the Preferences page's) from s; the lists filled first
+    VOID ShowExport( HWND hWnd, const ExportSettings &s )
+    {
+        SetDlgItemTextW( hWnd, IDC_VID_FILE, DefaultOutFile( s.sOutFile, s.iContainer ).c_str() );
+        g_sBrowsed.clear();
+        CheckDlgButton( hWnd, IDC_VID_WINDOWSIZE, s.bUseWindowSize ? BST_CHECKED : BST_UNCHECKED );
+        int iSel = ResolutionCount;
+        for ( int i = 0; i < ResolutionCount; i++ )
+            if ( aResolutions[i].iWidth == s.iWidth && aResolutions[i].iHeight == s.iHeight ) iSel = i;
+        SendDlgItemMessageW( hWnd, IDC_VID_RES, CB_SETCURSEL, iSel, 0 );
+        SetDlgItemInt( hWnd, IDC_VID_WIDTH, s.iWidth, FALSE );
+        SetDlgItemInt( hWnd, IDC_VID_HEIGHT, s.iHeight, FALSE );
+        SetDlgItemInt( hWnd, IDC_VID_FPS, s.iFPS, FALSE );
+        SetDlgItemInt( hWnd, IDC_VID_CRF, s.iCRF, FALSE );
+        SendDlgItemMessageW( hWnd, IDC_VID_PRESET, CB_SETCURSEL, s.iPreset, 0 );
+        SendDlgItemMessageW( hWnd, IDC_VID_CONTAINER, CB_SETCURSEL, s.iContainer, 0 );
+        SendDlgItemMessageW( hWnd, IDC_VID_CODEC, CB_SETCURSEL, s.iCodec, 0 );
+        SendDlgItemMessageW( hWnd, IDC_VID_ENCODER, CB_SETCURSEL, s.iBackend, 0 );
+        CheckDlgButton( hWnd, IDC_VID_STATS, s.bShowStats ? BST_CHECKED : BST_UNCHECKED );
+        CheckDlgButton( hWnd, IDC_VID_AUDIOON, s.bAudio ? BST_CHECKED : BST_UNCHECKED );
+        SetDlgItemTextW( hWnd, IDC_VID_AUDIO, s.sAudioFile.c_str() );
+        CheckRadioButton( hWnd, IDC_VID_AUDIOFROMFILE, IDC_VID_AUDIORENDERED, s.bRenderedAudio ? IDC_VID_AUDIORENDERED : IDC_VID_AUDIOFROMFILE );
+        SetDlgItemTextW( hWnd, IDC_VID_AUDIOOFFSET, OffsetText( s.iAudioOffsetMs ).c_str() );
+        CheckRadioButton( hWnd, IDC_VID_ENDAFTER, IDC_VID_ENDAUDIO, s.bEndAtAudio ? IDC_VID_ENDAUDIO : IDC_VID_ENDAFTER );
+        SetDlgItemTextW( hWnd, IDC_VID_ENDSECS, OffsetText( s.iEndMs ).c_str() );
+        UpdateSizeControls( hWnd );
+        UpdateEncoderControls( hWnd );
+        UpdateAudioControls( hWnd );
+    }
+
+    // The lists, the tips, and the saved settings
+    VOID InitExport( HWND hWnd )
+    {
+        for ( int i = 0; i < ResolutionCount; i++ )
+            SendDlgItemMessageW( hWnd, IDC_VID_RES, CB_ADDSTRING, 0, ( LPARAM )aResolutions[i].sName );
+        SendDlgItemMessageW( hWnd, IDC_VID_RES, CB_ADDSTRING, 0, ( LPARAM )L"Custom" );
+        for ( int i = 0; i < ExportSettings::PresetCount; i++ )
+            SendDlgItemMessageW( hWnd, IDC_VID_PRESET, CB_ADDSTRING, 0, ( LPARAM )ExportSettings::Presets[i] );
+        for ( int i = 0; i < ExportSettings::ContainerCount; i++ )
+            SendDlgItemMessageW( hWnd, IDC_VID_CONTAINER, CB_ADDSTRING, 0, ( LPARAM )ExportSettings::Containers[i] );
+        for ( int i = 0; i < ExportSettings::CodecCount; i++ )
+            SendDlgItemMessageW( hWnd, IDC_VID_CODEC, CB_ADDSTRING, 0, ( LPARAM )ExportSettings::Codecs[i] );
+        for ( int i = 0; i < ExportSettings::BackendCount; i++ )
+            SendDlgItemMessageW( hWnd, IDC_VID_ENCODER, CB_ADDSTRING, 0, ( LPARAM )ExportSettings::Backends[i] );
+        AddTips( hWnd, { { IDC_VID_AUDIORENDERED, L"Made from the video's first frame on with Preferences > Audio > Pre-Render's engine, soundfonts and "
+                                                  L"settings (and the playback sound settings), always from scratch, with its own progress bar." },
+                         { IDC_VID_AUDIOOFFSET, L"-60 to 60 seconds. The file's start goes where the song's time is 0 s (the MIDI's start, where a "
+                                                L"render of it starts), then this many seconds later (negative: earlier, its start cut)." },
+                         { IDC_VID_CRF, L"0 to 51, lower is better (0: lossless in software)." },
+                         { IDC_VID_ENDSECS, L"0 to 60 seconds after the song's last event. The audio fades out over the last of it (a second at "
+                                            L"most); 0: the video and audio stop at the last event." },
+                         { IDC_VID_ENDAUDIO, L"The video goes on until its audio ends, but never ends before the song's last event: an audio "
+                                             L"file's length (with its offset), or the Pre-Render audio until its sound has died away (up to "
+                                             L"8 s past the last event). Without audio, it ends as the choice above." },
+                         { IDC_VID_START, L"The whole open song is rendered off-screen at this size (with the current view and note speed) and encoded "
+                                          L"by ffmpeg, from the PATH or the current folder. The encoder is tried at this size first, so its own limits apply." } } );
+        ShowExport( hWnd, Config::GetConfig().GetExportSettings() );
+    }
+
+    // What the controls show, kept (values that do not parse keep their saved value)
+    VOID KeepExport( HWND hWnd )
+    {
+        Config &config = Config::GetConfig();
+        ExportSettings s = config.GetExportSettings();
+        ExportSettings sRead = s;
+        if ( ReadExport( hWnd, sRead, false ) ) s = sRead;
+        else
+        {
+            s.sOutFile = sRead.sOutFile;
+            s.bUseWindowSize = sRead.bUseWindowSize;
+            s.bShowStats = sRead.bShowStats;
+            s.iPreset = sRead.iPreset;
+            s.iCodec = sRead.iCodec;
+            s.iBackend = sRead.iBackend;
+            s.iContainer = sRead.iContainer;
+            s.bAudio = sRead.bAudio;
+            s.sAudioFile = sRead.sAudioFile;
+            s.bRenderedAudio = sRead.bRenderedAudio;
+            s.bEndAtAudio = sRead.bEndAtAudio;
+        }
+        config.SetExportSettings( s );
+    }
+
+    // A control's command (the browse buttons, the lists, the switches): handled, or not one of these
+    bool ExportCommand( HWND hWnd, WPARAM wParam )
+    {
+        switch ( LOWORD( wParam ) )
+        {
+            case IDC_VID_WINDOWSIZE:
+                UpdateSizeControls( hWnd );
+                return true;
+            case IDC_VID_AUDIOFROMFILE: case IDC_VID_AUDIORENDERED:
+                // (one or the other, whatever the tab order groups)
+                CheckRadioButton( hWnd, IDC_VID_AUDIOFROMFILE, IDC_VID_AUDIORENDERED, LOWORD( wParam ) );
+                UpdateAudioControls( hWnd );
+                return true;
+            case IDC_VID_AUDIOON:
+                UpdateAudioControls( hWnd );
+                return true;
+            case IDC_VID_ENDAFTER: case IDC_VID_ENDAUDIO:
+                CheckRadioButton( hWnd, IDC_VID_ENDAFTER, IDC_VID_ENDAUDIO, LOWORD( wParam ) );
+                UpdateAudioControls( hWnd );
+                return true;
+            case IDC_VID_RES:
+                if ( HIWORD( wParam ) == CBN_SELCHANGE ) UpdateSizeControls( hWnd );
+                return true;
+            case IDC_VID_CODEC: case IDC_VID_ENCODER:
+                if ( HIWORD( wParam ) == CBN_SELCHANGE ) UpdateEncoderControls( hWnd );
+                return true;
+            case IDC_VID_CONTAINER:
+                // The file name follows the format
+                if ( HIWORD( wParam ) == CBN_SELCHANGE )
+                {
+                    int iContainer = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_VID_CONTAINER, CB_GETCURSEL, 0, 0 ) );
+                    wchar_t sFile[MAX_PATH * 4] = {};
+                    GetDlgItemTextW( hWnd, IDC_VID_FILE, sFile, MAX_PATH * 4 );
+                    if ( sFile[0] ) SetDlgItemTextW( hWnd, IDC_VID_FILE, WithExtension( sFile, iContainer ).c_str() );
+                    g_sBrowsed.clear();
+                }
+                return true;
+            case IDC_VID_AUDIOBROWSE:
+            {
+                if ( HIWORD( wParam ) != BN_CLICKED ) return true;
+                wchar_t sFile[MAX_PATH * 4] = {};
+                GetDlgItemTextW( hWnd, IDC_VID_AUDIO, sFile, MAX_PATH * 4 );
+                OPENFILENAMEW ofn = {};
+                ofn.lStructSize = sizeof( ofn );
+                ofn.hwndOwner = hWnd;
+                ofn.lpstrFilter = L"Audio (*.wav;*.flac;*.mp3;*.ogg;*.opus;*.m4a;*.aac;*.aiff;*.w64)\0*.wav;*.flac;*.mp3;*.ogg;*.opus;*.m4a;*.aac;*.aif;*.aiff;*.w64\0All files (*.*)\0*.*\0";
+                ofn.lpstrFile = sFile;
+                ofn.nMaxFile = MAX_PATH * 4;
+                ofn.lpstrTitle = L"Choose the audio for the video";
+                ofn.Flags = OFN_EXPLORER | OFN_HIDEREADONLY | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
+                if ( GetOpenFileNameW( &ofn ) ) SetDlgItemTextW( hWnd, IDC_VID_AUDIO, sFile );
+                return true;
+            }
+            case IDC_VID_BROWSE:
+            {
+                if ( HIWORD( wParam ) != BN_CLICKED ) return true;
+                wchar_t sFile[MAX_PATH * 4] = {};
+                GetDlgItemTextW( hWnd, IDC_VID_FILE, sFile, MAX_PATH * 4 );
+                OPENFILENAMEW ofn = {};
+                ofn.lStructSize = sizeof( ofn );
+                ofn.hwndOwner = hWnd;
+                // The filter of the chosen format, whose extension a typed name gets
+                int iContainer = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_VID_CONTAINER, CB_GETCURSEL, 0, 0 ) );
+                ofn.lpstrFilter = L"MP4 video (*.mp4)\0*.mp4\0Matroska video (*.mkv)\0*.mkv\0QuickTime video (*.mov)\0*.mov\0AVI video (*.avi)\0*.avi\0";
+                ofn.nFilterIndex = iContainer + 1;
+                ofn.lpstrFile = sFile;
+                ofn.nMaxFile = MAX_PATH * 4;
+                ofn.lpstrDefExt = ExportSettings::Extensions[iContainer];
+                // No change of folder: ffmpeg is looked for in the current one
+                ofn.Flags = OFN_EXPLORER | OFN_HIDEREADONLY | OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
+                if ( GetSaveFileNameW( &ofn ) )
+                {
+                    // The format follows the filter the file was saved with
+                    SendDlgItemMessageW( hWnd, IDC_VID_CONTAINER, CB_SETCURSEL, std::clamp( (int)ofn.nFilterIndex - 1, 0, ExportSettings::ContainerCount - 1 ), 0 );
+                    std::wstring sChosen = WithExtension( sFile, std::clamp( (int)ofn.nFilterIndex - 1, 0, ExportSettings::ContainerCount - 1 ) );
+                    SetDlgItemTextW( hWnd, IDC_VID_FILE, sChosen.c_str() );
+                    g_sBrowsed = sChosen;
+                }
+                return true;
+            }
+        }
+        return false;
+    }
+
     INT_PTR CALLBACK ExportProc( HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam )
     {
         switch ( msg )
         {
             case WM_INITDIALOG:
-            {
-                const ExportSettings &s = Config::GetConfig().GetExportSettings();
-                SetDlgItemTextW( hWnd, IDC_VID_FILE, DefaultOutFile( s.sOutFile, s.iContainer ).c_str() );
-                g_sBrowsed.clear();
-                CheckDlgButton( hWnd, IDC_VID_WINDOWSIZE, s.bUseWindowSize ? BST_CHECKED : BST_UNCHECKED );
-                int iSel = ResolutionCount;
-                for ( int i = 0; i < ResolutionCount; i++ )
-                {
-                    SendDlgItemMessageW( hWnd, IDC_VID_RES, CB_ADDSTRING, 0, ( LPARAM )aResolutions[i].sName );
-                    if ( aResolutions[i].iWidth == s.iWidth && aResolutions[i].iHeight == s.iHeight ) iSel = i;
-                }
-                SendDlgItemMessageW( hWnd, IDC_VID_RES, CB_ADDSTRING, 0, ( LPARAM )L"Custom" );
-                SendDlgItemMessageW( hWnd, IDC_VID_RES, CB_SETCURSEL, iSel, 0 );
-                SetDlgItemInt( hWnd, IDC_VID_WIDTH, s.iWidth, FALSE );
-                SetDlgItemInt( hWnd, IDC_VID_HEIGHT, s.iHeight, FALSE );
-                SetDlgItemInt( hWnd, IDC_VID_FPS, s.iFPS, FALSE );
-                SetDlgItemInt( hWnd, IDC_VID_CRF, s.iCRF, FALSE );
-                for ( int i = 0; i < ExportSettings::PresetCount; i++ )
-                    SendDlgItemMessageW( hWnd, IDC_VID_PRESET, CB_ADDSTRING, 0, ( LPARAM )ExportSettings::Presets[i] );
-                SendDlgItemMessageW( hWnd, IDC_VID_PRESET, CB_SETCURSEL, s.iPreset, 0 );
-                for ( int i = 0; i < ExportSettings::ContainerCount; i++ )
-                    SendDlgItemMessageW( hWnd, IDC_VID_CONTAINER, CB_ADDSTRING, 0, ( LPARAM )ExportSettings::Containers[i] );
-                SendDlgItemMessageW( hWnd, IDC_VID_CONTAINER, CB_SETCURSEL, s.iContainer, 0 );
-                for ( int i = 0; i < ExportSettings::CodecCount; i++ )
-                    SendDlgItemMessageW( hWnd, IDC_VID_CODEC, CB_ADDSTRING, 0, ( LPARAM )ExportSettings::Codecs[i] );
-                SendDlgItemMessageW( hWnd, IDC_VID_CODEC, CB_SETCURSEL, s.iCodec, 0 );
-                for ( int i = 0; i < ExportSettings::BackendCount; i++ )
-                    SendDlgItemMessageW( hWnd, IDC_VID_ENCODER, CB_ADDSTRING, 0, ( LPARAM )ExportSettings::Backends[i] );
-                SendDlgItemMessageW( hWnd, IDC_VID_ENCODER, CB_SETCURSEL, s.iBackend, 0 );
-                CheckDlgButton( hWnd, IDC_VID_STATS, s.bShowStats ? BST_CHECKED : BST_UNCHECKED );
-                CheckDlgButton( hWnd, IDC_VID_AUDIOON, s.bAudio ? BST_CHECKED : BST_UNCHECKED );
-                SetDlgItemTextW( hWnd, IDC_VID_AUDIO, s.sAudioFile.c_str() );
-                CheckDlgButton( hWnd, IDC_VID_AUDIOALIGN, s.bAudioAlign ? BST_CHECKED : BST_UNCHECKED );
-                CheckRadioButton( hWnd, IDC_VID_AUDIOFROMFILE, IDC_VID_AUDIORENDERED, s.bRenderedAudio ? IDC_VID_AUDIORENDERED : IDC_VID_AUDIOFROMFILE );
-                AddTips( hWnd, { { IDC_VID_AUDIORENDERED, L"Made from the video's first frame on with Preferences > Rendered audio's engine, soundfonts and "
-                                                          L"settings (and the playback sound settings), always from scratch, with its own progress bar." } } );
-                SetDlgItemInt( hWnd, IDC_VID_AUDIOOFFSET, (UINT)s.iAudioOffsetMs, TRUE );
-                UpdateSizeControls( hWnd );
-                UpdateEncoderControls( hWnd );
-                UpdateAudioControls( hWnd );
+                InitExport( hWnd );
                 return TRUE;
-            }
             case WM_COMMAND:
+                if ( ExportCommand( hWnd, wParam ) ) return TRUE;
                 switch ( LOWORD( wParam ) )
                 {
-                    case IDC_VID_WINDOWSIZE:
-                        UpdateSizeControls( hWnd );
-                        return TRUE;
-                    case IDC_VID_AUDIOON: case IDC_VID_AUDIOFROMFILE: case IDC_VID_AUDIORENDERED:
-                        UpdateAudioControls( hWnd );
-                        return TRUE;
-                    case IDC_VID_RES:
-                        if ( HIWORD( wParam ) == CBN_SELCHANGE ) UpdateSizeControls( hWnd );
-                        return TRUE;
-                    case IDC_VID_CODEC: case IDC_VID_ENCODER:
-                        if ( HIWORD( wParam ) == CBN_SELCHANGE ) UpdateEncoderControls( hWnd );
-                        return TRUE;
-                    case IDC_VID_CONTAINER:
-                        // The file name follows the format
-                        if ( HIWORD( wParam ) == CBN_SELCHANGE )
-                        {
-                            int iContainer = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_VID_CONTAINER, CB_GETCURSEL, 0, 0 ) );
-                            wchar_t sFile[MAX_PATH * 4] = {};
-                            GetDlgItemTextW( hWnd, IDC_VID_FILE, sFile, MAX_PATH * 4 );
-                            if ( sFile[0] ) SetDlgItemTextW( hWnd, IDC_VID_FILE, WithExtension( sFile, iContainer ).c_str() );
-                            g_sBrowsed.clear();
-                        }
-                        return TRUE;
-                    case IDC_VID_AUDIOBROWSE:
-                    {
-                        wchar_t sFile[MAX_PATH * 4] = {};
-                        GetDlgItemTextW( hWnd, IDC_VID_AUDIO, sFile, MAX_PATH * 4 );
-                        OPENFILENAMEW ofn = {};
-                        ofn.lStructSize = sizeof( ofn );
-                        ofn.hwndOwner = hWnd;
-                        ofn.lpstrFilter = L"Audio (*.wav;*.flac;*.mp3;*.ogg;*.opus;*.m4a;*.aac;*.aiff;*.w64)\0*.wav;*.flac;*.mp3;*.ogg;*.opus;*.m4a;*.aac;*.aif;*.aiff;*.w64\0All files (*.*)\0*.*\0";
-                        ofn.lpstrFile = sFile;
-                        ofn.nMaxFile = MAX_PATH * 4;
-                        ofn.lpstrTitle = L"Choose the audio for the video";
-                        ofn.Flags = OFN_EXPLORER | OFN_HIDEREADONLY | OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
-                        if ( GetOpenFileNameW( &ofn ) ) SetDlgItemTextW( hWnd, IDC_VID_AUDIO, sFile );
-                        return TRUE;
-                    }
-                    case IDC_VID_BROWSE:
-                    {
-                        wchar_t sFile[MAX_PATH * 4] = {};
-                        GetDlgItemTextW( hWnd, IDC_VID_FILE, sFile, MAX_PATH * 4 );
-                        OPENFILENAMEW ofn = {};
-                        ofn.lStructSize = sizeof( ofn );
-                        ofn.hwndOwner = hWnd;
-                        // The filter of the chosen format, whose extension a typed name gets
-                        int iContainer = std::max( 0, (int)SendDlgItemMessageW( hWnd, IDC_VID_CONTAINER, CB_GETCURSEL, 0, 0 ) );
-                        ofn.lpstrFilter = L"MP4 video (*.mp4)\0*.mp4\0Matroska video (*.mkv)\0*.mkv\0QuickTime video (*.mov)\0*.mov\0AVI video (*.avi)\0*.avi\0";
-                        ofn.nFilterIndex = iContainer + 1;
-                        ofn.lpstrFile = sFile;
-                        ofn.nMaxFile = MAX_PATH * 4;
-                        ofn.lpstrDefExt = ExportSettings::Extensions[iContainer];
-                        // No change of folder: ffmpeg is looked for in the current one
-                        ofn.Flags = OFN_EXPLORER | OFN_HIDEREADONLY | OFN_PATHMUSTEXIST | OFN_OVERWRITEPROMPT | OFN_NOCHANGEDIR;
-                        if ( GetSaveFileNameW( &ofn ) )
-                        {
-                            // The format follows the filter the file was saved with
-                            SendDlgItemMessageW( hWnd, IDC_VID_CONTAINER, CB_SETCURSEL, std::clamp( (int)ofn.nFilterIndex - 1, 0, ExportSettings::ContainerCount - 1 ), 0 );
-                            std::wstring sChosen = WithExtension( sFile, std::clamp( (int)ofn.nFilterIndex - 1, 0, ExportSettings::ContainerCount - 1 ) );
-                            SetDlgItemTextW( hWnd, IDC_VID_FILE, sChosen.c_str() );
-                            g_sBrowsed = sChosen;
-                        }
-                        return TRUE;
-                    }
                     case IDOK:
                         StartRender( hWnd );
                         return TRUE;
                     case IDCANCEL:
-                    {
-                        // Keeps what was entered (values that do not parse keep their saved value)
-                        Config &config = Config::GetConfig();
-                        ExportSettings s = config.GetExportSettings();
-                        ExportSettings sRead = s;
-                        if ( ReadExport( hWnd, sRead, false ) ) s = sRead;
-                        else
-                        {
-                            s.sOutFile = sRead.sOutFile;
-                            s.bUseWindowSize = sRead.bUseWindowSize;
-                            s.bShowStats = sRead.bShowStats;
-                            s.iPreset = sRead.iPreset;
-                            s.iCodec = sRead.iCodec;
-                            s.iBackend = sRead.iBackend;
-                            s.iContainer = sRead.iContainer;
-                            s.bAudio = sRead.bAudio;
-                            s.sAudioFile = sRead.sAudioFile;
-                            s.bAudioAlign = sRead.bAudioAlign;
-                            s.bRenderedAudio = sRead.bRenderedAudio;
-                        }
-                        config.SetExportSettings( s );
+                        KeepExport( hWnd );
                         EndDialog( hWnd, IDCANCEL );
                         return TRUE;
-                    }
                 }
                 break;
         }
         return FALSE;
     }
+}
+
+namespace VideoPage
+{
+    VOID Init( HWND hWnd ) { InitExport( hWnd ); }
+    VOID Show( HWND hWnd, const ExportSettings &s ) { ShowExport( hWnd, s ); }
+    bool Command( HWND hWnd, WPARAM wParam ) { return ExportCommand( hWnd, wParam ); }
+    VOID Keep( HWND hWnd ) { KeepExport( hWnd ); }
+    bool Start( HWND hWnd ) { return StartRender( hWnd ); }
 }
 
 VOID RenderVideoUnattended( const std::wstring &sOutFile )

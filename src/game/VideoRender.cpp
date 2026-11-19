@@ -120,14 +120,31 @@ void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
     if ( bAnyHidden ) engine.SetHidden( vHidden, true );
     MeterTracker meter( m_pSong->vMeta, m_pSong->info );
 
-    // Frame f shows song time llFirst + f / fps, from the start of playback to its end
-    const long long llFirst = GetMinTime(), llLast = GetMaxTime();
+    // Frame f shows song time llFirst + f / fps, from the start of playback to its end: a set time after the
+    // song's last event (the audio fading out over the last of it), or when its audio ends (never before the
+    // last event): an audio file's length, or the rendered audio made as far as its tail goes and cut where its
+    // sound has died away (below)
+    const long long llFirst = GetMinTime(), llEvents = m_pSong->info.llTotalMicroSecs;
+    const bool bHasAudio = job.bRenderedAudio || !job.sAudioFile.empty();
+    const bool bToAudio = job.bEndAtAudio && bHasAudio;
+    long long llLast = llEvents + (long long)job.iEndMs * 1000;
+    job.dFadeSecs = 0.0;
+    if ( !bToAudio ) job.dFadeSecs = bHasAudio ? std::min( 1.0, job.iEndMs / 1000.0 ) : 0.0;
+    else if ( job.bRenderedAudio ) llLast = llEvents + RenderAhead::TailSecs * 1000000;
+    else
+    {
+        double dLen = 0.0;
+        if ( !FfmpegPipe::AudioLength( job.sFfmpeg, job.sAudioFile, dLen ) )
+            return job.Finish( false, L"ffmpeg could not tell the audio file's length, to end the video with it:\n" + job.sAudioFile );
+        llLast = std::max( llEvents, (long long)job.iAudioOffsetMs * 1000 + (long long)std::llround( dLen * 1e6 ) );
+    }
+    llLast = std::max( llLast, llFirst );
     const long long llFrames = ( llLast - llFirst ) * job.iFPS / 1000000 + 1;
     auto FrameTime = [&]( long long f ) { return llFirst + (long long)std::llround( f * 1e6 / job.iFPS ); };
     job.llFrames = llFrames;
     job.llSongEnd = llLast;
-    // For the audio: the first note sounds when it reaches the keyboard, at its start time
-    job.dFirstNoteSecs = ( m_pSong->info.llFirstNote - llFirst ) / 1e6;
+    // For an audio file: it starts at the song's 0 s mark (its time 0, where a render of the MIDI starts)
+    job.dSongZeroSecs = -llFirst / 1e6;
     job.dDurationSecs = (double)llFrames / job.iFPS;
     // The rendered audio: the video is encoded on its own (next to the output), the audio made meanwhile,
     // from the first frame's time to the last's
@@ -255,7 +272,7 @@ void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
     // The rendered audio: as long as the video (stopped early: up to there), then put into it
     if ( job.bRenderedAudio )
     {
-        const double dSecs = (double)llSent / job.iFPS;
+        double dSecs = (double)llSent / job.iFPS;
         if ( job.bCancel ) audio.llUntil = (long long)std::ceil( dSecs * VideoAudio::Rate );
         job.eState = VideoJob::AudioWait;
         while ( job.eAudio != VideoJob::AudioDone && job.eAudio != VideoJob::AudioFailed )
@@ -271,6 +288,37 @@ void MainScreen::RenderVideo( const std::shared_ptr< VideoJob > &pJob )
             const bool bKept = MoveFileExW( job.sEncodeTo.c_str(), job.sOutFile.c_str(), MOVEFILE_REPLACE_EXISTING ) != 0;
             return job.Finish( false, L"The audio could not be made (" + sWhy + L"), so the video was " +
                                           ( bKept ? L"saved without it:\n" + job.sOutFile : L"left without it:\n" + job.sEncodeTo ) );
+        }
+        // Ending with the audio: where its sound has died away (its last sample above -80 dB), not before
+        // the last event; the video is cut there as the audio is put in
+        if ( bToAudio && !job.bCancel )
+        {
+            const double dEvents = ( llEvents - llFirst ) / 1e6;
+            double dEnd = dEvents;
+            if ( FILE *f = _wfopen( audio.sRaw.c_str(), L"rb" ) )
+            {
+                const long long N = 1 << 16;
+                std::vector< float > v( (size_t)N * 2 );
+                _fseeki64( f, 0, SEEK_END );
+                long long llAt = _ftelli64( f ) / 8;
+                bool bFound = false;
+                while ( llAt > 0 && !bFound )
+                {
+                    const long long n = std::min( N, llAt );
+                    llAt -= n;
+                    _fseeki64( f, llAt * 8, SEEK_SET );
+                    if ( fread( v.data(), 8, (size_t)n, f ) != (size_t)n ) break;
+                    for ( long long i = n; i-- > 0; )
+                        if ( std::fabs( v[(size_t)i * 2] ) > 1e-4f || std::fabs( v[(size_t)i * 2 + 1] ) > 1e-4f )
+                        {
+                            dEnd = std::max( dEnd, (double)( llAt + i + 1 ) / VideoAudio::Rate + 0.05 );
+                            bFound = true;
+                            break;
+                        }
+                }
+                fclose( f );
+            }
+            dSecs = std::min( dSecs, dEnd );
         }
         job.eState = VideoJob::Muxing;
         std::wstring sMuxError;

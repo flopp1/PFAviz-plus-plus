@@ -286,7 +286,7 @@ GameState::GameError SplashScreen::Logic()
         const RefChannelEvent &e = vEvents[m_iStartPos];
         if ( e.GetType() != RefChannelEvent::NoteOn )
             m_OutDevice.PlayEvent( e.cCode, e.cParam1, e.cParam2 );
-        else if ( !m_bMute && !m_vTrackSettings[e.iTrack].aChannels[e.GetChannel()].bMuted )
+        else if ( !m_bMute )
             m_OutDevice.PlayEvent( e.cCode, e.cParam1, static_cast< int >( e.cParam2 * dVolumeCorrect + 0.5 ) );
         UpdateState( m_iStartPos );
         m_iStartPos++;

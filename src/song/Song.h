@@ -303,6 +303,26 @@ struct EventCounts
     size_t MemoryBytes() const { return ( vCount.capacity() + vCum.capacity() ) * 8; }
 };
 
+// Every NoteOn's end in stream order (DESIGN.md 5.5), from the count pass's pairing of each track (PairSim
+// in Loader.cpp): the pairing pass then routes only the NoteOns, each final at once, with no pairing
+// state. Per NoteOn, varint( end - start + 1 ) in unique ticks, 0 for one no off pairs; in chunks of
+// 2^ChunkShift NoteOns, each LZ4-compressed (or stored as is). vSeekOn: the NoteOns before each of the
+// stream's seek points (EventStream::vSeek, same index). Empty (bValid false) for a song the count pass
+// found a note paired twice in, or an off that pairs nothing it would count as a release: those pair as
+// before. Freed after the pairing pass.
+struct NoteEnds
+{
+    static const unsigned ChunkShift = 16;
+    struct Chunk { std::unique_ptr< uint8_t[] > data; uint32_t uPacked = 0, uRaw = 0; };
+    std::vector< Chunk > vChunks;
+    std::vector< uint64_t > vSeekOn;
+    uint64_t llNotes = 0;
+    bool bValid = false;
+    // Chunk c's raw varints into out (resized to its raw size plus 16 bytes of slack)
+    void Decode( size_t c, std::vector< uint8_t > &out ) const;
+    size_t MemoryBytes() const;
+};
+
 struct Song
 {
     RefMidiInfo info;                       // llFirstNote is set by the pairing pass
@@ -329,6 +349,7 @@ struct Song
     std::vector< uint64_t > vTrackCopies;
     std::vector< uint32_t > vLogicalTracks;
     uint64_t TrackCopies( size_t t ) const { return t < vTrackCopies.size() ? vTrackCopies[t] : 1; }
+    NoteEnds ends;                          // every NoteOn's end, for the pairing pass (then freed)
     VisualStore visual;                     // notes per key, paired (built by BuildVisualStore)
     NoteStats noteStats;                    // for the overlay's extra statistics (built with visual, when asked for)
     VelocityBins aSendOns[2];               // [0] every note-on, [1] as collapsed (BuildSendCounts)

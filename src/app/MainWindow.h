@@ -42,11 +42,8 @@ VOID SetSpeed( double dSpeed );
 VOID SetNSpeed( double dSpeed );
 // The toolbar's exact speed boxes (the main loop leaves the accelerators to them while one has the focus)
 BOOL IsSpeedEdit( HWND hWnd );
-// Shows the toolbar with or without the exact speed boxes (without: the original's layout)
-VOID ShowSpeedBoxes( BOOL bShow );
 VOID SetVolume( double dVolume );
 VOID SetPosition( INT iPosition );
-VOID SetMetronome( INT iMetronome );
 VOID SetPlayable( BOOL bPlayable );
 VOID SetPlayMode( INT ePlayMode );
 VOID SetPlayPauseStop( BOOL bPlay, BOOL bPause, BOOL bStop );

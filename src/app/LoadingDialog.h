@@ -2,7 +2,10 @@
 #pragma once
 
 #include <windows.h>
+#include <memory>
 #include <string>
+
+struct Song;
 
 #define WM_APP_LOADDONE ( WM_APP + 1 )
 #define WM_APP_RENDERVIDEO ( WM_APP + 2 )     // PFAVIZ_RENDER: lParam is the output file
@@ -23,4 +26,6 @@ void ShowLoadStats();
 bool HaveLoadStats();      // a load running, or cancelled ones still stopping (at exit: they are not waited for)
 // The full path of the song last opened (empty before the first)
 const std::wstring &GetOpenedFile();
+// The song open now (null: none, or it has been closed), read-only: safe to read on another thread while held
+std::shared_ptr< const Song > GetOpenedSong();
 HWND GetLoadingDialog();

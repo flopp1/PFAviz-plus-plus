@@ -43,10 +43,6 @@ PlaybackEngine::PlaybackEngine( std::shared_ptr< const Song > pSong, PlaybackClo
     : m_pSong( std::move( pSong ) ), m_Clock( clock ), m_Decoder( *m_pSong )
 {
     SetMaxThreads( iThreads );
-    size_t iTracks = std::max< size_t >( 1, m_pSong->vTracks.size() );
-    m_pMuteMask.reset( new std::atomic< uint16_t >[iTracks] );
-    for ( size_t i = 0; i < iTracks; i++ ) m_pMuteMask[i].store( 0, std::memory_order_relaxed );
-    m_Decoder.SetMuteMask( m_pMuteMask.get() );
     m_pRing.reset( new Slice[RingSize] );
 }
 
@@ -85,7 +81,7 @@ bool PlaybackEngine::SetRendered( const RenderAhead::Settings &s )
     m_AheadSettings = s;
     if ( m_pAhead ) { m_pAhead->SetSettings( s ); return false; }
     m_bIdle.store( true, std::memory_order_release );
-    m_pAhead = std::make_unique< RenderAhead >( m_pSong, m_Clock, m_pMuteMask.get() );
+    m_pAhead = std::make_unique< RenderAhead >( m_pSong, m_Clock );
     m_pAhead->SetMute( m_bMute.load( std::memory_order_relaxed ) );
     m_pAhead->SetVolume( m_dVolume );
     UpdateAheadSound();
@@ -97,7 +93,6 @@ RenderAhead::Sound PlaybackEngine::AheadSound() const
 {
     RenderAhead::Sound snd;
     snd.dVelocityCorrect = m_dEvenOut;
-    snd.iMetronome = m_iMetronome.load( std::memory_order_relaxed );
     snd.iMinVelocity = m_iMinVelocity.load( std::memory_order_relaxed );
     snd.bCollapse = m_bCollapse.load( std::memory_order_relaxed );
     snd.llMaxSendsPerSec = m_llMaxSendsPerSec.load( std::memory_order_relaxed );
@@ -113,7 +108,7 @@ void PlaybackEngine::UpdateAheadSound()
 
 std::unique_ptr< RenderAhead > PlaybackEngine::MakeOfflineRender( unsigned uRate )
 {
-    auto p = std::make_unique< RenderAhead >( m_pSong, m_pMuteMask.get(), uRate );
+    auto p = std::make_unique< RenderAhead >( m_pSong, uRate );
     p->SetVolume( m_dVolume );
     p->SetSound( AheadSound() );
     return p;
@@ -130,12 +125,6 @@ void PlaybackEngine::SetVolume( double dVolume, double dEvenOut )
     m_dVolume = dVolume;
     m_dEvenOut = dEvenOut;
     if ( m_pAhead ) { m_pAhead->SetVolume( dVolume ); UpdateAheadSound(); }
-}
-
-void PlaybackEngine::SetMetronome( int iMode )
-{
-    m_iMetronome.store( iMode, std::memory_order_relaxed );
-    UpdateAheadSound();
 }
 
 void PlaybackEngine::SetMinVelocity( int iMinVelocity )
@@ -192,15 +181,6 @@ void PlaybackEngine::ReopenOutput()
     m_bReopen.store( true, std::memory_order_release );
 }
 
-void PlaybackEngine::SetChannelMuted( int iTrack, int iChannel, bool bMuted )
-{
-    if ( iTrack < 0 || (size_t)iTrack >= m_pSong->vTracks.size() || iChannel < 0 || iChannel > 15 ) return;
-    uint16_t uBit = (uint16_t)( 1u << iChannel );
-    if ( bMuted ) m_pMuteMask[iTrack].fetch_or( uBit, std::memory_order_relaxed );
-    else m_pMuteMask[iTrack].fetch_and( (uint16_t)~uBit, std::memory_order_relaxed );
-    if ( m_pAhead ) m_pAhead->MuteChanged();
-}
-
 void PlaybackEngine::SetMaxThreads( int iThreads )
 {
     if ( iThreads == m_iThreadsSetting ) return;
@@ -208,10 +188,9 @@ void PlaybackEngine::SetMaxThreads( int iThreads )
     m_iMaxLanes.store( std::max( 1, Parallel::ThreadCount( iThreads ) ), std::memory_order_relaxed );
 }
 
-void PlaybackEngine::SetSkipping( bool bVelocitySkip, int iSkipLagMs )
+void PlaybackEngine::SetSkipping( bool bVelocitySkip )
 {
     m_bVelocitySkip.store( bVelocitySkip, std::memory_order_relaxed );
-    m_iSkipLagMs.store( iSkipLagMs, std::memory_order_relaxed );
 }
 
 void PlaybackEngine::SetSendLimits( bool bCollapse, long long llMaxSendsPerSec )
@@ -338,9 +317,8 @@ void PlaybackEngine::DecoderThread()
         p.dSpeed = std::max( m_Clock.Speed(), 1e-6 );
         p.bMute = m_bMute.load( std::memory_order_relaxed );
         p.dVolumeCorrect = m_dVolumeCorrect.load( std::memory_order_relaxed );
-        p.iMetronome = m_iMetronome.load( std::memory_order_relaxed );
         p.bVelocitySkip = m_bVelocitySkip.load( std::memory_order_relaxed );
-        p.llSkipLagUs = (long long)( m_iSkipLagMs.load( std::memory_order_relaxed ) * 1000.0 * p.dSpeed );
+        p.llSkipLagUs = (long long)( SkipLagMs * 1000.0 * p.dSpeed );
         p.llSenderLagUs = std::max< long long >( 0, m_llLagUs.load( std::memory_order_relaxed ) );
         p.bCollapse = m_bCollapse.load( std::memory_order_relaxed );
         p.llMaxSendsPerSec = m_llMaxSendsPerSec.load( std::memory_order_relaxed );
@@ -411,7 +389,7 @@ void PlaybackEngine::DecoderThread()
 // Once parallel, it stays so until the load falls to about a third of one thread.
 int PlaybackEngine::LanesWanted( const PlaybackDecoder::Params &p, long long llNow )
 {
-    long long tNext = m_Decoder.NextTime( PlaybackDecoder::MetOff );
+    long long tNext = m_Decoder.NextTime();
     if ( tNext == LLONG_MAX ) return 1;
     const VelocityBins &vb = m_pSong->aSendOns[0];
     const double dWindowUs = 20000.0;
@@ -441,7 +419,6 @@ void PlaybackEngine::EnsureLanes( int iLanes )
     {
         int k = (int)m_vLaneDec.size();
         m_vLaneDec.emplace_back( new PlaybackDecoder( *m_pSong ) );
-        m_vLaneDec.back()->SetMuteMask( m_pMuteMask.get() );
         m_vLaneOut.emplace_back();
         // Its first job is the next one (jobs are only posted on this thread, after this)
         unsigned uJob;
@@ -495,7 +472,7 @@ bool PlaybackEngine::RunBatch( int iLanes, const PlaybackDecoder::Params &p, lon
     // Only once the next event is within one thread's horizon (4 ms), and then 16 ms ahead: about 12 ms
     // of song per batch, so the lanes' work outweighs waking them (a batch on every wait would hold
     // well under a millisecond)
-    if ( m_Decoder.NextTime( PlaybackDecoder::MetOff ) > llNow + std::max< long long >( 1000, (long long)( 4000 * p.dSpeed ) ) ) return false;
+    if ( m_Decoder.NextTime() > llNow + std::max< long long >( 1000, (long long)( 4000 * p.dSpeed ) ) ) return false;
     long long llHorizon = llNow + std::max< long long >( 4000, (long long)( 16000 * p.dSpeed ) );
     if ( !m_Decoder.PlanBatch( iLanes, llHorizon, (uint64_t)iLanes << 21, llNow, b ) ) return false;
     EnsureLanes( iLanes );

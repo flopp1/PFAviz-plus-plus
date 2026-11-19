@@ -295,9 +295,7 @@ void FastEngine::PrepareFrame( const FrameGlobals &g )
     F.fNotesY = g.fNotesY;
     F.fNotesCY = g.fNotesCY;
     F.uClean = g.uClean;
-    float fDeflate = g.fWhiteCX * 0.15f / 2.0f;
-    fDeflate = floor( fDeflate + 0.5f );
-    F.fDeflate = std::max( std::min( fDeflate, 3.0f ), 1.0f );
+    F.fDeflate = Scene::NoteDeflate( g );
     float fMinY = g.fNotesY - 5.0f, fMaxY = g.fNotesY + g.fNotesCY + 5.0f;
     F.iRowLo = std::max( 0, (int)std::ceil( fMinY - 0.5f ) );
     F.iRowHi = std::min( g.iBufferHeight, (int)std::ceil( fMaxY - 0.5f ) );
@@ -673,9 +671,7 @@ void FastEngine::DrawNotes( Renderer *pRenderer, const FrameGlobals &g, const st
     }
 
     // Per key: columns (with the flipped inner rect of narrow keys), degenerate flag, on screen?
-    float fDeflate = g.fWhiteCX * 0.15f / 2.0f;
-    fDeflate = floor( fDeflate + 0.5f );
-    fDeflate = std::max( std::min( fDeflate, 3.0f ), 1.0f );
+    const float fDeflate = Scene::NoteDeflate( g );
     // (by Scene::KeyLayer: white keys, black keys, and the 31-EDO layout's full sharps and flats)
     std::vector< KeyCols > *aClass = m_aClass;
     for ( int c = 0; c < Scene::KeyLayers; c++ ) aClass[c].clear();

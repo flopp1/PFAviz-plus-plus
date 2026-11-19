@@ -1,5 +1,5 @@
-// Preferences property sheet (DESIGN.md 10.3): the original Visual, Audio and Controls tabs, minus
-// what needed MIDI input, plus a Performance tab in the Library tab's place.
+// Preferences property sheet (DESIGN.md 10.3): the original's settings and PFAviz++'s, in nine tabs by task
+// (Preferences.cpp).
 #pragma once
 
 #include <windows.h>

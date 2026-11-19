@@ -1,4 +1,4 @@
-// Offline video rendering (Performance > Render video...). The UI thread collects the settings, finds
+// Offline video rendering (File > Render Song..., or Preferences > Video rendering). The UI thread collects the settings, finds
 // ffmpeg and checks that the chosen encoder takes the frame size; the game thread renders every frame
 // off-screen (MainScreen::RenderVideo, through FrameCapture) and FfmpegPipe streams them to ffmpeg's
 // stdin as raw YUV 4:2:0 or BGRX frames, with an audio file muxed in when one is chosen. With the
@@ -27,14 +27,16 @@ struct VideoJob
     int iCodec = 0, iBackend = 0, iContainer = 0;     // ExportSettings::Codec, Backend, Container
     bool bShowStats = true;
     std::wstring sAudioFile;            // empty: no audio
-    bool bAudioAlign = true;
-    int iAudioOffsetMs = 0;
+    int iAudioOffsetMs = 0;             // sAudioFile starts at the song's 0 s mark, then moved by this
     bool bRenderedAudio = false;        // the audio renderer's audio instead of sAudioFile
+    bool bEndAtAudio = false;           // ends when the audio does (never before the song's last event), else
+    int iEndMs = 500;                   // ... this long after the song's last event
     std::wstring sEncodeTo;             // (set by the renderer) where ffmpeg encodes the video, when not sOutFile
     // Set by the renderer
     bool bYuv = false;                  // frames are YUV 4:2:0 (packed on the GPU), else BGRX
-    double dFirstNoteSecs = 0.0;        // the video time the song's first note sounds at
+    double dSongZeroSecs = 0.0;         // the video time of the song's 0 s mark (negative: before the video)
     double dDurationSecs = 0.0;         // the video's length
+    double dFadeSecs = 0.0;             // the audio fades out over this much of the video's end (0: none)
 
     // Progress, written by the game thread
     enum State { Starting, Rendering, Finishing, AudioWait, Muxing, Done };
@@ -85,10 +87,11 @@ public:
     static bool TryEncoder( const VideoJob &job, std::wstring &sError );
     // Where an audio file's first sound starts, in seconds (its first moment above -60 dB; the
     // first 10 minutes are looked at). Negative when the file could not be read (sError says why).
-    static double FirstSound( const std::wstring &sFfmpeg, const std::wstring &sAudio, std::wstring &sError );
     // The video file sVideo with raw stereo float audio (sRaw, at uRate) put in as the job's format has it,
     // dSecs long, into the job's output file
     static bool Mux( const VideoJob &job, const std::wstring &sVideo, const std::wstring &sRaw, unsigned uRate, double dSecs, std::wstring &sError );
+    // An audio file's length (as ffmpeg reads its header), seconds; false when it says none
+    static bool AudioLength( const std::wstring &sFfmpeg, const std::wstring &sFile, double &dSecs );
 
     // Starts ffmpeg for the job's size, rate and encoder settings; its messages go to a log file
     bool Start( const VideoJob &job, std::wstring &sError );
@@ -117,8 +120,22 @@ private:
     std::atomic< bool > m_bFailed{ false };
 };
 
-// The settings popup (opened from the Performance tab), which starts the render and shows its progress
+// The settings popup (after File > Render Song loads the song), which starts the render and shows its progress
 VOID DoVideoExport( HWND hWndOwner );
+
+struct ExportSettings;
+
+// The same settings as Preferences > Video rendering shows them: its controls (the dialog's IDs) filled from the
+// saved settings or from s, a control's command handled (false: not one of them), what they show kept, and the
+// render started from them (false: it did not start, and why was said)
+namespace VideoPage
+{
+    VOID Init( HWND hWnd );
+    VOID Show( HWND hWnd, const ExportSettings &s );
+    bool Command( HWND hWnd, WPARAM wParam );
+    VOID Keep( HWND hWnd );
+    bool Start( HWND hWnd );
+}
 // Developer switch PFAVIZ_RENDER=FILE: renders the song just opened with the saved settings, then
 // closes the window (the outcome is appended to PFAVIZ_FRAMELOG when it is set)
 VOID RenderVideoUnattended( const std::wstring &sOutFile );

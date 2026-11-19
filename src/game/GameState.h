@@ -161,10 +161,7 @@ public:
     // takes over, so the screen it replaces (still running until then) cannot change it
     void SetStartPaused( bool b ) { m_bStartPaused = b; }
 
-    void MuteChannel( int iTrack, int iChannel, bool bMuted );
-    void HideChannel( int iTrack, int iChannel, bool bHidden );
     void ColorChannel( int iTrack, int iChannel, unsigned int iColor, bool bRandom = false );
-    ChannelSettings *GetChannelSettings( int iChannel, int *piTrack = nullptr, int *piChannel = nullptr );
     // The first 16 colour slots (track, channel with notes) take the configured colours, the rest random ones
     void SetChannelColors( const unsigned *aColor, int iColors );
 
@@ -218,7 +215,8 @@ private:
     // RenderStatus's); pStats: the stats box drawn, if any (the graphs go next to it in one corner);
     // iBottomY as StatsLayout's. Each graph's top and bottom follow its values shown, eased by song time
     // (GraphScale: kept from frame to frame)
-    struct GraphScale { double adTop[3] = {}, adBottom[3] = {}; long long llLast = LLONG_MIN; };
+    // A graph's scale as it eases, and its highest-value line as it is held (RenderGraph)
+    struct GraphScale { double adTop[3] = {}, adBottom[3] = {}, adMaxLine[3] = {}; long long allMaxAt[3] = {}; long long llLast = LLONG_MIN; };
     void RenderGraph( Renderer *pRenderer, int iWidth, int iHeight, int iBottomY, long long llTime, long long llPastEnd,
                       const StatsBox *pStats, float fDark, GraphScale &scale );
 
@@ -274,6 +272,7 @@ private:
     wchar_t m_sRendered[48] = L"";      // audio rendered ahead: how far it has got, or its problem
     std::wstring m_sRenderedShown;      // the problem last told on screen
     wchar_t m_sDegrade[48] = L"";       // how much lighter the rendered audio playing is
+    wchar_t m_sVoices[48] = L"";        // the rendered audio playing's voices, of its limit (empty: not known)
     std::wstring m_sWarningShown;       // the rendered audio's load warnings last told
     double m_dSynthCpu = -1.0;
 

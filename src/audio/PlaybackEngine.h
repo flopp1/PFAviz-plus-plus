@@ -66,9 +66,9 @@ public:
     void SetVolumeCorrect( double d ) { m_dVolumeCorrect.store( d, std::memory_order_relaxed ); }
     // Audio rendered ahead takes the volume as a gain, and only the song's evening out of the velocities
     void SetVolume( double dVolume, double dEvenOut );
-    void SetMetronome( int iMode );
-    void SetChannelMuted( int iTrack, int iChannel, bool bMuted );
-    void SetSkipping( bool bVelocitySkip, int iSkipLagMs );
+    // Last-resort velocity skipping: on, note-ons are skipped, the quietest first, above SkipLagMs of lag
+    void SetSkipping( bool bVelocitySkip );
+    static const int SkipLagMs = 100;
     // Stack collapsing and the send budget (messages per second, 0: none); see PlaybackDecoder::Params
     void SetSendLimits( bool bCollapse, long long llMaxSendsPerSec );
     // 31-EDO tuning (Performance tab), applied at once: a change reopens the output in the new mode
@@ -79,7 +79,7 @@ public:
     // The most threads decoding may use (0: the logical core count); takes effect at the next decode
     void SetMaxThreads( int iThreads );
 
-    // Audio rendered ahead (Preferences > Rendered audio) instead of the MIDI output, on or off: the
+    // Audio rendered ahead (Preferences > Audio > Pre-Render) instead of the MIDI output, on or off: the
     // decoder and sender rest while it plays. True when it switched (the caller then seeks to where it
     // is, so the MIDI output gets the controllers there)
     bool SetRendered( const RenderAhead::Settings &s );
@@ -122,7 +122,6 @@ private:
     std::shared_ptr< const Song > m_pSong;
     PlaybackClock &m_Clock;
     PlaybackDecoder m_Decoder;
-    std::unique_ptr< std::atomic< uint16_t >[] > m_pMuteMask;
 
     // Ring of slices (single producer: decoder, single consumer: sender)
     std::unique_ptr< Slice[] > m_pRing;
@@ -136,7 +135,6 @@ private:
     // Parameters
     std::atomic< bool > m_bMute{ false };
     std::atomic< double > m_dVolumeCorrect{ 1.0 };
-    std::atomic< int > m_iMetronome{ 0 }, m_iSkipLagMs{ 100 };
     std::atomic< bool > m_bVelocitySkip{ false }, m_bCollapse{ false };
     std::atomic< bool > m_bTuning31{ false }, m_bTuningBend{ false };
     std::atomic< long long > m_llMaxSendsPerSec{ 0 };

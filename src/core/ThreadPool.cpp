@@ -9,11 +9,16 @@
 #include <thread>
 #include <vector>
 
+int Parallel::LogicalProcessors()
+{
+    unsigned n = std::thread::hardware_concurrency();
+    return n ? (int)n : 4;
+}
+
 int Parallel::ThreadCount( int iRequested )
 {
     if ( iRequested > 0 ) return iRequested;
-    unsigned n = std::thread::hardware_concurrency();
-    return n ? (int)n : 4;
+    return std::max( 1, LogicalProcessors() / 2 );
 }
 
 void Parallel::SpreadThread( int k )
@@ -72,6 +77,7 @@ namespace
         size_t iCount = 0;
         std::atomic< size_t > iNext{ 0 };
         int iWant = 0, iPending = 0;
+        bool bBackground = false;           // (its threads below normal priority, not spread)
 
         void Work( int iThread )
         {
@@ -101,7 +107,8 @@ namespace
                 unsigned long long llNow;
                 { std::lock_guard< std::mutex > lock( mx ); llNow = llGen; }
                 vThreads.emplace_back( [this, w, llNow] {
-                    Parallel::SpreadThread( w + 1 );
+                    if ( bBackground ) SetThreadPriority( GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL );
+                    else Parallel::SpreadThread( w + 1 );
                     Worker( w, llNow );
                 } );
                 vThreads.back().detach();   // never joined: the pools live until the process exits
@@ -121,6 +128,38 @@ namespace
         }
     };
     Pool *g_aPools[2] = { new Pool, new Pool };
+    Pool *g_pBackground = [] { Pool *p = new Pool; p->bBackground = true; return p; }();
+}
+
+void Parallel::ForBackground( int iThreads, size_t iCount, const std::function< void( size_t, int ) > &fn )
+{
+    if ( iThreads <= 1 || iCount <= 1 )
+    {
+        for ( size_t i = 0; i < iCount; i++ ) fn( i, 0 );
+        return;
+    }
+    iThreads = (int)std::min< size_t >( iThreads, iCount );
+    if ( g_pBackground->mxUse.try_lock() )
+    {
+        g_pBackground->Run( iThreads, iCount, fn );
+        g_pBackground->mxUse.unlock();
+        return;
+    }
+    // (in use: threads of its own, as low)
+    std::atomic< size_t > iNext{ 0 };
+    auto Work = [&]( int iThread ) {
+        for ( size_t i; ( i = iNext.fetch_add( 1, std::memory_order_relaxed ) ) < iCount; )
+            fn( i, iThread );
+    };
+    std::vector< std::thread > vThreads;
+    vThreads.reserve( iThreads - 1 );
+    for ( int t = 1; t < iThreads; t++ )
+        vThreads.emplace_back( [&Work, t] {
+            SetThreadPriority( GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL );
+            Work( t );
+        } );
+    Work( 0 );
+    for ( auto &t : vThreads ) t.join();
 }
 
 void Parallel::For( int iThreads, size_t iCount, const std::function< void( size_t, int ) > &fn )

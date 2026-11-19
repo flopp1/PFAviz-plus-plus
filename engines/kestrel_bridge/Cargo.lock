@@ -536,7 +536,7 @@ dependencies = [
 [[package]]
 name = "kestrel"
 version = "1.4.0"
-source = "git+https://github.com/UnPrioritized/kestrel-midi?rev=4a5f396a7d29a1877bc88f20effd8c88682dcca5#4a5f396a7d29a1877bc88f20effd8c88682dcca5"
+source = "git+https://github.com/UnPrioritized/kestrel-midi?rev=a91cd6759ea8899aa9d4d16f9cc62bc59fde5d0d#a91cd6759ea8899aa9d4d16f9cc62bc59fde5d0d"
 dependencies = [
  "anyhow",
  "bytemuck",
